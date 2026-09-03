@@ -149,6 +149,19 @@ Whether a spoken reply starts playing by itself, for the whole household (ADR-00
 
 **`"on"` and `"off"` force the state for everybody.** Each person's own control on [Your Profile](Your-Profile) shows the forced state and is disabled, with a line saying an administrator set it. Forcing a state does not erase what a person had chosen — it is what they return to if the rule is later set back to `"unset"`.
 
+## `[image]`
+
+The image generator: a service that takes a prompt and hands back a picture, answering image conversations. Edited on the **Image generation** card of the Model connections screen; everything but the connect timeout is on that card.
+
+| Key | Type | Default | Values |
+|---|---|---|---|
+| `base_url` | string | absent | The generator's address. Absent or empty means image generation is off, which is a normal state, not an error. |
+| `model` | string | absent | Only needed when the server hosts more than one model. |
+| `prompt_prefix` | string | `""` | Put in front of the text of every picture request, with one space between. Empty adds nothing. Never appears in the transcript; the stored message is what the person typed. Capped at 4,000 characters from the screen. |
+| `connect_timeout_seconds` | float | `5.0` | Time to open the connection. Not on the screen; reachable from the raw editor. |
+| `read_timeout_seconds` | float | `600.0` | **Wait for the picture.** A generator sends nothing until the render is finished, so this one read has to outlast the whole render. |
+| `total_timeout_seconds` | float | `900.0` | **Ceiling.** The limit on the entire request, and the clock that does not reset. It catches a generator that has stopped, which the wait cannot. |
+
 ## The starter file
 
 On first run the core writes a commented `core.toml` containing `default_persona`, an `[llm.interactive]` section with timeouts, a `[bus]` section, `[retention] default_days = 30`, and `[auth] method = "builtin"`. It exists so an operator has a file to find and read; without it the settings would exist only as defaults buried in code. It is never rewritten over an existing file.
