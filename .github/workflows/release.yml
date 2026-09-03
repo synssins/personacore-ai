@@ -56,8 +56,9 @@ jobs:
           python-version: "3.12"
           cache: pip
       - run: python -m pip install --upgrade pip && python -m pip install -e ".[dev]"
-      - run: python -m ruff check src tests
-      - run: python -m pytest -q --check-register
+      - run: python -m ruff check src
+      # The test suite is not in this repository (see ci.yml); it runs on the
+      # machine where commits are made. The gate here is the lint only.
 
   publish:
     # Deliberately NOT `needs: gate`. The image builds whatever the tests say,
