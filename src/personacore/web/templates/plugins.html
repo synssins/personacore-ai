@@ -1,0 +1,47 @@
+{# plugins.html — installed plugins in two groups: loaded, failed to load.
+   Context: loaded: [plugin], failed: [plugin], install_result?
+   SWAP BOUNDARY: #plugin-list re-renders after install/uninstall/toggle, and
+   #install-result carries the sentence about it (both live in fragments/, so
+   the page and the swapped response cannot drift apart). #}
+{% extends "base.html" %}
+{% from "_controls.html" import icon %}
+{% block title %}Plugins — PersonaCore admin{% endblock %}
+{% block content %}
+<h3 style="margin:0">Plugins</h3>
+
+{# install — a real file input; multipart post.
+
+   TWO STEPS, ON PURPOSE. The form posts to /install/review, which reads the
+   archive without unpacking it and answers with fragments/plugin_review.html:
+   what the plugin exposes, at what risk level, which secrets it will be handed,
+   which hosts it declares, and where its code runs. Only the Install button
+   inside that dialog posts to /install. Nothing is written until then, so
+   Cancel leaves nothing behind.
+
+   The dialog's Install button re-posts THIS form (hx-include="#install-form"),
+   which is why the form needs an id and why the server never has to hold an
+   untrusted upload between the two clicks. #}
+<form class="card elev-sm" id="install-form" style="gap:var(--space-3)"
+      hx-post="/admin/plugins/install/review" hx-encoding="multipart/form-data"
+      hx-target="#modal" hx-swap="innerHTML" hx-indicator="#installing">
+  <div class="hrow" style="flex-wrap:wrap">
+    <label class="btn btn-secondary" for="plugin-zip" {% if not can_install %}aria-disabled="true"{% endif %}>{{ icon('plus') }} Choose a .zip…</label>
+    <input type="file" id="plugin-zip" name="archive" accept=".zip" required
+           {% if not can_install %}disabled{% endif %}
+           style="position:absolute; width:1px; height:1px; opacity:0" data-file-label>
+    <span class="meta" data-file-name>no file chosen</span>
+    <label class="hrow" style="gap:8px; font-size:13px; cursor:pointer">
+      <input type="checkbox" class="check" name="replace" value="1" checked {% if not can_install %}disabled{% endif %}>
+      Replace an existing plugin of the same name, keeping its settings
+    </label>
+    <button type="submit" class="btn btn-primary" style="margin-left:auto" {% if not can_install %}disabled{% endif %}>Install</button>
+    {% if not can_install %}<span class="later">later</span>{% endif %}
+    <span class="htmx-indicator meta" id="installing">{{ icon('spinner') }} reading the package…</span>
+  </div>
+  {# "clock 1.0.0 installed and started. It is in the list below…", or the
+     installer's own refusal — never a status code. #}
+  {% include "fragments/install_result.html" %}
+</form>
+
+{% include "fragments/plugin_list.html" %}
+{% endblock %}

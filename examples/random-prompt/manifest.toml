@@ -1,0 +1,47 @@
+# random-prompt — a test plugin for checking the tool path end to end.
+#
+# Install it through the admin UI: zip this folder and upload it, or copy the
+# folder into /appdata/plugins/ and press reload.
+#
+# The rule this file exists for: THE MANIFEST DECLARES, THE CORE ENFORCES. It is
+# a request for privileges, checked before any of the code runs. Note how little
+# it asks for — no network, no secrets. A plugin that asks for nothing can leak
+# nothing, and this one genuinely needs nothing.
+
+[plugin]
+
+# Must match the folder name exactly, or the core refuses to load it.
+name        = "random-prompt"
+version     = "0.1.0"
+contract    = "1.x"
+transport   = "stdio"
+entry       = "python main.py"
+description = "Picks a subject at random, to check that tools are reachable."
+
+[permissions]
+
+# Empty means NONE, not "everything". This plugin talks to nobody.
+#
+# Worth knowing while you read this: network declarations are not currently
+# enforced for stdio plugins — see ADR-0012. It is a reviewable statement of
+# intent, not a wall. It is empty here because that is the truth, not because
+# something would stop it.
+network = []
+
+# No credentials. A plugin only ever receives the secrets it names here, and
+# naming one it does not need is a hole dug for no reason.
+secrets = []
+
+[tools.pick_subject]
+
+# safe      — runs silently. No consequences, nothing irreversible.
+# confirm   — the assistant asks before running it.
+# restricted— needs per-user permission, and then confirmation.
+#
+# Rate the tool by its consequence, not by your intentions. This one reads a
+# list and picks from it, so: safe.
+risk = "safe"
+
+[events]
+publishes  = []
+subscribes = []

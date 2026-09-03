@@ -1,0 +1,118 @@
+{# personas.html — who the assistant speaks as. Authority lives on the key.
+
+   Context: personas: [{slug, name, is_default, loadable, problem,
+     prompt_excerpt, voice, voice_warning, bound_keys: [note],
+     explicit_keys: [note]}],
+     generic_model_id, model_field_note, generic_note, selection_later,
+     voice_note, install_later, keys_note?, save_result?
+
+   Two things the first design pass got wrong and are fixed here:
+
+   * **The identifier is on every card, copyable.** A persona is selected by
+     name (ADR-0017), so a card that shows the character and not the string
+     that selects it shows an operator nothing they can act on.
+   * **Deleting names what it breaks.** The `delete` button opens
+     fragments/confirm.html, whose body is written by
+     `routes.persona_delete_body` and names the keys affected — and, for the
+     default, the silent identity swap.
+
+   One control has no backend and is drawn disabled and marked `later`:
+   install-from-zip (persona packaging is unbuilt). #}
+{% extends "base.html" %}
+{% from "_controls.html" import icon %}
+{% block title %}Personas — PersonaCore admin{% endblock %}
+{% block content %}
+<header class="hrow" style="align-items:flex-start">
+  <div style="flex:1">
+    <h3 style="margin:0 0 6px">Personas</h3>
+    <p class="text-muted" style="margin:0; font-size:13px; max-width:60ch">A persona is who the assistant speaks as — its prompt, name and voice. What it is allowed to do lives on the access key, not here.</p>
+  </div>
+  <span class="btn btn-secondary" aria-disabled="true" title="{{ install_later }}">Install from .zip <span class="later">later</span></span>
+  <a class="btn btn-primary" href="/admin/personas/new">{{ icon('plus') }} New persona</a>
+</header>
+
+{% if save_result %}
+<div class="banner {{ 'danger' if save_result.kind == 'invalid' else 'ok' }}" role="status" id="persona-result">
+  {{ icon('warn' if save_result.kind == 'invalid' else 'check') }}
+  <p class="grow" style="margin:0; font-size:13.5px">{{ save_result.message }}</p>
+</div>
+{% endif %}
+
+{# How a persona is selected, and the half of it that is not switched on yet. #}
+<div class="banner neutral" role="note">
+  {{ icon('key') }}
+  <p class="grow" style="margin:0; font-size:13px">{{ selection_later }} <span class="later">later</span></p>
+</div>
+
+{% if not personas %}
+<div class="empty">
+  {{ icon('mask') }}
+  <div>
+    <p style="margin:0; font-size:15px">No personas installed.</p>
+    <p class="text-muted" style="margin:4px 0 0; font-size:13px; max-width:54ch">The assistant answers plainly and namelessly until one exists — and a turn that asks for the default persona fails outright until one is written.</p>
+  </div>
+  <div class="hrow" style="gap:var(--space-2)">
+    <a class="btn btn-primary" href="/admin/personas/new">{{ icon('plus') }} Write one here</a>
+    <span class="btn btn-secondary" aria-disabled="true" title="{{ install_later }}">Install from .zip <span class="later">later</span></span>
+  </div>
+  <p class="meta" style="margin:0; max-width:54ch">{{ install_later }} A persona is also just a folder: drop one into appdata under <code>personas/</code> with a prompt file in it and it appears here.</p>
+</div>
+{% endif %}
+
+{% for p in personas %}
+<article class="card elev-sm" style="gap:var(--space-3)" id="persona-{{ p.slug }}">
+  <div class="hrow">
+    <span style="font-size:16px; font-weight:500">{{ p.name }}</span>
+    {% if p.is_default %}<span class="tag tag-accent">default</span>{% endif %}
+    {% if not p.loadable %}<span class="tag tag-neutral">cannot be read</span>{% endif %}
+    <div class="hrow" style="margin-left:auto; gap:var(--space-2)">
+      {% if not p.is_default %}
+      <button class="btn btn-ghost" hx-post="/admin/personas/{{ p.slug }}/default" hx-target="body">set as default</button>
+      {% endif %}
+      <a class="btn btn-ghost" href="/admin/personas/{{ p.slug }}/edit">edit prompt</a>
+      <button type="button" class="btn btn-danger"
+              hx-get="/admin/personas/{{ p.slug }}/delete/confirm/fragment"
+              hx-target="#modal" hx-swap="innerHTML">delete</button>
+    </div>
+  </div>
+
+  <p class="text-muted" style="margin:0; font-size:13px; line-height:1.55">{{ p.prompt_excerpt }}</p>
+
+  {# the identifier — how anything selects this persona #}
+  <div style="padding:var(--space-3); border-radius:var(--radius-sm); background:var(--color-bg); border:1px solid var(--color-divider)">
+    <div class="hrow" style="gap:10px; flex-wrap:wrap">
+      <code style="font-size:13.5px; color:var(--color-accent-300)">{{ p.slug }}</code>
+      <button type="button" class="btn btn-ghost" style="font-size:12.5px" data-copy="{{ p.slug }}">{{ icon('copy') }} copy</button>
+      <span class="meta" style="font-size:12.5px">{{ model_field_note }}</span>
+    </div>
+    {% if p.is_default %}
+    <p class="meta" style="margin:6px 0 0; font-size:12.5px">{{ generic_note }}</p>
+    {% endif %}
+  </div>
+
+  {# The card SHOWS the voice; the persona's own page CHOOSES it. A second
+     dropdown here would be a second place a voice can be set, and a card is a
+     recognition aid rather than a form. The spelling is NAME (Engine), the one
+     ADR-0029 section 5 requires everywhere a voice appears. #}
+  <div class="hrow" style="gap:10px; flex-wrap:wrap">
+    <span class="meta">Voice:</span>
+    <span style="font-size:13.5px">{{ p.voice }}</span>
+    <a class="meta" href="/admin/personas/{{ p.slug }}/edit">{{ voice_note }}</a>
+  </div>
+  {% if p.voice_warning %}
+  {# PC-336, on the persona itself as well as where the switch was flipped. It
+     is still answering — in text — and that is what this says. #}
+  <p class="meta" style="margin:0; max-width:60ch; color:var(--color-warn)">{{ p.voice_warning }}</p>
+  {% endif %}
+
+  <div class="hrow" style="gap:8px; flex-wrap:wrap">
+    <span class="meta">Answers on:</span>
+    {% if keys_note %}<span class="meta">{{ keys_note }}</span>
+    {% else %}
+    {% for note in p.bound_keys %}<span class="tag tag-neutral">{{ note }}</span>
+    {% else %}<span class="meta">no keys bound — bind one on the Access keys screen</span>{% endfor %}
+    {% endif %}
+  </div>
+</article>
+{% endfor %}
+{% endblock %}

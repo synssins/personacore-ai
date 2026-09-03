@@ -1,0 +1,86 @@
+{# plugin_logs.html — what each plugin has printed to its own stderr (PC-279).
+   Two pages, one template: /admin/plugins/logs carries every plugin (the
+   sweep), /admin/plugins/<name>/logs carries exactly one (the destination a
+   failing row links to, so getting from a broken plugin to its output is one
+   click). They differ only in how many rows they hold; two templates would be
+   two places for the same four ways of being empty to drift apart.
+
+   Context: plugins: [{name, transport, text, notes: [], empty_reason,
+     unavailable}], only (name|None), unknown (bool), source_note?,
+     untrusted_note
+
+   THE TEXT IS UNTRUSTED. It is whatever third-party code wrote to its own
+   stderr, so it is rendered inside <pre> as escaped text by Jinja's autoescape
+   and is never interpreted as markup (spec 7). Nothing here renders a
+   plugin's settings, so no secret name and no secret value can reach this
+   page at all — the surest way to keep a value off a screen is for the code
+   that would fetch it not to exist. #}
+{% extends "base.html" %}
+{% from "_controls.html" import icon %}
+{% block title %}{% if only %}{{ only }} output{% else %}Plugin output{% endif %} — PersonaCore admin{% endblock %}
+{% block content %}
+{% if only %}<p style="margin:0"><a href="/admin/plugins/logs">← All plugin output</a></p>{% endif %}
+
+<header>
+  <h3 style="margin:0 0 6px">{% if only %}{{ only }} — output{% else %}Plugin output{% endif %}</h3>
+  <p class="text-muted" style="margin:0; font-size:13px; max-width:62ch">What each plugin has printed while running — check here first when one will not start.</p>
+</header>
+
+{% if source_note %}
+<div class="banner warn" role="status">
+  {{ icon('warn') }}
+  <div class="grow">{{ source_note }}</div>
+  <span class="later">later</span>
+</div>
+{% endif %}
+
+{% if unknown %}
+<div class="empty">
+  {{ icon('puzzle') }}
+  <div>
+    <p style="margin:0; font-size:15px">No plugin called {{ only }} is installed.</p>
+    <p class="text-muted" style="margin:4px 0 0; font-size:13px; max-width:54ch">The core's last scan did not find it. Check the name on the <a href="/admin/plugins">Plugins</a> screen.</p>
+  </div>
+</div>
+{% elif not plugins %}
+<div class="empty">
+  {{ icon('scroll') }}
+  <div>
+    <p style="margin:0; font-size:15px">No plugins installed.</p>
+    <p class="text-muted" style="margin:4px 0 0; font-size:13px; max-width:54ch">Nothing has run yet. Install a plugin from the <a href="/admin/plugins">Plugins</a> screen.</p>
+  </div>
+</div>
+{% endif %}
+
+{% for p in plugins %}
+{# Open when there is something to read, or when this page is about one plugin:
+   an operator who followed a link to a plugin's output should not then have to
+   click again to see it. #}
+<details class="log-entry row" id="output-{{ p.name }}" {% if p.text or only %}open{% endif %}>
+  <summary>
+    <span style="font-size:14px; flex:none">{{ p.name }}</span>
+    {% if p.transport %}<span class="tag tag-neutral" style="flex:none">{{ p.transport }}</span>{% endif %}
+    <span class="meta" style="flex:1">{% if p.text %}printed output{% else %}nothing printed{% endif %}</span>
+    {{ icon('down') }}
+  </summary>
+  <div class="stack" style="gap:var(--space-3); padding:var(--space-3) 0 var(--space-2) 0">
+    {% if p.empty_reason %}
+    {# Four different emptinesses, said apart. A blank box teaches nobody
+       anything; each of these names which blank it is. #}
+    <p class="meta" style="margin:0; font-size:13px; line-height:1.5; max-width:70ch">{{ p.empty_reason }}</p>
+    {% if p.unavailable %}<span class="later">later</span>{% endif %}
+    {% else %}
+    {% for note in p.notes %}
+    {# The capture is bounded and truncating. Saying so is the difference
+       between a tail and a lie. A warning rather than an error: nothing is
+       broken, the operator is simply not seeing all of it. #}
+    <div class="banner warn" role="status">{{ icon('warn') }}<div class="grow">{{ note }}</div></div>
+    {% endfor %}
+    <p class="meta" style="margin:0">{{ untrusted_note }}</p>
+    <pre class="input" style="margin:0; max-height:26rem; overflow:auto; white-space:pre-wrap; word-break:break-word; font-family:var(--font-mono); font-size:12.5px; line-height:1.5">{{ p.text }}</pre>
+    {% endif %}
+    <p class="meta" style="margin:0"><a href="/admin/plugins/{{ p.name }}">open {{ p.name }}'s settings</a></p>
+  </div>
+</details>
+{% endfor %}
+{% endblock %}

@@ -1,0 +1,120 @@
+{# account.html — everybody else. Admin only.
+
+   Context: me (AdminUser), users [UserView] or None,
+     error?, notice?, min_password_chars, minor_note
+
+   PC-290 is the rule this template exists to keep: `users` is None for a
+   non-admin, not an empty list. An empty list would render as "there is nobody
+   else here", which is a statement about other people rather than a refusal
+   about this caller.
+
+   Nothing personal is on this page. "Your signed-in devices" and *End all my
+   sessions* used to be the first section here and now live on
+   `/admin/profile`, beside changing your own password: this screen and the
+   rest of Security are admin-only, so a personal control here is one the
+   members who need it cannot reach. #}
+{% extends "base.html" %}
+{% from "_controls.html" import icon %}
+{% block title %}Users and sessions — PersonaCore admin{% endblock %}
+{% block content %}
+<header class="hrow" style="align-items:flex-start">
+  <div style="flex:1">
+    <h3 style="margin:0 0 6px">Users and sessions</h3>
+    <p class="text-muted" style="margin:0; font-size:13px; max-width:64ch">You are signed in as <strong>{{ me.id }}</strong>{% if me.is_admin %} (admin){% endif %}.</p>
+  </div>
+  <form method="post" action="/admin/sign-out">
+    <button type="submit" class="btn btn-secondary">Sign out</button>
+  </form>
+</header>
+
+{% if error %}
+<div class="banner danger" role="alert" id="account-error">
+  {{ icon('hand') }}
+  <p class="grow" style="margin:0; font-size:13.5px">{{ error }}</p>
+</div>
+{% endif %}
+{% if notice %}
+<div class="banner" role="status" id="account-notice">
+  {{ icon('check') }}
+  <p class="grow" style="margin:0; font-size:13.5px">{{ notice }}</p>
+</div>
+{% endif %}
+
+{# ── everybody else — PC-289, PC-290. Admin only. ── #}
+{% if users is not none %}
+<section class="card elev-sm" style="gap:var(--space-3)" id="users">
+  <div>
+    <h4 style="margin:0 0 4px">Accounts</h4>
+    <p class="meta" style="margin:0; max-width:64ch">Only an admin sees this list. Ending somebody's sessions signs them out everywhere, straight away. {{ minor_note }}</p>
+  </div>
+
+  <table class="table">
+    <thead><tr><th>Name</th><th>Role</th><th>Added</th><th>Sessions</th><th>Minor</th><th></th></tr></thead>
+    <tbody>
+      {% for user in users %}
+      <tr>
+        <td>{{ user.username }}</td>
+        <td>{{ 'admin' if user.is_admin else 'user' }}</td>
+        <td>{{ user.created_at.strftime('%Y-%m-%d') }}</td>
+        <td>{{ user.sessions }}</td>
+        {# The form submits the state wanted, not "flip it": marking sends
+           is_minor, clearing sends nothing. A toggle would be decided from a
+           page that may be minutes old, and two admins on two tabs would flip
+           it past each other. #}
+        <td style="white-space:nowrap">
+          {% if user.is_minor %}<span class="tag tag-accent">minor</span>{% endif %}
+          <form method="post" action="/admin/users/{{ user.username }}/minor" style="display:inline">
+            {% if not user.is_minor %}<input type="hidden" name="is_minor" value="on">{% endif %}
+            <button type="submit" class="btn btn-secondary">{{ 'Clear' if user.is_minor else 'Mark' }}</button>
+          </form>
+        </td>
+        <td style="text-align:right; white-space:nowrap">
+          <a class="btn btn-secondary" href="/admin/review?user={{ user.username|urlencode }}">Review chats</a>
+          {% if user.sessions %}
+          <form method="post" action="/admin/users/{{ user.username }}/sessions/end" style="display:inline">
+            <button type="submit" class="btn btn-secondary">End all sessions</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  {# A boosted POST at a POST-only path, which is the shape that used to
+     return Method Not Allowed on refresh. It renders rather than redirecting
+     because a redirect would throw away the rejection message; the address bar
+     is held by `KeepsTheAddressBar` (`web/shared.py`), not by anything
+     written here. #}
+  <form method="post" action="/admin/users" style="display:flex; flex-direction:column; gap:var(--space-3); border-top:1px solid var(--color-divider); padding-top:var(--space-3)">
+    <h4 style="margin:0">Add an account</h4>
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:var(--space-3)">
+      <div class="field">
+        <span class="label-row"><label for="new-username">Name</label></span>
+        <input class="input" type="text" id="new-username" name="username" autocapitalize="none" spellcheck="false" required>
+      </div>
+      <div class="field">
+        <span class="label-row"><label for="new-password">Password</label></span>
+        <input class="input" type="password" id="new-password" name="password" autocomplete="new-password" required>
+        <p class="meta" style="margin:2px 0 0">At least {{ min_password_chars }} characters.</p>
+      </div>
+      <div class="field">
+        <span class="label-row"><label for="new-confirm">Password again</label></span>
+        <input class="input" type="password" id="new-confirm" name="confirm_password" autocomplete="new-password" required>
+      </div>
+      <div class="hrow" style="align-items:center; gap:10px">
+        <input type="checkbox" role="switch" class="switch" id="new-admin" name="is_admin">
+        <label for="new-admin" style="font-size:14px">Make this account an admin</label>
+      </div>
+      <div class="hrow" style="align-items:center; gap:10px">
+        <input type="checkbox" role="switch" class="switch" id="new-minor" name="is_minor">
+        <label for="new-minor" style="font-size:14px">Mark this account as a minor</label>
+      </div>
+    </div>
+    <div class="hrow" style="justify-content:flex-end">
+      <button type="submit" class="btn btn-primary">{{ icon('plus') }} Add account</button>
+    </div>
+  </form>
+</section>
+{% endif %}
+{% endblock %}

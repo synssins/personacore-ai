@@ -1,0 +1,163 @@
+{# key_new.html — the issue-a-key form, swapped into #modal.
+
+   Context: tab ('form'|'raw'), personas: [{slug, name}], tools: ['weather.x'],
+     tools_all, tools_all_note, risk_choices, memory_choices, kind_choices,
+     note_limit, submitted (the last submission, re-rendered on a refusal),
+     raw (the JSON textarea's contents), error?
+
+   Every field is one `PolicyProfile` field — see `routes.profile_from_form`.
+   The raw tab is the fallback for anything a form cannot say, exactly as the
+   plugin and core settings screens keep theirs.
+
+   **The anonymous ceilings are not restated here.** `PolicyProfile` refuses an
+   over-privileged anonymous profile at construction with a sentence written for
+   a person; this form offers the choice and prints what the model said. #}
+{% from "_controls.html" import icon %}
+{% macro on(name) %}{% if submitted.get(name) %}checked{% endif %}{% endmacro %}
+<div class="dialog" role="dialog" aria-labelledby="newkey-title" style="width:min(640px, 94vw)">
+  <h4 class="dialog-title" id="newkey-title">Issue a key</h4>
+
+  {% if error %}
+  <div class="banner danger" role="alert">
+    {{ icon('hand') }}
+    <p class="grow" style="margin:0; font-size:13.5px">{{ error }}</p>
+  </div>
+  {% endif %}
+
+  <div class="seg" role="tablist">
+    <a class="seg-opt" role="tab" aria-selected="{{ 'true' if tab == 'form' else 'false' }}"
+       hx-get="/admin/keys/new/fragment?tab=form" hx-target="closest .dialog" hx-swap="outerHTML">
+      {% if tab == 'form' %}<input type="radio" checked>{% else %}<input type="radio">{% endif %}Form</a>
+    <a class="seg-opt" role="tab" aria-selected="{{ 'true' if tab == 'raw' else 'false' }}"
+       hx-get="/admin/keys/new/fragment?tab=raw" hx-target="closest .dialog" hx-swap="outerHTML">
+      {% if tab == 'raw' %}<input type="radio" checked>{% else %}<input type="radio">{% endif %}Raw JSON</a>
+  </div>
+
+  {# POST returns fragments/key_created.html into this same modal. #}
+  <form class="stack" style="gap:var(--space-3)" hx-post="/admin/keys" hx-target="closest .dialog" hx-swap="outerHTML">
+    <input type="hidden" name="tab" value="{{ tab }}">
+
+    <div class="field">
+      <label for="key-note">What is it for?</label>
+      <input class="input" type="text" id="key-note" name="note" required maxlength="{{ note_limit }}"
+             placeholder="Kitchen display" value="{{ submitted.get('note', '') }}">
+      <p class="field-help">The only handle you will have on this key — its value is never shown again.</p>
+    </div>
+
+    {% if tab == 'raw' %}
+    <div class="field">
+      <label for="key-raw">Policy profile, as JSON</label>
+      <textarea class="input" id="key-raw" name="raw" style="min-height:260px; font-family:var(--font-mono); font-size:12.5px">{{ raw }}</textarea>
+      <p class="field-help">The whole profile, the same object <code>POST /admin/api/keys</code> takes. Anything the form has no box for is reachable here; anything the model refuses comes back in its own words.</p>
+    </div>
+    {% else %}
+
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:var(--space-3)">
+      <div class="field">
+        <label for="key-kind">What kind of caller</label>
+        <select class="input" id="key-kind" name="kind">
+          {% for value, label in kind_choices %}
+          <option value="{{ value }}" {% if submitted.get('kind') == value %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="field">
+        <label for="key-persona">Answers as</label>
+        <select class="input" id="key-persona" name="persona">
+          <option value="" {% if not submitted.get('persona') %}selected{% endif %}>the default persona</option>
+          {% for p in personas %}
+          <option value="{{ p.slug }}" {% if submitted.get('persona') == p.slug %}selected{% endif %}>{{ p.name }} — {{ p.slug }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+
+    <fieldset style="border:0; padding:0; margin:0" class="field">
+      <legend style="font-size:12px; padding:0; margin-bottom:5px; color:color-mix(in srgb, var(--color-text) 70%, transparent)">Tools it may use</legend>
+      <div class="hrow" style="gap:8px; flex-wrap:wrap">
+        <label class="tag" style="cursor:pointer; border:1px solid var(--color-divider); padding:4px 12px; font-size:12px; gap:6px">
+          <input type="checkbox" class="check" name="tools" value="{{ tools_all }}"
+                 {% if tools_all in submitted.get('tools', []) %}checked{% endif %}> every tool
+        </label>
+        {% for t in tools %}
+        <label class="tag" style="cursor:pointer; border:1px solid var(--color-divider); padding:4px 12px; font-size:12px; gap:6px">
+          <input type="checkbox" class="check" name="tools" value="{{ t }}"
+                 {% if t in submitted.get('tools', []) %}checked{% endif %}> {{ t }}
+        </label>
+        {% else %}
+        <span class="meta">No plugin offers a tool yet, so there is nothing to allow.</span>
+        {% endfor %}
+      </div>
+      <p class="field-help">None picked = conversation only. {{ tools_all_note }}</p>
+    </fieldset>
+
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:var(--space-3)">
+      <div class="field">
+        <label for="key-risk">Risk it may reach</label>
+        <select class="input" id="key-risk" name="risk">
+          {% for value, label in risk_choices %}
+          <option value="{{ value }}" {% if submitted.get('risk') == value %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+        <p class="field-help">A ceiling on top of the allowlist — a tool has to pass both.</p>
+      </div>
+      <div class="field">
+        <label for="key-memory">Whose memory it sees</label>
+        <select class="input" id="key-memory" name="memory">
+          {% for value, label in memory_choices %}
+          <option value="{{ value }}" {% if submitted.get('memory') == value %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+
+    <fieldset style="border:0; padding:0; margin:0" class="field">
+      <legend style="font-size:12px; padding:0; margin-bottom:5px; color:color-mix(in srgb, var(--color-text) 70%, transparent)">What else it may do — all off unless you say otherwise</legend>
+      <div class="stack" style="gap:6px">
+        <label class="hrow" style="gap:8px; font-size:13px; cursor:pointer">
+          <input type="checkbox" class="check" name="approve" value="1" {{ on('approve') }}> May approve confirmation prompts
+        </label>
+        <label class="hrow" style="gap:8px; font-size:13px; cursor:pointer">
+          <input type="checkbox" class="check" name="memory_write" value="1" {{ on('memory_write') }}> May add to memory, not only read it
+        </label>
+        <label class="hrow" style="gap:8px; font-size:13px; cursor:pointer">
+          <input type="checkbox" class="check" name="enumerate" value="1" {{ on('enumerate') }}> May discover what plugins are installed
+        </label>
+        <label class="hrow" style="gap:8px; font-size:13px; cursor:pointer">
+          <input type="checkbox" class="check" name="safe_mode" value="1" {{ on('safe_mode') }}> Safe mode — child-safety controls on
+        </label>
+        <label class="hrow" style="gap:8px; font-size:13px; cursor:pointer">
+          <input type="checkbox" class="check" name="raw_passthrough" value="1" {{ on('raw_passthrough') }}> Raw passthrough — straight to the model, no persona, no tools, no memory
+        </label>
+        {# The one scope the core has. A checkbox rather than a switch on the
+           model behind it, so the second scope joins this list without the
+           screen or the key store changing shape. #}
+        <label class="hrow" style="gap:8px; font-size:13px; cursor:pointer">
+          <input type="checkbox" class="check" name="admin_api" value="1" {{ on('admin_api') }}> May use the admin API — read the trace, change settings, issue and revoke keys
+        </label>
+        <label class="hrow" style="gap:8px; font-size:13px; cursor:pointer">
+          <input type="checkbox" class="check" name="suspended" value="1" {{ on('suspended') }}> Create it switched off — it will not open the door until it is re-issued
+        </label>
+      </div>
+    </fieldset>
+
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:var(--space-3)">
+      <div class="field">
+        <label for="key-rpm">Requests a minute</label>
+        <input class="input" type="number" min="1" id="key-rpm" name="requests_per_minute"
+               value="{{ submitted.get('requests_per_minute', '60') }}">
+      </div>
+      <div class="field">
+        <label for="key-conc">At once</label>
+        <input class="input" type="number" min="1" id="key-conc" name="max_concurrent"
+               value="{{ submitted.get('max_concurrent', '4') }}">
+      </div>
+    </div>
+    {% endif %}
+
+    <div class="dialog-actions">
+      <button type="button" class="btn btn-secondary" data-modal-close>Cancel</button>
+      <button type="submit" class="btn btn-primary">Create key</button>
+    </div>
+  </form>
+</div>

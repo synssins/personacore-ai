@@ -1,0 +1,39 @@
+# ============================================================================
+#  PersonaCore plugin template — config.toml
+#
+#  Your plugin's settings. They live here, in your own folder, never in a
+#  central core config (spec 5.1). The core reads this file only to hand it to
+#  the admin UI; the shape of it is entirely yours.
+#
+#  The admin UI edits this file in place and writes it back, so:
+#    * keep keys flat and obviously named — they become form fields;
+#    * keep these comments — they become the help text next to the field;
+#    * ship sensible defaults, so a fresh copy of your plugin runs as-is.
+#
+#  NEVER PUT A SECRET IN HERE. This file is backed up, readable by anyone with
+#  admin UI access, and often committed to a repo by its author. API keys and
+#  tokens are declared by name in manifest.toml under permissions.secrets and
+#  handed to you by the core at runtime (spec 7).
+#
+#  Validate this yourself when you load it. The core will not: it does not know
+#  what your settings mean. A clear error at startup ("greeting must not be
+#  empty") is what a human sees in the admin UI; a stack trace is not.
+# ============================================================================
+
+# KEEP THESE KEYS FLAT. The admin UI renders top-level keys and repeating
+# groups; it does not render a plain [section] heading as a sub-section, so
+# nesting your settings gets you the raw text editor instead of a form. See
+# config.schema.json, which describes exactly these four keys.
+
+# What the `hello` tool says.
+greeting = "Hello from the PersonaCore plugin template."
+
+# A number, to show the shape of a validated setting. See main.py: it is
+# range-checked at startup rather than trusted.
+excitement = 1
+
+# A boolean becomes a toggle in the admin UI.
+shout = false
+
+# A fixed set of choices becomes a dropdown.
+tone = "cheerful"

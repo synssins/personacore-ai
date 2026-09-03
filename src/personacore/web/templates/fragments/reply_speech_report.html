@@ -1,0 +1,22 @@
+{# fragments/reply_speech_report.html — how one reply's audio was produced.
+   Context: run (personacore.wyoming.client.SpeechRun)
+
+   Inline content only: this swaps into a <span> beside the player, on the line
+   the voice label already sits on, so it reads as part of that line rather
+   than as a panel under it.
+
+   It exists because audio proves nothing about which code made it. Testing
+   the streaming synthesis with Wyoming turned on, without this line, would
+   produce a reply that sounds fine with no way to know whether
+   the streaming path was involved at all.
+
+   Counts, timings and a terminator. No text, no voice sample, nothing about
+   what was said — the same rule the Wyoming server keeps. #}
+{% if run.path == 'wyoming' %}
+  <span class="meta">Wyoming{% if run.first_audio_ms is not none %} · first audio {{ run.first_audio_ms|round|int }} ms{% endif %} · {{ run.groups }} audio group{{ 's' if run.groups != 1 }}{% if run.total_ms is not none %} · {{ run.total_ms|round|int }} ms{% endif %} · {% if run.stopped %}ended cleanly{% else %}no synthesize-stopped{% endif %}</span>
+{% else %}
+  <span class="meta">Direct engine</span>
+{% endif %}
+{% if run.note %}<span class="meta">{{ run.note }}</span>{% endif %}
+{% if run.failure %}<span class="meta">{{ run.failure }}</span>{% endif %}
+{% if run.format_changed %}<span class="meta">the audio format changed mid-reply</span>{% endif %}

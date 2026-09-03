@@ -1,0 +1,48 @@
+{# model_field.html — the Model name field for one role, in both of its states.
+
+   Included by model_form.html (text box, nothing fetched yet) and returned
+   whole by POST /admin/models/<id>/choices/fragment, which swaps this div for
+   itself: a dropdown of what the host at the address currently in the box says
+   it serves, or the same text box again with the reason underneath.
+
+   The text box is not a failure state. Plenty of OpenAI-compatible hosts do
+   not implement /models, and plenty want a key before they will list anything,
+   so the field a person can always type into is the one that has to survive.
+
+   Context: role: {id, model, choices: [{id, label, listed, selected}] | None,
+     fetch_note: {kind: 'ok'|'warn', message} | None} #}
+{% from "_controls.html" import icon %}
+<div class="field" id="model-field-{{ role.id }}">
+  <div class="label-row">
+    <label for="model-{{ role.id }}">Model name</label>
+    <button type="button" class="btn btn-ghost" style="margin-left:auto"
+            {# `hx-params` keeps the typed key out of these two requests. They
+               are probes and neither reads it — a probe asks the SAVED
+               connection, key included — so sending it would put a credential
+               on the wire for no reason at all. #}
+            hx-post="/admin/models/{{ role.id }}/choices/fragment"
+            hx-include="closest form" hx-params="not api_key,api_key_clear"
+            hx-target="#model-field-{{ role.id }}" hx-swap="outerHTML"
+            hx-indicator="#fetching-{{ role.id }}">
+      Fetch models
+    </button>
+    <span class="htmx-indicator meta" id="fetching-{{ role.id }}">{{ icon('spinner') }} asking…</span>
+  </div>
+  {% if role.choices %}
+  <select class="input" id="model-{{ role.id }}" name="model">
+    {# A role with no model set yet gets an empty first option: a button
+       labelled "fetch" must not decide what this role runs. #}
+    {% if not role.model %}<option value="" selected>— choose a model —</option>{% endif %}
+    {% for choice in role.choices %}
+    <option value="{{ choice.id }}"{% if choice.selected %} selected{% endif %}>{{ choice.label }}</option>
+    {% endfor %}
+  </select>
+  {% else %}
+  <input class="input" type="text" id="model-{{ role.id }}" name="model" value="{{ role.model }}" placeholder="as the server reports it">
+  {% endif %}
+  {% if role.fetch_note %}
+  <p class="field-help" role="status" aria-live="polite" style="margin-bottom:0">
+    {% if role.fetch_note.kind == 'warn' %}{{ icon('warn') }} {% endif %}{{ role.fetch_note.message }}
+  </p>
+  {% endif %}
+</div>

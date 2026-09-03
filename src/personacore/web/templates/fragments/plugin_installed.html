@@ -1,0 +1,15 @@
+{# plugin_installed.html — the answer to every control on the plugins page:
+   POST /admin/plugins/install, and each row's switch on, switch off and
+   uninstall fragment.
+
+   All four target #plugin-list with hx-swap="outerHTML", so the list is the
+   body of this response. The sentence saying what happened belongs beside the
+   install form, above that target, so it is swapped out of band into
+   #install-result — the same pattern fragments/key_created.html uses for the
+   refreshed key list behind its dialog. One fragment behind all four means the
+   row an operator sees after switching a plugin off is the row the page itself
+   renders, and the two cannot drift apart.
+
+   Context: fragments/plugin_list.html's, plus install_result. #}
+{% include "fragments/plugin_list.html" %}
+{% set oob = true %}{% include "fragments/install_result.html" %}

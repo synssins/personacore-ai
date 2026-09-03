@@ -1,0 +1,154 @@
+{# plugin_detail.html — one plugin's page. Health renders even when the plugin
+   failed to load (broken-but-editable): the settings form below is the same
+   form either way.
+   Context: plugin { name, version, state ('running'|'off'|'failed'), enabled,
+     fail_reason?, restarts, recent_errors: [], fields, raw_text, config_path,
+     secrets: [{name, description, stored}], waiting: [name] },
+     active_tab ('form'|'raw'), save_result (see settings_form),
+     can_toggle, can_uninstall, can_save_raw,
+     waiting_word, waiting_note, stored_word, none_word, secret_result.
+
+   `waiting` is a FIFTH state, and it is not in `state` on purpose: a plugin
+   short of a credential can be any of the other four at the same time, and the
+   thing that resolves it is a box on this page rather than a switch, a reload
+   or a bug report (ADR-0025 section 4). #}
+{% extends "base.html" %}
+{% from "_controls.html" import icon %}
+{% block title %}{{ plugin.name }} — PersonaCore admin{% endblock %}
+{% block content %}
+<p style="margin:0"><a href="/admin/plugins">← Plugins</a></p>
+
+<header class="hrow">
+  <h3 style="margin:0">{{ plugin.name }}</h3>
+  <span class="meta">{{ plugin.version }}</span>
+  {# WAITING outranks the rest, because it is the state with something on this
+     very page that resolves it. A plugin short of a credential has not failed;
+     it asked for something only a person can supply (ADR-0025 section 4). #}
+  {% if plugin.waiting %}<span class="state-word warn">{{ waiting_word }}</span>
+  {% elif plugin.state == 'failed' %}<span class="state-word down">failed to load</span>
+  {% elif plugin.state == 'off' %}<span class="state-word off">switched off</span>
+  {% else %}<span class="state-word ok">running</span>{% endif %}
+  <div class="hrow" style="margin-left:auto">
+    {# `enabled`, not `state`: a plugin that failed to load is still switched
+       ON, and offering to switch it on again would be offering to do nothing. #}
+    <form hx-post="/admin/plugins/{{ plugin.name }}/{{ 'disable' if plugin.enabled else 'enable' }}" hx-target="body" style="display:contents">
+      <button type="submit" class="btn btn-secondary" {% if not can_toggle %}disabled{% endif %}>{{ 'Switch off' if plugin.enabled else 'Switch on' }}</button>
+    </form>
+    {# A LINK to the confirmation page, not a scripted button opening a dialog.
+       No htmx, no admin.js, no <dialog>: this is the control that was clicked
+       with nothing happening, and every one of those was a way for it to do nothing
+       silently. See the note at the top of screens/plugins.py. #}
+    {% if can_uninstall %}
+    <a class="btn btn-danger outlined" href="/admin/plugins/{{ plugin.name }}/uninstall">
+      {{ icon('trash') }} Uninstall
+    </a>
+    {% else %}
+    <button type="button" class="btn btn-danger outlined" disabled>{{ icon('trash') }} Uninstall</button>
+    {% endif %}
+    {% if not can_toggle or not can_uninstall %}<span class="later">later</span>{% endif %}
+  </div>
+</header>
+
+{# health — present in every state, constraint 7 #}
+<section class="card elev-sm" aria-label="Plugin health">
+  <div class="hrow">
+    {% if plugin.waiting %}
+      <span class="dot warn" role="img" aria-label="waiting"></span>
+      <span>Waiting for {{ 'a credential' if plugin.waiting | length == 1 else 'credentials' }}: {{ plugin.waiting | join(', ') }}.</span>
+    {% elif plugin.state == 'failed' %}
+      <span class="dot down" role="img" aria-label="down"></span>
+      <span>Not running — it failed while starting.</span>
+    {% elif plugin.state == 'off' %}
+      <span class="dot off" role="img" aria-label="off"></span>
+      <span>Switched off. Its settings are kept and editable.</span>
+    {% else %}
+      <span class="dot ok" role="img" aria-label="ok"></span>
+      <span>Running normally.</span>
+    {% endif %}
+    <span class="meta" style="margin-left:auto">{{ plugin.restarts }} restarts since install</span>
+  </div>
+  {# The waiting sentence replaces the failure line rather than sitting under
+     it. The supervisor's own reason for a plugin held up on a credential says
+     the same thing in red, and a page that reports one state twice — once as a
+     request and once as a fault — teaches the reader to disbelieve both. #}
+  {% if plugin.waiting %}
+  <p style="margin:0; color:var(--color-warn); font-size:14px; line-height:1.6">{{ waiting_note }}</p>
+  {% elif plugin.fail_reason %}
+  <p style="margin:0; color:var(--color-danger-text); font-size:14px">{{ plugin.fail_reason }}</p>
+  {% endif %}
+  {% for err in plugin.recent_errors %}
+  <p class="meta" style="margin:0">{{ err }}</p>
+  {% endfor %}
+  {# The reason line above is the core's sentence about the plugin. This is the
+     plugin's own — one click, from the page an operator is already on. #}
+  <p class="meta" style="margin:0"><a href="/admin/plugins/{{ plugin.name }}/logs">See what {{ plugin.name }} printed</a></p>
+</section>
+
+{# credentials this plugin asked for — ADR-0025 section 4.
+
+   ABOVE the settings tabs on purpose: a plugin waiting for an API key does
+   nothing at all until it has one, so the box that starts it must not be
+   behind a tab. It is a plain form with a plain action and no hx- attribute,
+   for the same reason the uninstall confirmation is — the one control that
+   makes a plugin work should not need a script to work itself.
+
+   WRITE-ONLY. No box below carries a value, a masked stand-in or a length; a
+   stored credential is described in words. See fragments/secret_fields.html. #}
+{% if plugin.secrets %}
+<section class="card elev-sm" aria-label="Credentials {{ plugin.name }} asked for" style="gap:var(--space-3)">
+  <h6 class="text-muted" style="margin:0">
+    {{ plugin.name }} asked for {{ plugin.secrets | length }}
+    credential{{ '' if plugin.secrets | length == 1 else 's' }}
+  </h6>
+  <form method="post" action="/admin/plugins/{{ plugin.name }}/secrets" class="stack"
+        style="max-width:640px; gap:var(--space-3)">
+    {% set secrets = plugin.secrets %}
+    {% include "fragments/secret_fields.html" %}
+    <div class="hrow">
+      <button type="submit" class="btn btn-primary">Save and restart {{ plugin.name }}</button>
+      {% if secret_result %}
+        {% if secret_result.kind == 'ok' %}
+        <span class="save-note ok" role="status">{{ icon('check') }} {{ secret_result.message }}</span>
+        {% elif secret_result.kind == 'refused' %}
+        <span class="save-note error" role="alert">{{ icon('hand') }} {{ secret_result.message }}</span>
+        {% else %}
+        <span class="meta" role="status">{{ secret_result.message }}</span>
+        {% endif %}
+      {% endif %}
+    </div>
+  </form>
+</section>
+{% endif %}
+
+{# tabs — full navigations, server renders the active one #}
+<div class="seg" role="tablist">
+  <a class="seg-opt" role="tab" href="/admin/plugins/{{ plugin.name }}" aria-selected="{{ 'true' if active_tab == 'form' else 'false' }}">
+    {% if active_tab == 'form' %}<input type="radio" checked>{% else %}<input type="radio">{% endif %}Settings</a>
+  <a class="seg-opt" role="tab" href="/admin/plugins/{{ plugin.name }}?tab=raw" aria-selected="{{ 'true' if active_tab == 'raw' else 'false' }}">
+    {% if active_tab == 'raw' %}<input type="radio" checked>{% else %}<input type="radio">{% endif %}Raw</a>
+</div>
+
+{% if active_tab == 'form' %}
+  {% include "fragments/settings_form.html" %}
+{% else %}
+  {# raw editor — a fallback beside the form, never instead of it. The file is
+     TOML, not JSON: a plugin's settings live in its own config.toml (spec 5.1)
+     and its comments are the field help, so the text is edited verbatim. #}
+  <form hx-post="/admin/plugins/{{ plugin.name }}/settings/raw" hx-target="body" class="stack" style="max-width:640px; gap:var(--space-3)">
+    <p class="text-muted" style="margin:0;font-size:13px">For anything the form cannot express.</p>
+    {% if plugin.config_path %}<p class="meta" style="margin:0">{{ plugin.config_path }}</p>{% endif %}
+    <label for="raw-toml" style="position:absolute;left:-9999px">Raw settings, as TOML</label>
+    <textarea class="input" id="raw-toml" name="raw" spellcheck="false" {% if not can_save_raw %}disabled{% endif %}
+              style="min-height:220px; font-family:var(--font-mono); font-size:13px">{{ plugin.raw_text }}</textarea>
+    <div class="hrow">
+      <button type="submit" class="btn btn-primary" {% if not can_save_raw %}disabled{% endif %}>Save raw and restart {{ plugin.name }}</button>
+      {% if not can_save_raw %}<span class="later">later</span>{% endif %}
+      {% if raw_error %}
+      <span class="save-note error" role="alert">{{ icon('warn') }} {{ raw_error }}</span>
+      {% elif raw_saved %}
+      <span class="save-note ok" role="status">{{ icon('check') }} {{ raw_saved }}</span>
+      {% endif %}
+    </div>
+  </form>
+{% endif %}
+{% endblock %}

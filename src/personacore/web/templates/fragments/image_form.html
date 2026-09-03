@@ -1,0 +1,47 @@
+{# image_form.html — the image generator's own connection. Not a role: no
+   Test connection, no Fetch models, no key box (docs/contracts/image-
+   conversations.md's responder takes no API key today).
+   Included by models.html; also returned whole by POST /admin/models/image/save.
+   Context: image {addr, model, total_timeout, configured, save_result?}
+   SWAP BOUNDARY: this whole <form> — the same shape model_form.html uses. #}
+{% from "_controls.html" import icon %}
+<form class="stack" style="gap:var(--space-3)"
+      method="post" action="/admin/models/image/save"
+      hx-post="/admin/models/image/save"
+      hx-target="closest form" hx-swap="outerHTML">
+  <div style="display:grid; grid-template-columns:1.6fr 1fr 1fr; gap:var(--space-3)">
+    <div class="field">
+      <label for="image-addr">Address</label>
+      <input class="input" type="text" id="image-addr" name="address" value="{{ image.addr }}" placeholder="http://host:port">
+    </div>
+    <div class="field">
+      <label for="image-model">Model</label>
+      <input class="input" type="text" id="image-model" name="model" value="{{ image.model }}" placeholder="only needed for a server hosting more than one">
+    </div>
+    <div class="field">
+      <label for="image-timeout">Ceiling (seconds)</label>
+      <input class="input" type="number" min="1" step="1" id="image-timeout" name="total_timeout_seconds" value="{{ image.total_timeout }}">
+    </div>
+  </div>
+
+  {% if image.configured %}
+  <p class="meta" style="margin:0">{{ icon('pulse') }} Image generation is on. This is not one of the model roles above — it takes a prompt and hands back a picture, not a conversation.</p>
+  {% else %}
+  <p class="meta" style="margin:0">{{ image.off_note }}</p>
+  {% endif %}
+  <p class="text-muted" style="margin:0; font-size:12px">{{ image.raw_editor_note }}</p>
+
+  <div class="hrow" style="gap:var(--space-2)">
+    <button type="submit" class="btn btn-primary" name="action" value="save">Save</button>
+  </div>
+
+  {% if image.save_result %}
+    {% if image.save_result.kind == 'saved' %}
+    <p class="save-note ok" role="status" style="margin:0">{{ icon('check') }} {{ image.save_result.message }}</p>
+    {% elif image.save_result.kind == 'nothing' %}
+    <p class="save-note none" role="status" style="margin:0">{{ image.save_result.message }}</p>
+    {% elif image.save_result.kind == 'error' %}
+    <p class="save-note error" role="alert" style="margin:0">{{ icon('warn') }} {{ image.save_result.message }}</p>
+    {% endif %}
+  {% endif %}
+</form>

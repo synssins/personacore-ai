@@ -1,0 +1,310 @@
+/* PersonaCore admin — Nocturne tokens + components, self-contained.
+   Ported from the Nocturne design system; system font stack (no webfonts). */
+/* `hidden` means hidden, whatever a class says.
+
+   The attribute is how every script on this surface toggles a control, and
+   the browser's own `[hidden] { display: none }` is a user-agent rule -- so
+   any author class that sets `display` beats it. `.btn { display: inline-flex }`
+   was enough to draw the room's Stop button permanently, and `.hrow` did the
+   same to the dictation controls. The composer's send button was seen drawing
+   its arrow and its stop square at once for the same reason one layer up, in
+   v0.13.11, where an inline style did the beating.
+
+   Fixed here, once, rather than by spelling out `.thing[hidden]` beside every
+   control that might ever be hidden -- a list nobody can finish, and a rule
+   somebody forgets exactly when it matters. `!important` is deliberate: the
+   whole point is that it must not be possible to lose. */
+[hidden] { display: none !important; }
+
+:root {
+  --color-bg: #161826;
+  --color-surface: #232532;
+  --color-text: #e9e9ed;
+  --color-accent: #9184d9;
+  --color-divider: color-mix(in srgb, var(--color-text) 16%, transparent);
+
+  --color-neutral-100: #f3f5fe; --color-neutral-200: #e4e7f5; --color-neutral-300: #cfd3e5;
+  --color-neutral-400: #b2b6ca; --color-neutral-500: #9397ab; --color-neutral-600: #75798c;
+  --color-neutral-700: #595d6c; --color-neutral-800: #3f424d; --color-neutral-900: #292b31;
+
+  --color-accent-100: #f5f4ff; --color-accent-200: #e7e5fe; --color-accent-300: #d2cefd;
+  --color-accent-400: #b5abfc; --color-accent-500: #968ae0; --color-accent-600: #796cbf;
+  --color-accent-700: #5d5294; --color-accent-800: #423a6a; --color-accent-900: #2b2741;
+
+  /* status — never conveyed by colour alone; always pair with a word or icon */
+  --color-ok: oklch(0.72 0.1 155);
+  --color-warn: oklch(0.78 0.11 80);
+  --color-danger: oklch(0.72 0.13 25);
+  --color-danger-text: oklch(0.78 0.1 25);
+
+  --font-body: ui-sans-serif, system-ui, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  --space-1: 2.8px; --space-2: 5.6px; --space-3: 8.4px;
+  --space-4: 11.2px; --space-6: 16.8px; --space-8: 22.4px;
+
+  --radius-sm: 4px; --radius-md: 8px; --radius-lg: 14px;
+
+  --shadow-sm: 0 0 0 1px var(--color-neutral-800);
+  --shadow-md: 0 0 0 1px var(--color-neutral-700), 0 6px 18px rgba(0,0,0,0.55);
+  --shadow-lg: 0 0 0 1px var(--color-neutral-500), 0 16px 40px rgba(0,0,0,0.65);
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0; background: var(--color-bg); color: var(--color-text);
+  font-family: var(--font-body); font-size: 15px; line-height: 1.55; font-weight: 400;
+}
+h1, h2, h3, h4, h5, h6 { font-weight: 500; line-height: 1.12; letter-spacing: -0.015em; margin: 0 0 var(--space-2); }
+h3 { font-size: 25px; } h4 { font-size: 20px; } h5 { font-size: 16px; }
+h6 { font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase; }
+p { margin: 0 0 var(--space-3); }
+a { color: var(--color-accent); text-underline-offset: 3px; }
+a:hover { color: var(--color-accent-300); }
+code { font-family: var(--font-mono); font-size: 0.92em; }
+svg.icon { width: 1em; height: 1em; display: inline-block; vertical-align: -0.12em; flex: none; }
+.text-muted { color: color-mix(in srgb, var(--color-text) 55%, transparent); }
+:focus { outline: none; }
+:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+::selection { background: color-mix(in srgb, var(--color-accent) 30%, transparent); }
+
+/* ── app shell ── */
+/* `100vh` on a phone is the height of the *largest possible* viewport — the
+   one with no address bar showing — which is taller than what is actually on
+   screen the moment that bar is there. Nothing here clips the difference
+   (`html, body` above set a height, never an `overflow`), so the extra height
+   made the whole document scrollable to reach it: on a tablet, vertical
+   scaling of the page meant scrolling to reach the bottom.
+   `100dvh` tracks the viewport that is actually visible and is
+   listed second so a browser that has never heard of it keeps the `100vh`
+   above instead of discarding the rule outright. This is the one place `.app`
+   is sized, so it is the one place this has to be fixed. */
+.app { display: flex; height: 100vh; height: 100dvh; overflow: hidden; }
+.sidebar {
+  width: 216px; flex: none; display: flex; flex-direction: column; gap: 2px;
+  padding: var(--space-4) var(--space-3); border-right: 1px solid var(--color-divider); overflow-y: auto;
+}
+.brand { display: flex; align-items: baseline; gap: 8px; padding: 6px 10px 18px; font-size: 16px; font-weight: 500; }
+.brand small { font-size: 11px; font-weight: 400; color: color-mix(in srgb, var(--color-text) 55%, transparent); }
+.navlink {
+  display: flex; align-items: center; gap: 10px; padding: 8px 10px;
+  border: none; background: transparent; border-radius: var(--radius-md);
+  color: var(--color-text); font: inherit; font-size: 13.5px; text-align: left;
+  text-decoration: none; cursor: pointer;
+}
+.navlink:hover { background: color-mix(in srgb, var(--color-text) 6%, transparent); color: var(--color-text); }
+.navlink[aria-current="page"] { color: var(--color-accent); background: color-mix(in srgb, var(--color-accent) 10%, transparent); }
+.navlink.sub { padding-left: 36px; }
+.navlink[aria-disabled="true"] { opacity: 0.45; cursor: default; }
+.navlink .grow { flex: 1; }
+.later, .navlink .later { font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: color-mix(in srgb, var(--color-text) 55%, transparent); }
+/* the "later" token is used outside the sidebar too — a control the design
+   shows but nothing yet backs is disabled and marked, never removed. */
+
+/* ── the menu, folded ──
+   The toggle at the top, and a narrow bar of icons under it. The names are not
+   in the markup when this class is on, so nothing here hides text: the width
+   and the centring are the whole change. The class is written by the server
+   from this person's saved choice, so the bar arrives narrow rather than being
+   narrowed after paint. */
+.nav-toggle { margin: 0 0 var(--space-2); }
+.nav-toggle button { width: 100%; }
+.sidebar.is-collapsed { width: 52px; padding-left: var(--space-2); padding-right: var(--space-2); }
+.sidebar.is-collapsed .navlink { justify-content: center; gap: var(--space-1); padding-left: 0; padding-right: 0; }
+.sidebar.is-collapsed .hrow { justify-content: center; padding-left: 0 !important; padding-right: 0 !important; }
+main.content { flex: 1; overflow-y: auto; }
+.page { max-width: 860px; padding: 36px 44px 96px; display: flex; flex-direction: column; gap: var(--space-6); }
+
+/* ── buttons ── */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  cursor: pointer; text-decoration: none; white-space: nowrap; flex: none;
+  font: inherit; font-weight: 500; font-size: 14px; line-height: 1.2; color: var(--color-text);
+  background: transparent; border: 1px solid transparent;
+  padding: var(--space-2) calc(var(--space-3) * 1.2); border-radius: var(--radius-md);
+}
+.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.btn-primary { color: var(--color-accent); border-color: var(--color-accent); }
+.btn-primary:hover { background: color-mix(in srgb, var(--color-accent) 12%, transparent); }
+.btn-primary:active { background: color-mix(in srgb, var(--color-accent) 22%, transparent); }
+.btn-secondary { border-color: var(--color-divider); }
+.btn-secondary:hover { background: color-mix(in srgb, var(--color-text) 7%, transparent); }
+.btn-secondary:active { background: color-mix(in srgb, var(--color-text) 14%, transparent); }
+.btn-ghost { color: var(--color-accent); padding-inline: var(--space-1); }
+.btn-ghost:hover { background: color-mix(in srgb, var(--color-accent) 10%, transparent); }
+.btn-danger { color: var(--color-danger); }
+.btn-danger:hover { background: color-mix(in srgb, var(--color-danger) 10%, transparent); }
+.btn-danger.outlined { border-color: color-mix(in srgb, var(--color-danger) 50%, transparent); }
+.btn-icon { width: 28px; height: 28px; padding: 0; }
+
+/* ── forms ── */
+.field > label { display: block; font-size: 12px; margin-bottom: 5px; color: color-mix(in srgb, var(--color-text) 70%, transparent); }
+.field .label-row { display: flex; align-items: baseline; gap: 10px; }
+.input {
+  width: 100%; min-height: 36px; padding: 6px 10px; font: inherit; font-size: 14px;
+  color: var(--color-text); caret-color: var(--color-accent);
+  background: var(--color-surface); border: 1px solid var(--color-divider); border-radius: var(--radius-md);
+}
+.input:hover { border-color: color-mix(in srgb, var(--color-text) 45%, transparent); }
+.input:focus-visible { border-color: var(--color-accent); outline-offset: 0; }
+textarea.input { min-height: 90px; resize: vertical; }
+select.input option { background: var(--color-surface); color: var(--color-text); }
+
+/* default vs saved vs unsaved vs invalid — the border pattern plus the
+   .field-state word next to the label; never the border alone. */
+.input.is-default { border-style: dashed; border-color: var(--color-neutral-600); }
+.input.is-unsaved { border-color: var(--color-accent); }
+.input.is-invalid { border-color: var(--color-danger); }
+.field-state { font-size: 11px; }
+.field-state.default { color: color-mix(in srgb, var(--color-text) 55%, transparent); }
+.field-state.unsaved { color: var(--color-accent); }
+.field-state.invalid { color: var(--color-danger-text); }
+.field-error { font-size: 12.5px; margin-top: 5px; color: var(--color-danger-text); }
+.field-help { font-size: 12px; margin-top: 4px; color: color-mix(in srgb, var(--color-text) 55%, transparent); }
+
+/* switch — a real checkbox, styled */
+.switch { appearance: none; width: 38px; height: 20px; margin: 0; flex: none; cursor: pointer;
+  border-radius: 10px; border: 1px solid var(--color-divider); background: var(--color-neutral-900); position: relative; }
+.switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px;
+  border-radius: 50%; background: var(--color-neutral-500); transition: left 0.15s, background 0.15s; }
+.switch:checked { background: var(--color-accent-700); border-color: var(--color-accent); }
+.switch:checked::after { left: 20px; background: var(--color-accent-100); }
+.switch.danger:checked { background: color-mix(in srgb, var(--color-danger) 45%, var(--color-surface)); border-color: var(--color-danger); }
+
+.check { accent-color: var(--color-accent); width: 15px; height: 15px; }
+
+/* segmented control on native radios */
+.seg { display: inline-flex; overflow: hidden; border: 1px solid var(--color-divider); border-radius: var(--radius-md); }
+.seg-opt { display: inline-flex; align-items: center; gap: 6px; padding: 7px 12px; font-size: 13px; cursor: pointer; }
+.seg-opt input { position: absolute; opacity: 0; width: 0; height: 0; pointer-events: none; }
+.seg-opt + .seg-opt { border-left: 1px solid var(--color-divider); }
+.seg-opt:has(input:checked) { color: var(--color-accent); box-shadow: inset 0 0 0 1px var(--color-accent); }
+.seg-opt:not(:has(input:checked)):hover { background: color-mix(in srgb, var(--color-text) 7%, transparent); }
+.seg-opt:has(input:focus-visible) { outline: 2px solid var(--color-accent); outline-offset: -2px; }
+
+/* a radio that reveals the fields belonging to it, with no script involved.
+   The fields are in the markup and submitted either way — the radio is what
+   the server reads — so this rule only decides what is worth looking at. It is
+   written that way round deliberately: if the stylesheet never loads, both the
+   choice and its fields are simply visible, which is a form that still works.
+   The alternative hides fields nothing can then reveal. */
+.reveal-when-chosen { display: none; }
+.reveal-choice:has(input:checked) ~ .reveal-when-chosen { display: flex; }
+
+/* ── surfaces ── */
+.card { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-4); border-radius: var(--radius-md); background: var(--color-surface); }
+.elev-sm { box-shadow: var(--shadow-sm); } .elev-md { box-shadow: var(--shadow-md); }
+.tag { display: inline-flex; align-items: center; font-size: 11px; letter-spacing: 0.02em; padding: 3px 10px; border-radius: 6px; }
+.tag-accent { background: var(--color-accent-800); color: var(--color-accent-100); }
+.tag-neutral { background: var(--color-neutral-800); color: var(--color-neutral-100); }
+
+/* the Nocturne fading row rule */
+.row {
+  padding: var(--space-4) var(--space-2);
+  background: linear-gradient(to right, transparent, var(--color-divider) 48px,
+    var(--color-divider) calc(100% - 48px), transparent) no-repeat bottom / 100% 1px;
+}
+
+/* status dot — always beside a state word */
+.dot { width: 8px; height: 8px; border-radius: 50%; flex: none; display: inline-block; }
+.dot.ok { background: var(--color-ok); } .dot.warn { background: var(--color-warn); }
+.dot.down { background: var(--color-danger); } .dot.off { background: var(--color-neutral-600); }
+.state-word.ok { color: var(--color-ok); } .state-word.warn { color: var(--color-warn); }
+.state-word.down { color: var(--color-danger); } .state-word.off { color: color-mix(in srgb, var(--color-text) 55%, transparent); }
+
+/* banners: degraded / danger / refused / saved / nothing-changed */
+.banner {
+  display: flex; gap: 12px; align-items: flex-start;
+  padding: var(--space-3) var(--space-4); border-radius: var(--radius-md);
+  font-size: 13.5px;
+  background: color-mix(in srgb, var(--banner-tone, var(--color-neutral-500)) 9%, transparent);
+  border: 1px solid color-mix(in srgb, var(--banner-tone, var(--color-neutral-500)) 35%, transparent);
+}
+.banner.danger { --banner-tone: var(--color-danger); } .banner.warn { --banner-tone: var(--color-warn); }
+.banner.ok { --banner-tone: var(--color-ok); } .banner.neutral { --banner-tone: var(--color-neutral-500); }
+.banner .title { color: var(--banner-tone); }
+.banner .grow { flex: 1; }
+.save-note { font-size: 13px; }
+.save-note.ok { color: var(--color-ok); } .save-note.none { color: color-mix(in srgb, var(--color-text) 55%, transparent); }
+.save-note.error { color: var(--color-danger-text); }
+
+/* repeating-group entry */
+fieldset.entry { border: 0; margin: 0; padding: var(--space-4); border-radius: var(--radius-md); background: var(--color-surface); box-shadow: var(--shadow-sm); display: flex; flex-direction: column; gap: var(--space-3); }
+fieldset.entry legend { float: left; width: 100%; padding: 0; font-size: 13.5px; display: flex; align-items: center; gap: 10px; }
+.entry-grid { display: grid; grid-template-columns: 1.4fr 1fr 1fr; gap: var(--space-3); clear: both; }
+.search-results { display: flex; flex-direction: column; border-radius: var(--radius-md); border: 1px solid var(--color-divider); overflow: hidden; max-width: 380px; }
+.search-results:empty { display: none; }
+.search-hit { display: flex; justify-content: space-between; gap: 10px; padding: 8px 12px; border: none; background: var(--color-surface); color: var(--color-text); font: inherit; font-size: 13px; text-align: left; cursor: pointer; }
+.search-hit:hover { background: color-mix(in srgb, var(--color-accent) 10%, var(--color-surface)); }
+
+/* string-list rows */
+.strlist { display: flex; flex-direction: column; gap: 6px; max-width: 420px; }
+.strlist-item { display: flex; align-items: center; gap: 6px; padding: 5px 6px 5px 12px; border-radius: var(--radius-md); background: var(--color-surface); border: 1px solid var(--color-divider); font-size: 13.5px; }
+.strlist-item .grow { flex: 1; }
+
+/* dialog */
+dialog.modal { border: 0; padding: 0; background: transparent; }
+dialog.modal::backdrop { background: color-mix(in srgb, var(--color-neutral-900) 55%, transparent); }
+.dialog { width: min(480px, 92vw); display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-6); border-radius: var(--radius-lg); background: var(--color-surface); box-shadow: var(--shadow-lg); color: var(--color-text); }
+.dialog-title { font-size: 20px; font-weight: 500; }
+.dialog-title.danger { color: var(--color-danger-text); }
+.dialog-actions { display: flex; justify-content: flex-end; gap: var(--space-2); margin-top: var(--space-2); }
+
+/* htmx spinner */
+.htmx-indicator { display: none; }
+.htmx-request .htmx-indicator, .htmx-request.htmx-indicator { display: inline-flex; }
+.spin { animation: spin 0.8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+/* Every spinner on this surface is `.spin` on one `icon('spinner')` path, so
+   one guard here covers all of them — chat.js's "thinking" indicator
+   included. A ring that never stops turning is exactly the kind of motion
+   `prefers-reduced-motion` exists to silence; it still communicates "in
+   progress" sitting still, which a spinning ring says no differently. */
+@media (prefers-reduced-motion: reduce) {
+  .spin { animation: none; }
+}
+
+/* util */
+.hrow { display: flex; align-items: center; gap: var(--space-3); }
+.stack { display: flex; flex-direction: column; gap: var(--space-6); }
+.meta { font-size: 12px; color: color-mix(in srgb, var(--color-text) 50%, transparent); }
+details.log-entry > summary { list-style: none; cursor: pointer; display: flex; align-items: baseline; gap: 12px; padding: 4px 0; }
+details.log-entry > summary::-webkit-details-marker { display: none; }
+.trace { display: flex; flex-direction: column; gap: 4px; padding: var(--space-3); border-radius: var(--radius-sm); background: var(--color-surface); font-size: 12.5px; }
+.trace .k { width: 90px; flex: none; color: color-mix(in srgb, var(--color-text) 55%, transparent); }
+.empty {
+  padding: var(--space-8) var(--space-4); display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-4);
+  border-radius: var(--radius-md); border: 1px dashed var(--color-neutral-700); font-size: 14px;
+}
+
+/* ── rendered markdown in a chat reply ──
+   Every class here is written by personacore/web/markdown.py, which is the
+   only thing that produces markup from a model's reply. Nothing in a reply can
+   name a class, so this block styles a closed set. */
+.md > :first-child { margin-top: 0; }
+.md > :last-child { margin-bottom: 0; }
+.md p { margin: 0 0 var(--space-3); }
+.md .md-h { margin: var(--space-4) 0 var(--space-2); }
+.md .md-list { margin: 0 0 var(--space-3); padding-left: 1.4em; }
+.md .md-list .md-list { margin-bottom: 0; }
+.md li { margin: 2px 0; }
+.md code {
+  padding: 1px 4px; border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--color-text) 9%, transparent);
+}
+.md .md-pre {
+  margin: 0 0 var(--space-3); padding: var(--space-3); overflow-x: auto;
+  border-radius: var(--radius-sm); border: 1px solid var(--color-divider);
+  background: var(--color-bg); font-size: 13px; line-height: 1.5;
+}
+.md .md-pre code { padding: 0; background: none; }
+.md .md-table-wrap { margin: 0 0 var(--space-3); overflow-x: auto; }
+.md .md-table { border-collapse: collapse; font-size: 13.5px; }
+.md .md-table th, .md .md-table td {
+  padding: 4px 10px; text-align: left; border: 1px solid var(--color-divider);
+}
+.md .md-table th { font-weight: 500; color: color-mix(in srgb, var(--color-text) 78%, transparent); }
+/* a link's text, never an anchor — see markdown.py on why it is not clickable */
+.md .md-url { color: var(--color-accent-300); word-break: break-all; }
+.md .md-link-removed { color: color-mix(in srgb, var(--color-text) 55%, transparent); }

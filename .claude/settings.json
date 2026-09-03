@@ -1,0 +1,36 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(git tag:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(git stash:*)",
+      "Bash(git describe:*)",
+      "Bash(git checkout:*)",
+      "Bash(git remote:*)",
+      "Bash(gh issue:*)",
+      "Bash(gh run list:*)",
+      "Bash(gh pr:*)",
+      "Bash(python -m pytest:*)",
+      "Bash(python -m ruff:*)",
+      "Bash(ruff:*)",
+      "Bash(node --check:*)",
+      "Bash(python -c:*)",
+      "Bash(python -m pip install -e .:*)"
+    ],
+    "deny": [
+      "Bash(git push --force:*)",
+      "Bash(git push -f:*)",
+      "Bash(git reset --hard:*)",
+      "Bash(docker build:*)",
+      "Bash(docker compose:*)",
+      "Bash(nssm:*)",
+      "Bash(rm -rf:*)"
+    ]
+  }
+}

@@ -1,0 +1,85 @@
+{# plugin_health.html — every plugin's health, and nothing else's (PC-280).
+   The system Health screen carries one plugin row among the disk, the broker
+   and the language model; this page answers the other question — which of my
+   plugins is unhappy — with the five facts about each one side by side.
+   Context: plugins: [{name, version, state ('running'|'starting'|'crashed'
+     |'stopped'|'unknown'), tone ('ok'|'warn'|'down'|'off'), enabled,
+     transport, tools: [{name, risk}], restarts, last_error?, loaded}],
+     runtime_note?, tools_note, tools_none, uptime_later
+   Alphabetical by name, case-insensitively (PC-281). Read-only: the switches
+   and the uninstall button live on the plugin list and the per-plugin screen,
+   and a second place to click uninstall is a second place to click it by
+   mistake. #}
+{% extends "base.html" %}
+{% from "_controls.html" import icon %}
+{% block title %}Plugin health — PersonaCore admin{% endblock %}
+{% block content %}
+<header>
+  <h3 style="margin:0 0 6px">Plugin health</h3>
+  <p class="text-muted" style="margin:0; font-size:13px; max-width:62ch">One row per installed plugin: state, transport, tools, and the last error. Open a plugin to change it.</p>
+</header>
+
+{% if runtime_note %}
+<div class="banner warn" role="status">
+  {{ icon('warn') }}
+  <div class="grow">{{ runtime_note }}</div>
+</div>
+{% endif %}
+
+{% if not plugins %}
+<div class="empty">
+  {{ icon('puzzle') }}
+  <div>
+    <p style="margin:0; font-size:15px">No plugins installed.</p>
+    <p class="text-muted" style="margin:4px 0 0; font-size:13px; max-width:54ch">Install one from the <a href="/admin/plugins">Plugins</a> screen.</p>
+  </div>
+</div>
+{% endif %}
+
+{% for p in plugins %}
+<section class="card elev-sm" aria-label="{{ p.name }} health">
+  <div class="hrow" style="gap:10px; flex-wrap:wrap">
+    <span class="dot {{ p.tone }}" role="img" aria-label="{{ p.state }}"></span>
+    {% if p.loaded %}
+    <a href="/admin/plugins/{{ p.name }}" style="font-size:14.5px; text-decoration:none">{{ p.name }}</a>
+    {% else %}
+    <span style="font-size:14.5px">{{ p.name }}</span>
+    {% endif %}
+    {% if p.version %}<span class="meta">{{ p.version }}</span>{% endif %}
+    {# The system dashboard's words, not a second set: crashed covers both
+       "never started" and "died", because to whoever has to fix it those are
+       one sentence. #}
+    <span class="state-word {{ p.tone }}" style="font-size:12px">{{ p.state }}</span>
+    <span class="meta">{% if p.transport %}reached over {{ p.transport }}{% else %}transport not declared{% endif %}</span>
+    <a class="btn btn-ghost" style="margin-left:auto" href="/admin/plugins/{{ p.name }}/logs">{{ icon('scroll') }} output</a>
+    {% if p.loaded %}<a class="btn btn-ghost" href="/admin/plugins/{{ p.name }}">settings</a>{% endif %}
+  </div>
+
+  {% if p.last_error %}
+  {# THE line. A plugin is on this page because of it. #}
+  <p style="margin:0; color:var(--color-danger-text); font-size:14px; line-height:1.5">{{ p.last_error }}</p>
+  {% elif p.note %}
+  {# Not running, and not a fault: switched off, or still coming up. Same
+     sentence, deliberately not the same colour — red that means "this is fine"
+     teaches people to ignore red. #}
+  <p class="meta" style="margin:0; font-size:13.5px; line-height:1.5">{{ p.note }}</p>
+  {% endif %}
+
+  <div class="trace">
+    <div class="hrow" style="gap:8px"><span class="k">restarts</span><span>{{ p.restarts }} since the core started</span></div>
+    {# No seam carries a start time to this page, so the fact is drawn and
+       marked rather than quietly left out — see UPTIME_LATER. #}
+    <div class="hrow" style="gap:8px"><span class="k">{{ uptime_later }}</span><span class="later">later</span></div>
+    <div class="hrow" style="gap:8px; align-items:flex-start">
+      <span class="k">tools</span>
+      <span>
+        {% if p.tools %}
+        {% for t in p.tools %}<span class="tag tag-neutral">{{ t.name }} · {{ t.risk }}</span> {% endfor %}
+        {% else %}{{ tools_none }}{% endif %}
+      </span>
+    </div>
+  </div>
+  {% if p.tools %}<p class="meta" style="margin:0">{{ tools_note }}</p>{% endif %}
+</section>
+{% endfor %}
+{% endblock %}

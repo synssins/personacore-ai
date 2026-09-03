@@ -1,0 +1,67 @@
+{# fragments/chat_room.html — what this conversation is called, and who is in it.
+   Context: title, group, groups [str], participants [str], conversation,
+            max_title_chars, manages_rooms, rooms_unavailable,
+            swap_room (bool — true when this is an out-of-band replacement)
+
+   A conversation is a room: it has a name somebody chose and it can be filed
+   under a group. Both are edited HERE, over the messages, in the design's
+   ordinary field-and-button controls — not in a dialog and not in a second
+   screen, because renaming a thread is something you do while looking at it.
+
+   ONE FORM FOR BOTH, and one button. Naming a conversation and filing it are
+   the same errand — somebody tidying does both in the same breath — and two
+   buttons side by side would ask which of the two they meant.
+
+   The group field is free text with the groups already in use offered as
+   suggestions (a <datalist>, so typing a new one is never blocked). There is
+   no table of groups on purpose: a group is a label, and a label with a
+   lifecycle of its own is a second thing to keep in step for no benefit.
+
+   It carries its own id because it is swapped out of band when another thread
+   is opened without a page load: the heading over the messages has to be the
+   heading of the messages underneath it.
+
+   `manages_rooms` false is a store that knows about conversations but not
+   about naming them. The controls are then ABSENT rather than disabled — a
+   button that silently does nothing is worse than one that is not there — and
+   the sentence says which. #}
+<header id="chat-room" class="chat-head" {% if swap_room %}hx-swap-oob="true"{% endif %}>
+  {% if manages_rooms %}
+  {# An ordinary boosted POST. It used to carry `hx-push-url="false"` against
+     the refresh bug; that attribute is inert on a boosted element and the
+     guard now lives in the answer — see `KeepsTheAddressBar` in
+     `web/shared.py`. Nothing here has to remember it. #}
+  <form method="post" action="/admin/chat/room" class="hrow"
+        style="gap:var(--space-2); align-items:flex-end; margin:0; flex-wrap:wrap">
+    <input type="hidden" name="conversation" value="{{ conversation }}">
+    <div class="field" style="min-width:220px">
+      <label for="chat-title">Conversation</label>
+      <input class="input" id="chat-title" name="title" value="{{ title }}"
+             maxlength="{{ max_title_chars }}" autocomplete="off" spellcheck="false">
+    </div>
+    <div class="field" style="min-width:150px">
+      <label for="chat-group">Group</label>
+      <input class="input" id="chat-group" name="group" value="{{ group }}" list="chat-groups"
+             maxlength="{{ max_title_chars }}" autocomplete="off" placeholder="Ungrouped">
+      <datalist id="chat-groups">
+        {% for name in groups %}<option value="{{ name }}"></option>{% endfor %}
+      </datalist>
+    </div>
+    <button type="submit" class="btn btn-secondary" style="margin-bottom:2px">Save name</button>
+  </form>
+  {% else %}
+  <div class="stack" style="gap:4px">
+    <p style="margin:0; font-size:15px; font-weight:600">{{ title }}</p>
+    <p class="meta" style="margin:0; max-width:60ch">{{ rooms_unavailable }}</p>
+  </div>
+  {% endif %}
+
+  {# ── who is in the room ──
+     Every distinct author, each spelled by the same rule as the name over a
+     message: a persona carries its model in parentheses and a person does not.
+     Absent, rather than a heading over nothing, for a conversation whose
+     messages were all written before authorship was recorded. #}
+  {% if participants %}
+  <p class="meta" style="margin:0 0 6px; max-width:60ch">In here: {{ participants|join(' · ') }}</p>
+  {% endif %}
+</header>

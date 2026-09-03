@@ -1,0 +1,136 @@
+{# profile.html — everything that is yours (ADR-0030).
+
+   Context: me (AdminUser), autoplay (bool), autoplay_locked (bool),
+     sessions [SessionView] or None, session_lifetime_note,
+     can_change_password (bool), min_password_chars,
+     password_keeps_this_device, error?, notice?
+
+   Not the same page as account.html. That one is the admin's view of everybody
+   else; this one is yours, and it renders on all three identity doors because
+   preferences key on the signed-in id rather than on an account record.
+
+   `sessions` is None — not an empty list — where this core has no accounts of
+   its own, and `can_change_password` is false there for the same reason: under
+   a login proxy or the development bypass there is no credential here to
+   change and no session here to end. An empty section would be a false
+   statement rather than an absent one. #}
+{% extends "base.html" %}
+{% from "_controls.html" import icon %}
+{% block title %}Your profile — PersonaCore admin{% endblock %}
+{% block content %}
+<header class="hrow" style="align-items:flex-start">
+  <div style="flex:1">
+    <h3 style="margin:0 0 6px">Your profile</h3>
+    <p class="text-muted" style="margin:0; font-size:13px">Signed in as <strong>{{ me.id }}</strong>{% if me.is_admin %} (admin){% endif %}.</p>
+  </div>
+</header>
+
+{% if error %}
+<div class="banner danger" role="alert" id="profile-error">
+  {{ icon('hand') }}
+  <p class="grow" style="margin:0; font-size:13.5px">{{ error }}</p>
+</div>
+{% endif %}
+{% if notice %}
+<div class="banner" role="status" id="profile-notice">
+  {{ icon('check') }}
+  <p class="grow" style="margin:0; font-size:13.5px">{{ notice }}</p>
+</div>
+{% endif %}
+
+<section class="card elev-sm" style="gap:var(--space-3)" id="playback">
+  <div><h4 style="margin:0 0 4px">Audio playback</h4></div>
+  <form method="post" action="/admin/profile" style="display:flex; flex-direction:column; gap:var(--space-3)">
+    <div class="hrow" style="align-items:center; gap:10px">
+      <input type="checkbox" role="switch" class="switch" id="autoplay" name="autoplay"
+             {% if autoplay %}checked{% endif %}
+             {% if autoplay_locked %}disabled{% endif %}>
+      <label for="autoplay" style="font-size:14px{% if autoplay_locked %}; opacity:0.55{% endif %}">Play replies automatically</label>
+    </div>
+    {# A disabled switch with no reason reads as a bug. This line says who took
+       the choice away and which way they set it — the one case where helper
+       text under a control is carrying information the control cannot. #}
+    {% if autoplay_locked %}
+    <p class="meta" style="margin:0">Configured by the administrator — replies {% if autoplay %}play automatically{% else %}do not play automatically{% endif %}.</p>
+    {% else %}
+    <div class="hrow" style="justify-content:flex-end">
+      <button type="submit" class="btn btn-primary">Save</button>
+    </div>
+    {% endif %}
+  </form>
+</section>
+
+{# ── your password ── #}
+{% if can_change_password %}
+<section class="card elev-sm" style="gap:var(--space-3)" id="password">
+  <div>
+    <h4 style="margin:0 0 4px">Your password</h4>
+    {# Not reassurance: no label on the form says what happens to the phone in
+       somebody's pocket, and the first they would know of it is being signed
+       out on it. #}
+    <p class="meta" style="margin:0; max-width:64ch">{{ password_keeps_this_device }}</p>
+  </div>
+
+  {# The same shape as the account form: a boosted POST at a POST-only path,
+     rendering rather than redirecting because a redirect would throw away the
+     rejection. The address bar is held by `KeepsTheAddressBar`
+     (`web/shared.py`), not by an attribute on this tag. #}
+  <form method="post" action="/admin/profile/password" style="display:flex; flex-direction:column; gap:var(--space-3)">
+    <div class="field">
+      <span class="label-row"><label for="current-password">Password you use now</label></span>
+      <input class="input" type="password" id="current-password" name="current_password" autocomplete="current-password" required>
+    </div>
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:var(--space-3)">
+      <div class="field">
+        <span class="label-row"><label for="new-profile-password">New password</label></span>
+        <input class="input" type="password" id="new-profile-password" name="new_password" autocomplete="new-password" required>
+        <p class="meta" style="margin:2px 0 0">At least {{ min_password_chars }} characters.</p>
+      </div>
+      <div class="field">
+        <span class="label-row"><label for="new-profile-confirm">New password again</label></span>
+        <input class="input" type="password" id="new-profile-confirm" name="confirm_password" autocomplete="new-password" required>
+      </div>
+    </div>
+    <div class="hrow" style="justify-content:flex-end">
+      <button type="submit" class="btn btn-primary">Change password</button>
+    </div>
+  </form>
+</section>
+{% endif %}
+
+{# ── your signed-in devices — PC-287, PC-288. Moved here from account.html
+     when that screen became admin-only. ── #}
+{% if sessions is not none %}
+<section class="card elev-sm" style="gap:var(--space-3)" id="my-sessions">
+  <div class="hrow" style="align-items:flex-start">
+    <div style="flex:1">
+      <h4 style="margin:0 0 4px">Your signed-in devices</h4>
+      <p class="meta" style="margin:0; max-width:64ch">{{ session_lifetime_note }}</p>
+    </div>
+    {% if sessions %}
+    <form method="post" action="/admin/profile/sessions/end">
+      <button type="submit" class="btn btn-danger">End all my sessions</button>
+    </form>
+    {% endif %}
+  </div>
+
+  {% if sessions %}
+  <table class="table">
+    <thead><tr><th>Started</th><th>Last used</th><th>Expires</th><th></th></tr></thead>
+    <tbody>
+      {% for session in sessions %}
+      <tr>
+        <td>{{ session.started_at.strftime('%Y-%m-%d %H:%M') }}</td>
+        <td>{{ session.last_seen_at.strftime('%Y-%m-%d %H:%M') }}</td>
+        <td>{{ session.expires_at.strftime('%Y-%m-%d %H:%M') }}</td>
+        <td>{% if session.current %}<span class="state-word ok">this device</span>{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="meta" style="margin:0">No sessions to show.</p>
+  {% endif %}
+</section>
+{% endif %}
+{% endblock %}

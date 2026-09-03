@@ -1,0 +1,93 @@
+{# fragments/chat_roster.html — who else is in this room, and its voice switch.
+   Context: roster [RoomMember] (everybody AFTER the first), roster_choices
+            [PersonaChoice], roster_note, roster_full (bool),
+            holds_a_roster (bool), speech_here (bool), speech_here_note,
+            speech_switchable (bool), stop_label, stop_title, conversation,
+            swap_roster (bool — true when this is an out-of-band replacement)
+
+   THE ROSTER IS "WHO ELSE". The picker beside this already names who answers
+   first; printing that name here as well would make two controls look like
+   they were for different things when one of them is just the other's first
+   row. So this is the guests: a name each, with the control that takes them
+   out, and one picker that puts somebody in.
+
+   Adding a character changes the conversation — they read each other and
+   answer each other — so the whole page comes back on a save, exactly like the
+   persona picker's. Each control is an ordinary form, so all of it works with
+   no script at all.
+
+   IT CARRIES ITS OWN ID because it is swapped out of band when another thread
+   is opened without a page load: the room named over the composer has to be
+   the room the next message goes into.
+
+   `holds_a_roster` false is a store that knows about conversations and about
+   one persona but not about several. The controls are then ABSENT rather than
+   disabled and the sentence says which — a button that appears to add somebody
+   to the room and then forgets is worse than one that is not there.
+
+   IT CARRIES ITS OWN HEADING NOW, and its own sentence, because it lives
+   inside the "Select persona" sheet (composer.md §5) rather than on a bar.
+   Both are in here rather than in chat.html for the reason the id is: they
+   are replaced with the roster when another thread is opened, and a heading
+   left behind over an empty section is a heading over nothing. Which is
+   exactly what happened when they were outside it — one persona on the host
+   means nobody to add and no guests to show, so the section had a title and
+   no contents. #}
+{% from "_controls.html" import icon %}
+<div id="chat-roster" {% if swap_roster %}hx-swap-oob="true"{% endif %}>
+
+  {% if holds_a_roster %}
+  {% if roster or (roster_choices and not roster_full) %}
+  <p class="sheet-section-title">Who else is in the room</p>
+  <div class="chat-tools" style="gap:var(--space-2)">
+  {% for member in roster %}
+  {# One guest, and the control that shows them out. What they already said
+     stays in the transcript — they said it — and they stop being asked to
+     speak. There is nothing to undo, so there is no confirmation. #}
+  <form method="post" action="/admin/chat/roster"
+        class="hrow" style="gap:4px; align-items:center; margin:0">
+    <input type="hidden" name="conversation" value="{{ conversation }}">
+    <input type="hidden" name="persona" value="{{ member.name }}">
+    <input type="hidden" name="action" value="remove">
+    <span class="chat-guest">{{ member.display }}</span>
+    <button type="submit" class="btn btn-ghost"
+            aria-label="Take {{ member.display }} out of this conversation"
+            title="Take {{ member.display }} out of this conversation">{{ icon('x') }}</button>
+  </form>
+  {% endfor %}
+
+  {% if roster_choices and not roster_full %}
+  {# The picker IS the action, exactly as the persona picker is: choosing a
+     name submits the form. Without a script there is nothing to fire that, so
+     the <noscript> button is the same form's submit. #}
+  <form method="post" action="/admin/chat/roster"
+        id="chat-roster-form" style="margin:0">
+    <input type="hidden" name="conversation" value="{{ conversation }}">
+    <input type="hidden" name="action" value="add">
+    <label for="chat-roster-add" style="position:absolute;left:-9999px">Add a persona to this conversation</label>
+    <select class="input" id="chat-roster-add" name="persona">
+      <option value="">Add someone…</option>
+      {% for choice in roster_choices %}
+      <option value="{{ choice.name }}">{{ choice.label }}</option>
+      {% endfor %}
+    </select>
+    <noscript><button type="submit" class="btn btn-secondary">Add</button></noscript>
+  </form>
+  {% endif %}
+  </div>
+  {% endif %}
+  {% endif %}
+  {# The sentence is outside the `holds_a_roster` guard on purpose: with a
+     store that cannot hold a room it is the only thing here, and saying which
+     is the whole of what it is for. #}
+  {% if roster_note %}<p class="meta sheet-note">{{ roster_note }}</p>{% endif %}
+
+  {# THE STOP BUTTON AND THE VOICE SWITCH USED TO BE HERE and are not any
+     more (composer.md §5). The stop moved to the composer bar in chat.html —
+     it names no conversation, so nothing about it needed to travel with one,
+     and it has to be pressable *while* a room is talking rather than two taps
+     inside a sheet. The voice switch moved to
+     fragments/chat_speech_switch.html, which keeps its own id and rides on
+     this fragment's own `swap_roster` flag, because it is a setting for the
+     conversation and belongs under the gear rather than beside the guests. #}
+</div>

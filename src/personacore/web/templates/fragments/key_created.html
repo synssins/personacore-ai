@@ -1,0 +1,23 @@
+{# key_created.html — replaces the issue-a-key dialog after POST /admin/keys.
+
+   THE VALUE IS SHOWN ONCE, HERE, AND NEVER AGAIN. The core keeps a SHA-256 and
+   nothing else, so there is no endpoint that could return it a second time.
+   `key.value` must reach no other template: the refreshed list swapped in below
+   is built from ApiKeyView, which has no field for it.
+
+   Context: key {note, value}, warning, plus fragments/key_list.html's own. #}
+{% from "_controls.html" import icon %}
+<div class="dialog" role="alertdialog" aria-labelledby="created-title" aria-describedby="created-body">
+  <h4 class="dialog-title" id="created-title">The key for “{{ key.note }}”</h4>
+  <p id="created-body" style="margin:0; font-size:14px; opacity:0.9">This value is shown once, now, and never again — not to you, not to anyone. Put it into the client before closing this. {{ warning }}</p>
+  <div class="hrow" style="gap:8px; padding:var(--space-3); border-radius:var(--radius-md); background:var(--color-bg); border:1px solid var(--color-accent-700)">
+    <code id="key-value" style="flex:1; font-size:13.5px; letter-spacing:0.02em; word-break:break-all">{{ key.value }}</code>
+    {# copies by reading the code element above: the value is in this page once, and once only #}
+    <button type="button" class="btn btn-secondary" data-copy-from="#key-value">{{ icon('copy') }} Copy</button>
+  </div>
+  <div class="dialog-actions">
+    <button type="button" class="btn btn-primary" data-modal-close>I've stored it</button>
+  </div>
+</div>
+{# the list behind the modal, refreshed out of band — without the value #}
+{% set oob = true %}{% include "fragments/key_list.html" %}

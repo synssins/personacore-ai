@@ -1,0 +1,39 @@
+{# fragments/chat_exchange.html — the answer to one send.
+   Context: exchanges [{...}], conversations [ConversationRow]|None, conversation
+
+   Two things in one response, and the second is why the screen feels fast.
+
+   The exchange itself is APPENDED to #chat-messages (hx-swap="beforeend"), so
+   a reply arriving redraws exactly one bubble: the sidebar, the rail, the
+   persona picker, the composer's contents and the reader's scroll position are
+   all untouched, because none of them are in this response.
+
+   The rail is an OUT-OF-BAND swap — htmx lifts it out and replaces the list in
+   place before the append happens. It rides along because a first message is
+   what gives a conversation its name and its place in the list, and a rail
+   that only caught up on the next full page load would mean the conversation
+   you are in is missing from the conversations you have. Same for the controls
+   that name the thread: they are what the next message, the next delete and
+   the next download attach to.
+
+   THE MARKERS ARE THE WHOLE SET, from the one file that knows what the set is.
+   This used to swap the composer's hidden field alone, which was safe only
+   because a send is normally answered with the instant it was sent with — and
+   is not, the moment it is not. Delete pointed at a conversation nobody was
+   looking at once already (25040ce); the rule that stops it happening again is
+   that no response picks and chooses. See fragments/chat_markers.html.
+
+   A LIST, not one, because a room can answer with more than one voice: the
+   personas that spoke are appended in the order they spoke. With one persona
+   there is one, which is what this always was.
+
+   Everything about escaping and about not trusting the reply is in
+   chat_exchange_body.html, next to the printing it constrains. #}
+{% for exchange in exchanges %}{% include "fragments/chat_exchange_body.html" %}{% endfor %}
+{% if conversations is not none %}
+{% with swap_rail = true %}{% include "fragments/chat_threads.html" %}{% endwith %}
+{% endif %}
+{# Guarded on the marker rather than on the rail: a turn that broke before it
+   reached a conversation renders with neither, and swapping every control on
+   the bar to an empty value would point them all at nothing. #}
+{% if conversation %}{% include "fragments/chat_markers.html" %}{% endif %}

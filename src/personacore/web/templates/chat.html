@@ -1,0 +1,861 @@
+{# chat.html — the conversation. The front door of the product.
+
+   CHANGED FROM THE APPROVED DESIGN, twice and deliberately. The design drew
+   "one message, one reply — a diagnostic, not a conversation" and replaced the
+   exchange region on every send. The owner asked for a conversation after seeing
+   it, and then for the rest of what a chat product is. The design's exchange is
+   kept exactly as drawn and is still the unit that repeats; what changed is
+   everything around it.
+
+   LAYOUT: three regions and no page scroll. The rail of earlier conversations
+   on the left, the messages in the middle scrolling on their own, the composer
+   pinned under them. The messages scroll, the page does not — which is what
+   keeps the box you type in and the message you are reading next to each other
+   however long the conversation gets.
+
+   SWAP BOUNDARIES, all three of them, because feeling fast is a set of
+   decisions about what is redrawn:
+     * SEND posts to /admin/chat/fragment and APPENDS one exchange to
+       #chat-messages (hx-swap="beforeend"). Nothing else on the page is
+       touched, so the scroll position, the composer and the picker survive a
+       reply. chat.js draws the question immediately and removes its own
+       placeholder when the real one lands.
+     * SWITCHING gets /admin/chat/messages and replaces #chat-messages alone,
+       pushing /admin/chat?c=… so the address still names the thread. Without
+       JavaScript the same control is the same link and loads the same page.
+     * The PERSONA form is an ordinary post that re-renders the page. It
+       changes who answers in THIS conversation and nothing outside it — the
+       core's default persona, and every other surface using it, are left
+       alone — but it decides the voice and the name under every future reply
+       here, so it should look like something happened. Same for the NAME AND
+       GROUP form in the header: renaming moves the rail row and the heading
+       over the messages, and redrawing one field would hide most of that.
+
+   NO SCRIPT AT ALL: the composer declares method="post" action="/admin/chat",
+   so the browser posts it and the server redirects back to the conversation
+   with the reply in it. The microphone is the one thing that needs a script,
+   and it hides itself when there is none. #}
+{% extends "base.html" %}
+{% from "_controls.html" import icon %}
+{% block title %}Chat — PersonaCore admin{% endblock %}
+{% block content %}
+<style>
+  /* Scoped to this screen by :has(), so the shell's own rules are untouched
+     for every other page. Chat is the one screen that owns the viewport: its
+     messages scroll inside their own region rather than the page scrolling
+     under a composer that would slide away with it. */
+  main.content:has(#chat-screen) { overflow: hidden; }
+  .page:has(#chat-screen) { max-width: none; height: 100%; padding: 0; gap: 0; }
+
+  #chat-screen { display: flex; height: 100%; min-height: 0; }
+
+  .chat-rail {
+    width: 232px; flex: none; display: flex; flex-direction: column; gap: var(--space-2);
+    padding: var(--space-4) var(--space-3); overflow-y: auto;
+    border-right: 1px solid var(--color-divider);
+  }
+  /* Folded: a bar and the button that opens it, and deliberately nothing
+     else. A conversation has no emblem, so there are no icons here to keep —
+     inventing one per row would be a column of identical marks.
+     The list stays in the markup and is hidden, because a reply swaps it in
+     place by id (`#chat-threads`) and a swap needs something to swap into.
+     `is-collapsed` is written by the server from this person's saved choice,
+     so it is never a wide rail that narrows after paint. */
+  .chat-rail.is-collapsed { width: 36px; padding-left: var(--space-2); padding-right: var(--space-2); overflow: hidden; }
+  .chat-rail.is-collapsed > *:not(.rail-toggle) { display: none; }
+  .rail-toggle { margin: 0; }
+  .rail-toggle button { width: 100%; justify-content: center; }
+  /* A group heading, which is also the control that folds the group. Styled to
+     stay exactly the heading it was: the chevron is the only thing added. */
+  .chat-group {
+    display: flex; align-items: center; gap: 5px; width: 100%; text-align: left;
+    padding: var(--space-3) 10px 2px; margin: 0;
+    background: none; border: 0; cursor: pointer; font: inherit;
+    text-transform: uppercase; letter-spacing: 0.04em; font-size: 11px;
+    color: color-mix(in srgb, var(--color-text) 55%, transparent);
+  }
+  .chat-group:hover { color: var(--color-text); }
+  .chat-thread {
+    display: block; padding: 7px 10px; border-radius: var(--radius-md);
+    color: var(--color-text); text-decoration: none; font-size: 13px; line-height: 1.35;
+  }
+  .chat-thread:hover { background: color-mix(in srgb, var(--color-text) 6%, transparent); color: var(--color-text); }
+  .chat-thread[aria-current="true"] { color: var(--color-accent); background: color-mix(in srgb, var(--color-accent) 10%, transparent); }
+  .chat-thread .when { display: block; font-size: 11px; color: color-mix(in srgb, var(--color-text) 50%, transparent); }
+
+  .chat-main { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
+  .chat-head {
+    flex: none; display: flex; align-items: flex-end; gap: var(--space-4); flex-wrap: wrap;
+    padding: var(--space-4) var(--space-6); border-bottom: 1px solid var(--color-divider);
+  }
+  #chat-messages {
+    flex: 1; min-height: 0; overflow-y: auto; overflow-anchor: none;
+    display: flex; flex-direction: column; gap: var(--space-6);
+    padding: var(--space-6) var(--space-6) var(--space-8);
+  }
+  .chat-foot {
+    flex: none; display: flex; flex-direction: column; gap: var(--space-2);
+    padding: var(--space-3) var(--space-6) var(--space-4);
+    border-top: 1px solid var(--color-divider);
+  }
+  /* The name over a message. Small and quiet: it is read to tell a person from
+     a persona, not to be the loudest thing in the conversation. */
+  .chat-said {
+    margin: 0; font-size: 12px; line-height: 1.2;
+    color: color-mix(in srgb, var(--color-text) 55%, transparent);
+  }
+  /* The one bar under a reply: a copy icon that needs a script, and a chevron
+     that does not (fragments/chat_exchange_body.html has the full account of
+     why it is a native <details>/<summary> rather than a script-driven one).
+
+     `.msg-bar-copy` alone is `display: none` until `chat.js` finds somewhere
+     to write and adds `can-copy` to <html> — not <body>, which hx-boost
+     replaces. It is scoped to the button rather than the whole bar because the
+     chevron works with no script at all: a bar with only a working chevron on
+     it is a real control, and gating the row on `can-copy` the way the old
+     `.msg-tools` row did would have hidden that control for no reason of its
+     own. When a control that works without a script joins this bar (a
+     good/bad vote is an ordinary post), give it its own selector rather than
+     widening `.msg-bar-copy`'s. */
+  .msg-bar {
+    border: 1px solid var(--color-accent-800); border-radius: var(--radius-sm);
+    font-size: 13px; color: var(--color-accent-300);
+  }
+  .msg-bar > summary {
+    display: flex; align-items: center; gap: var(--space-2);
+    list-style: none; cursor: pointer; padding: var(--space-2) var(--space-3);
+  }
+  .msg-bar > summary::-webkit-details-marker { display: none; }
+  .msg-bar[open] > summary { border-bottom: 1px solid var(--color-accent-800); }
+  .msg-bar-chevron svg { transition: transform 0.15s; }
+  .msg-bar[open] .msg-bar-chevron svg { transform: rotate(180deg); }
+  .msg-bar-copy { display: none; }
+  html.can-copy .msg-bar-copy { display: inline-flex; }
+  .msg-bar-panel { padding: var(--space-2) var(--space-3); }
+  /* The collapsed "thinking" line — a visual indicator such as a small
+     spinning circle that shows the model is actively thinking, expandable to
+     see the reasoning stream live. Live, chat.js draws this
+     above a growing reply as the model reasons. On reload,
+     fragments/chat_exchange_body.html draws the SAME markup and class names
+     for the reasoning `_fill_reply` read back from its own table — deliberately
+     one class, not two, so a person cannot tell which of the two drew what is
+     on screen (2026-09-02: reasoning survives a reload as additional context
+     that can be provided back to the model). The one
+     difference is `.chat-thinking-spinner`, below: it is spinning because
+     something is being generated, which is never true once this is read back
+     from disk, so the server's own copy of this markup never includes it.
+     Same disclosure shape as `.msg-bar` above, for the same reason: a native
+     <details>/<summary> needs no script to open or close. */
+  .chat-thinking {
+    align-self: flex-start; max-width: 85%;
+    border: 1px solid var(--color-divider); border-radius: var(--radius-sm);
+    font-size: 13px; color: color-mix(in srgb, var(--color-text) 65%, transparent);
+  }
+  .chat-thinking-summary {
+    display: flex; align-items: center; gap: var(--space-2);
+    list-style: none; cursor: pointer; padding: var(--space-2) var(--space-3);
+  }
+  .chat-thinking-summary::-webkit-details-marker { display: none; }
+  .chat-thinking[open] > .chat-thinking-summary { border-bottom: 1px solid var(--color-divider); }
+  .chat-thinking-chevron svg { transition: transform 0.15s; }
+  .chat-thinking[open] .chat-thinking-chevron svg { transform: rotate(180deg); }
+  .chat-thinking-body {
+    padding: var(--space-2) var(--space-3); font-size: 12.5px; line-height: 1.5;
+    white-space: pre-wrap; max-height: 240px; overflow-y: auto;
+    color: color-mix(in srgb, var(--color-text) 78%, transparent);
+  }
+  /* The spinner is `.spin` (nocturne.css) on the same `icon('spinner')` path
+     every other htmx-indicator on this surface uses — reused rather than
+     redrawn, so nocturne.css's one `prefers-reduced-motion` guard already
+     covers it. */
+  .chat-thinking-spinner { display: inline-flex; flex: none; }
+  /* The bar above the box: the persona picker on the left, save and delete on
+     the right. One row, wrapping on a narrow window rather than pushing the
+     composer off the screen. */
+  .chat-tools { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+  .chat-tools select#chat-persona { max-width: 320px; }
+  .chat-tools select#chat-roster-add { max-width: 200px; }
+  /* One guest in the room. A chip rather than a row: the roster is read at a
+     glance while typing, and a list would push the composer down the screen. */
+  .chat-guest {
+    padding: 3px 4px 3px 10px; border-radius: var(--radius-md); font-size: 13px;
+    background: color-mix(in srgb, var(--color-text) 7%, transparent);
+  }
+  .chat-compose { display: flex; align-items: flex-end; gap: var(--space-2); }
+  /* `dvh` after `vh`, the same pairing and the same reason as `.app` in
+     nocturne.css: on a tablet `vh` is the viewport with no address bar, so a
+     cap written in it lets the box grow past what is on screen. */
+  textarea#chat-input { min-height: 40px; max-height: 40vh; max-height: 40dvh; resize: none; overflow-y: auto; }
+  [data-pending] { opacity: 0.55; }
+
+  /* The textarea and its pending chips stack vertically; the mic stays beside
+     that column — see .chat-compose above, which lays those two out as a row.
+
+     THE SEND BUTTON IS INSIDE THIS COLUMN, not beside it. 2026-09-02: the send
+     button needs to be inside the chat bubble at the bottom, on the right
+     side, matching the reference client's layout. So the column carries the
+     border and the background, the textarea inside it carries none, and the
+     button sits in the bottom-right corner of the box the words are typed in.
+     `position: relative` is what the button is positioned against. */
+  .chat-compose-main {
+    flex: 1; min-width: 0; display: flex; flex-direction: column; gap: var(--space-2);
+    position: relative;
+    padding: var(--space-2); border-radius: var(--radius-md);
+    background: var(--color-surface); border: 1px solid var(--color-divider);
+  }
+  .chat-compose-main:focus-within { border-color: var(--color-accent); }
+  /* The box around the words is the column above now, so the textarea inside
+     it must not draw a second one. */
+  .chat-compose-main textarea.input {
+    background: none; border: 0; border-radius: 0; padding: 4px 44px 4px 4px;
+  }
+  .chat-compose-main textarea.input:hover,
+  .chat-compose-main textarea.input:focus-visible { border-color: transparent; }
+
+  /* ── the one send/stop button — detached-turns contract §4a ──
+     Bottom-right inside the composer, one control with two appearances read
+     off screenshots of the client this design is copying: an orange circle
+     with an up arrow to send, a dark circle with a white square to stop. Same
+     place, same size — the glyph and the colour change and nothing else moves,
+     because a control that jumps is a control you have to look for. */
+  .chat-send {
+    position: absolute; right: var(--space-2); bottom: var(--space-2);
+    width: 32px; height: 32px; padding: 0; flex: none; cursor: pointer;
+    border: 0; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--color-accent); color: var(--color-neutral-900);
+  }
+  .chat-send:hover { background: var(--color-accent-300); }
+  .chat-send:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+  .chat-send:disabled { opacity: 0.5; cursor: default; }
+  /* Stop. Set by chat.js while a turn is running and the box is empty — the
+     only state in which there is nothing to send and something to stop. */
+  .chat-send[data-stopping] { background: var(--color-neutral-800); color: var(--color-text); }
+  .chat-send[data-stopping]:hover { background: var(--color-neutral-700); }
+  .chat-send svg { width: 16px; height: 16px; }
+  /* The glyphs laid out here rather than inline on the spans. An inline
+     `display:flex` outranks the `hidden` attribute's `display:none`, so the
+     stop square drew on top of the send arrow and the one button showed both
+     states at once -- observed on 2026-09-02. The attribute is
+     the state; the stylesheet must let it win. */
+  .chat-send > span { display: flex; }
+  .chat-send > span[hidden] { display: none; }
+
+  /* ── the three sheets — composer.md contract §5 ──
+     ONE PATTERN, THREE USES: `+` opens "Add to chat", the persona pill opens
+     "Select persona", the gear opens "Conversation settings".
+
+     A native <details>, and no script anywhere near it (ADR-0020, contract
+     rule 1). The <summary> is the control that opens the sheet, and pressing
+     it again is what closes one — so the summary is ALSO the sheet's own
+     header, which is why the close sits at its left and the title beside it:
+     the thing you press to close is the thing you pressed to open, in the
+     place the design puts a close. Nothing else could be the close without a
+     script to drive it.
+
+     CLOSED, the summary draws `.sheet-face` — the control on the composer bar.
+     OPEN, the element itself becomes the panel at the foot of the window and
+     the summary draws `.sheet-head` instead. Both swaps are stylesheet rules
+     on `[open]`, never a script toggling `hidden`, so contract rule 5 has
+     nothing to catch here. */
+  .sheet { position: relative; margin: 0; }
+  .sheet > summary { list-style: none; cursor: pointer; }
+  .sheet > summary::-webkit-details-marker { display: none; }
+  .sheet-face { display: inline-flex; align-items: center; gap: var(--space-2); }
+  .sheet-head { display: none; align-items: center; gap: var(--space-3); }
+  .sheet[open] > summary > .sheet-face { display: none; }
+  .sheet[open] > summary > .sheet-head { display: flex; }
+  /* The two resting faces. The circle is the one the `+` used to draw for
+     itself; the pill names who is answering, because "which persona is this"
+     is the question that control exists to answer before it is pressed. */
+  .sheet-round {
+    flex: none; width: 32px; height: 32px; border-radius: 50%;
+    border: 1px solid var(--color-divider); color: var(--color-accent);
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  .sheet-pill {
+    padding: 4px 12px; border-radius: 999px; font-size: 13px;
+    border: 1px solid var(--color-divider); color: var(--color-text);
+  }
+  .sheet > summary:hover .sheet-round,
+  .sheet > summary:hover .sheet-pill { background: color-mix(in srgb, var(--color-accent) 10%, transparent); }
+  .sheet > summary:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+  .sheet[open] {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 40;
+    width: min(560px, 100%); margin: 0 auto;
+    max-height: 80vh; max-height: 80dvh; overflow-y: auto;
+    padding: var(--space-4) var(--space-4) var(--space-6);
+    background: var(--color-surface); border: 1px solid var(--color-divider);
+    border-radius: var(--radius-lg) var(--radius-lg) 0 0; box-shadow: var(--shadow-lg);
+  }
+  /* The page behind it, dimmed. `z-index: -1` keeps it inside the sheet's own
+     stacking context, so it covers the screen and never the sheet. */
+  .sheet[open]::before {
+    content: ''; position: fixed; inset: 0; z-index: -1;
+    background: color-mix(in srgb, var(--color-bg) 70%, transparent);
+  }
+  .sheet[open] > summary {
+    display: flex; align-items: center; gap: var(--space-3);
+    padding-bottom: var(--space-3); margin-bottom: var(--space-3);
+    border-bottom: 1px solid var(--color-divider);
+  }
+  .sheet-title { flex: 1; text-align: center; font-size: 14px; font-weight: 500; }
+  /* Balances the close, so the title is centred on the sheet rather than on
+     whatever is left of it. */
+  .sheet-pad { flex: none; width: 16px; }
+  /* A row: bold name, grey line under it, a check at the right for the one
+     that is current. Nothing else is marked (contract §5). */
+  .sheet-rows { display: flex; flex-direction: column; gap: 2px; }
+  .sheet-row {
+    display: flex; align-items: center; gap: var(--space-3); width: 100%;
+    padding: var(--space-3); border-radius: var(--radius-md);
+    background: none; border: 0; color: var(--color-text);
+    font: inherit; text-align: left; cursor: pointer; text-decoration: none;
+  }
+  .sheet-row:hover { background: color-mix(in srgb, var(--color-text) 6%, transparent); color: var(--color-text); }
+  .sheet-row:focus-visible { outline: 2px solid var(--color-accent); outline-offset: -2px; }
+  .sheet-row-icon { flex: none; display: inline-flex; color: var(--color-accent-300); }
+  .sheet-row-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .sheet-row-name { font-size: 14px; font-weight: 600; }
+  .sheet-row-why { font-size: 12px; color: color-mix(in srgb, var(--color-text) 55%, transparent); }
+  .sheet-row[aria-current="true"] { color: var(--color-accent); }
+  .sheet-row[aria-current="true"] .sheet-row-why { color: color-mix(in srgb, var(--color-accent) 70%, transparent); }
+  .sheet-check { flex: none; display: inline-flex; color: var(--color-accent); }
+  /* Save and Delete are actions, not rows to choose between (contract §5), so
+     they sit at the foot of the settings sheet with a rule above them rather
+     than in the checked list. */
+  .sheet-foot {
+    display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap;
+    margin-top: var(--space-4); padding-top: var(--space-3);
+    border-top: 1px solid var(--color-divider);
+  }
+  .sheet-section { margin-top: var(--space-4); }
+  .sheet-section-title {
+    margin: 0 0 var(--space-2); padding: 0 var(--space-3);
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em;
+    color: color-mix(in srgb, var(--color-text) 55%, transparent);
+  }
+  .sheet-note { margin: var(--space-2) 0 0; padding: 0 var(--space-3); }
+
+  /* ── the `+` sheet's three tiles — attachments.md contract §6a ──
+     Still a native file input and still not a script: the tile is a <label>
+     and the input is stretched invisibly across it, so a keyboard reaches the
+     input, a screen reader announces its own label, and the picker opens with
+     no code behind it at all. `form=` ties each one to the compose form it
+     submits with, which is not the element it sits inside. */
+  .sheet-tiles { display: flex; gap: var(--space-3); }
+  .sheet-tile {
+    position: relative; flex: 1; overflow: hidden; cursor: pointer;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: var(--space-2); padding: var(--space-4) var(--space-2);
+    border-radius: var(--radius-md); border: 1px solid var(--color-divider);
+    background: var(--color-bg); color: var(--color-text); font-size: 12px;
+  }
+  .sheet-tile:hover { border-color: var(--color-accent); }
+  .sheet-tile:has(input:focus-visible) { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+  .sheet-tile input {
+    position: absolute; inset: 0; width: 100%; height: 100%;
+    opacity: 0; margin: 0; padding: 0; border: 0; cursor: pointer;
+  }
+
+  /* ── a message waiting its turn — composer.md contract §3 ──
+     A send while a reply is being written queues; only stop stops. The person
+     has to be able to see that it is waiting and take it back before it goes,
+     so it is drawn here, above the box, rather than in the conversation — it
+     has not been said yet.
+
+     `[hidden]` IS SPELLED OUT because this row is toggled by the script with
+     the `hidden` attribute, and an author rule of equal specificity beats the
+     browser's own `[hidden] { display: none }`. That is the v0.13.11 defect
+     in a new place: a `display` in a class outranking the attribute, and the
+     control drawing itself in both states at once. */
+  .chat-queued {
+    display: flex; align-items: center; gap: var(--space-2); font-size: 13px;
+    padding: var(--space-2) var(--space-3); border-radius: var(--radius-md);
+    border: 1px dashed var(--color-divider);
+  }
+  .chat-queued[hidden] { display: none; }
+  .chat-queued-what { flex: none; color: var(--color-accent-300); }
+  .chat-queued-text {
+    flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    color: color-mix(in srgb, var(--color-text) 75%, transparent);
+  }
+
+  /* ── pending chips, above the text, inside the composer box (contract §6a) ──
+     Built by chat.js from File objects a script holds — a preview thumbnail
+     cannot exist without reading the file, which needs a script — so this
+     row is simply never populated with none running; the native file input
+     above still chooses and sends files with none at all. */
+  .chat-attach-tiles { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+  .chat-attach-tiles:empty { display: none; }
+  .attach-tile {
+    position: relative; flex: none; width: 56px; height: 56px;
+    border-radius: var(--radius-md); background: var(--color-surface);
+    border: 1px solid var(--color-divider); overflow: hidden;
+  }
+  .attach-tile img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .attach-fallback {
+    height: 100%; padding: 4px; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 2px; text-align: center;
+  }
+  .attach-badge { font-size: 10px; font-weight: 600; letter-spacing: 0.03em; color: var(--color-accent-300); }
+  .attach-name {
+    font-size: 9px; line-height: 1.15; max-width: 100%; color: color-mix(in srgb, var(--color-text) 70%, transparent);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  /* The circle overlapping the tile's top-right corner (contract §6a) — a
+     real control, not a marker: it cancels this one attachment before
+     sending (see chat.js, which is the only thing that draws it — there is
+     nothing to remove without a script having built the tile in the first
+     place). */
+  .attach-remove {
+    position: absolute; top: -6px; right: -6px; width: 18px; height: 18px; padding: 0;
+    border-radius: 50%; border: 1px solid var(--color-divider); background: var(--color-surface);
+    color: var(--color-text); display: flex; align-items: center; justify-content: center; cursor: pointer;
+  }
+  .attach-remove svg { width: 10px; height: 10px; }
+
+  /* ── attachments on a sent message (contract §6a) ──
+     Thumbnails in a row above the text, aligned with the sender; a non-image
+     is a card. One shape whether the message just landed or is read back on
+     a reload — this is `chat_exchange_body.html`'s own markup, not drawn a
+     second way by a script. */
+  .attach-sent-row { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+  .attach-sent-thumb { width: 120px; height: 120px; object-fit: cover; border-radius: var(--radius-md); display: block; }
+
+  /* ── the save overlay on a sent image ──
+     Modelled on a reference client's own control: an overlay on top of the
+     image whenever the mouse is on the image, giving a download button. It
+     faintly dims the image and the download button sits in the top right
+     corner. A different control from the chip's remove `X` even
+     though it sits in the same corner — that one cancels a pending send,
+     this one saves something already sent — so it is never merged with it. */
+  .attach-image-frame { position: relative; display: inline-block; line-height: 0; }
+  .attach-image-frame .attach-sent-thumb { transition: filter 0.15s; }
+  .attach-image-frame .attach-download {
+    position: absolute; top: 6px; right: 6px; width: 26px; height: 26px;
+    border-radius: 50%; background: color-mix(in srgb, var(--color-bg) 70%, transparent);
+    color: var(--color-text); display: flex; align-items: center; justify-content: center;
+    opacity: 0; transition: opacity 0.15s;
+  }
+  .attach-image-frame:hover .attach-sent-thumb,
+  .attach-image-frame:focus-within .attach-sent-thumb { filter: brightness(0.6); }
+  .attach-image-frame:hover .attach-download,
+  .attach-image-frame:focus-within .attach-download { opacity: 1; }
+  /* Touch has no hover, and this surface is read on a tablet — the download
+     stays visible there rather than waiting for a gesture nothing here
+     scripts for. */
+  @media (hover: none) {
+    .attach-image-frame .attach-download { opacity: 1; }
+  }
+  .attach-card {
+    display: flex; align-items: center; gap: var(--space-3); max-width: 280px;
+    padding: var(--space-2) var(--space-3); border-radius: var(--radius-md);
+    background: var(--color-surface); border: 1px solid var(--color-divider);
+    color: var(--color-text); text-decoration: none;
+  }
+  .attach-card:hover { border-color: color-mix(in srgb, var(--color-text) 30%, transparent); color: var(--color-text); }
+  .attach-card-icon {
+    flex: none; width: 32px; height: 32px; border-radius: var(--radius-sm);
+    background: var(--color-accent-900); color: var(--color-accent-300);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .attach-card-text { display: flex; flex-direction: column; min-width: 0; }
+  .attach-card-title { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .attach-card-sub { font-size: 11px; color: color-mix(in srgb, var(--color-text) 55%, transparent); }
+
+  /* Narrow windows: the rail becomes a strip above the conversation rather
+     than disappearing, because "which conversations do I have" is the question
+     the screen was rebuilt to answer. */
+  @media (max-width: 720px) {
+    #chat-screen { flex-direction: column; }
+    .chat-rail { width: auto; max-height: 30vh; max-height: 30dvh; border-right: 0; border-bottom: 1px solid var(--color-divider); }
+    /* Folded on a narrow window is a strip with the button in it, not a
+       column 36px wide — there is no column here to be narrow. */
+    .chat-rail.is-collapsed { width: auto; max-height: none; }
+  }
+</style>
+
+<div id="chat-screen">
+
+  {# ── the threads ── #}
+  <aside class="chat-rail{% if rail_collapsed %} is-collapsed{% endif %}" aria-label="Conversations">
+    {# The button at the top, and the whole of the no-JavaScript story: a form
+       that saves the choice and redirects back to this conversation. Boosted
+       like every other form here, so with scripting it is a swap. #}
+    <form class="rail-toggle" method="post" action="/admin/chat/rail">
+      <input type="hidden" id="chat-rail-conversation" name="conversation" value="{{ conversation }}">
+      <input type="hidden" name="collapsed" value="{{ '0' if rail_collapsed else '1' }}">
+      <button type="submit" class="btn btn-ghost"
+              aria-label="{{ 'Show the conversation list' if rail_collapsed else 'Hide the conversation list' }}"
+              title="{{ 'Show the conversation list' if rail_collapsed else 'Hide the conversation list' }}">{{ icon('right') if rail_collapsed else icon('left') }}</button>
+    </form>
+    <a class="btn btn-primary" href="/admin/chat" style="justify-content:flex-start">{{ icon('plus') }} New conversation</a>
+
+    {% if manages_rooms %}
+    {# ── selecting several conversations at once ──
+       docs/contracts/conversation-list-bulk-actions.md. One form wraps the
+       whole rail: a checkbox per row (fragments/chat_threads.html), a
+       select-all at the top, and Delete at the bottom. No `hx-` attribute
+       anywhere on this form — an arbitrary selection has to survive the
+       script being off before it is allowed to survive the script being on
+       (contract rule 6), which is why this reaches a confirmation PAGE
+       rather than an `hx-confirm` dialog (see chat_room.CONVERSATION_DELETED
+       and issue #14, which is the reason the single-delete button beside
+       Save below is deliberately not built this way). #}
+    <form method="post" action="/admin/chat/bulk-delete/confirm" style="display:flex; flex-direction:column; gap:2px">
+      {# Select all and Delete sit TOGETHER, above the list. Delete began
+         below it, which reads fine in a template and not at all on a screen:
+         the rail scrolls, holds up to thirty rows, and a person ticking the
+         boxes at the top then had to scroll past every conversation they had
+         just decided to keep in order to reach the button. With the button
+         far below the fold, clicking delete selected appeared to do nothing.
+         The control for a selection belongs where
+         the selection is being made. #}
+      <div class="hrow" style="gap:6px; padding:0 10px; justify-content:space-between">
+        <label class="hrow" style="gap:6px; font-size:12px; color:color-mix(in srgb, var(--color-text) 65%, transparent)">
+          <input type="checkbox" name="select_all" value="1">
+          Select all
+        </label>
+        {% if conversations %}
+        <button type="submit" class="btn btn-ghost" id="chat-bulk-delete">
+          {{ icon('trash') }} Delete selected
+        </button>
+        {% endif %}
+      </div>
+      {% include "fragments/chat_threads.html" %}
+    </form>
+    {% else %}
+    {% include "fragments/chat_threads.html" %}
+    {% endif %}
+  </aside>
+
+  <section class="chat-main">
+
+    {# ── what this conversation is called, and who is in it ── #}
+    {% include "fragments/chat_room.html" %}
+
+    {% if not chat_available %}
+    <p class="banner warn" role="status" style="margin:var(--space-4) var(--space-6) 0">{{ icon('warn') }} {{ chat_unavailable }}</p>
+    {% endif %}
+
+    {# ── the conversation ──
+       aria-live="polite" so a reply is announced when it lands; the region
+       itself is only ever appended to, never replaced, on a send. #}
+    <div id="chat-messages" aria-live="polite" aria-label="Messages" data-chat-messages>
+      {% include "fragments/chat_body.html" %}
+    </div>
+
+    {# ── the composer, pinned ── #}
+    <div class="chat-foot">
+      {% if note %}
+      <p class="save-note {{ note.kind }}" role="status" style="margin:0">{{ note.message }}</p>
+      {% endif %}
+
+      {# ── the bar above the box: three sheets, and the room's own stop ──
+         composer.md contract §5. What used to be a row of unrelated controls
+         stacked around the box — the old ad hoc toolbar — is three controls
+         that each open a sheet built the same
+         way. Nothing was dropped on the way (contract rule 2): `+` still
+         attaches a file, the picker still chooses who answers, the roster
+         still adds and removes a guest, and Save, Delete and the voice switch
+         are all still the forms they were. They are one press further away
+         and in a place that says what they are for.
+
+         EVERY SHEET IS REACHABLE WITH NO SCRIPT. There is not a line of
+         JavaScript behind any of this: a <details> opens and closes itself,
+         and every control inside one is the same plain form it was on the bar.
+
+         The room's stop stays OUT here, deliberately. It is lit only while
+         several personas are talking and it has to be pressed *during* that —
+         a stop two taps inside a sheet is a stop that arrives after the thing
+         it was meant to stop. It is also not one of the three sheets' rows in
+         the contract's own table. #}
+      <div class="chat-tools">
+
+        {# ── `+` → Add to chat ── #}
+        {% if chat_available %}
+        <details class="sheet" id="sheet-add">
+          <summary aria-label="Add to chat" title="Add to chat">
+            <span class="sheet-face"><span class="sheet-round">{{ icon('plus') }}</span></span>
+            <span class="sheet-head">
+              <span class="sheet-check">{{ icon('x') }}</span>
+              <span class="sheet-title">Add to chat</span>
+              <span class="sheet-pad"></span>
+            </span>
+          </summary>
+          {# Three tiles, three file inputs, one field name. A part with no
+             file chosen carries an empty filename and is dropped by
+             `chat_attachments.gathered_uploads`, so the two a person did not
+             use cost nothing — which is what lets all three be ordinary
+             inputs rather than one input a script re-points. #}
+          <div class="sheet-tiles">
+            <label class="sheet-tile">
+              {# Drawn here rather than through `icon()` for the same reason
+                 the send arrow below is: nothing else on this surface has a
+                 camera on it, and `_controls.html` is the shared set. #}
+              <svg class="icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"
+                   stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"
+                ><path d="M2 4.5h2.5L6 2.5h4l1.5 2H14v9H2z"/><circle cx="8" cy="9" r="2.5"/></svg>
+              <span>Camera</span>
+              <input type="file" id="chat-attach-camera" name="attachments" form="chat-form"
+                     accept="image/*" capture="environment" data-attach-input
+                     aria-label="Take a photo to add to this message">
+            </label>
+            <label class="sheet-tile">
+              {{ icon('image') }}
+              <span>Photos</span>
+              <input type="file" id="chat-attach-photos" name="attachments" form="chat-form"
+                     accept="image/*" multiple data-attach-input
+                     aria-label="Add a photo to this message">
+            </label>
+            <label class="sheet-tile">
+              {{ icon('scroll') }}
+              <span>Files</span>
+              <input type="file" id="chat-attachments-input" name="attachments" form="chat-form"
+                     multiple data-attach-input
+                     aria-label="Add a file to this message">
+            </label>
+          </div>
+
+          {# ── the joint, and its shape is fixed (contract §6) ──
+             Images does not generate anything here and does not put the
+             composer into a mode: it CREATES a new image conversation and
+             opens it. So it is a plain form posting to the route the image
+             side owns, which answers 303. This side builds the row; that
+             side builds the route; neither may change the shape without
+             saying so. A new conversation every time — the owner accepted
+             the list filling with single image conversations. #}
+          <form method="post" action="/admin/chat/image" class="sheet-section" style="margin:0">
+            <button type="submit" class="sheet-row">
+              <span class="sheet-row-icon">{{ icon('image') }}</span>
+              <span class="sheet-row-text">
+                <span class="sheet-row-name">Images</span>
+                <span class="sheet-row-why">Create and edit</span>
+              </span>
+            </button>
+          </form>
+        </details>
+        {% endif %}
+
+        {# ── the persona pill → Select persona ──
+           The pill names who is answering, because that is the question the
+           control exists to answer before anybody presses it. Its own
+           fragment: it is replaced out of band when another thread is opened,
+           the same as the rows inside are. #}
+        <details class="sheet" id="sheet-persona">
+          <summary aria-label="Select persona" title="Select persona">
+            <span class="sheet-face">
+              <span class="sheet-pill">{% include "fragments/chat_persona_pill.html" %}</span>
+            </span>
+            <span class="sheet-head">
+              <span class="sheet-check">{{ icon('x') }}</span>
+              <span class="sheet-title">Select persona</span>
+              <span class="sheet-pad"></span>
+            </span>
+          </summary>
+          <form method="post" action="/admin/chat/persona"
+                id="chat-persona-form" style="margin:0">
+            <input type="hidden" id="chat-persona-conversation" name="conversation" value="{{ conversation }}">
+            {% include "fragments/chat_persona_picker.html" %}
+          </form>
+          <p class="meta sheet-note">{{ persona_note }}</p>
+
+          {# ── who else is in the room ──
+             The many-voices contract, §2. It belongs with the picker that
+             names who answers first, because the roster is the same question
+             for everybody after them. Its heading and its sentence are inside
+             the fragment, not here: they are replaced with it when another
+             thread is opened, and a heading left behind over an empty section
+             is a heading over nothing. #}
+          <div class="sheet-section">
+            {% include "fragments/chat_roster.html" %}
+          </div>
+        </details>
+
+        {# ── the gear → Conversation settings ──
+           The voice switch is a row; Save and Delete are not "select one of
+           these" and are not drawn as rows (contract §5). They are actions at
+           the foot of the sheet. DELETE KEEPS ITS CONFIRMATION exactly as it
+           was — a sheet that deleted on tap would be a regression however
+           tidy it looked. #}
+        <details class="sheet" id="sheet-settings">
+          <summary aria-label="Conversation settings" title="Conversation settings">
+            <span class="sheet-face"><span class="sheet-round">{{ icon('gear') }}</span></span>
+            <span class="sheet-head">
+              <span class="sheet-check">{{ icon('x') }}</span>
+              <span class="sheet-title">Conversation settings</span>
+              <span class="sheet-pad"></span>
+            </span>
+          </summary>
+          {% include "fragments/chat_speech_switch.html" %}
+          <div class="sheet-foot">
+            {# In its own file because it names the open thread in its href and
+               so has to be replaced when another thread is picked. #}
+            {% include "fragments/chat_save_link.html" %}
+
+            {% if manages_rooms %}
+            {# One line of copy when it worked, and it says the conversation was
+               deleted. What it does is hide it — an administrator can still
+               review it — and the screen deliberately says nothing about that:
+               ordinary audit practice, the owner's decision, and the reasoning
+               is in the contract's §6 and in chat.py beside the constant. Do not add a
+               qualifier here.
+
+               `id` on the field is load-bearing: it is how switching threads
+               moves this button to the thread on the screen. Without it the
+               button kept pointing at whatever was open when the page loaded and
+               deleted nothing while saying it had. See
+               fragments/chat_markers.html. #}
+            <form method="post" action="/admin/chat/hide"
+                  hx-confirm="Delete this conversation?" style="margin:0">
+              <input type="hidden" id="chat-hide-conversation" name="conversation" value="{{ conversation }}">
+              <button type="submit" class="btn btn-ghost">{{ icon('trash') }} Delete</button>
+            </form>
+            {% endif %}
+          </div>
+        </details>
+
+        <span style="margin-left:auto"></span>
+
+        {# ── the room's stop ──
+           §5 of the many-voices contract, and unchanged: lit by chat.js only
+           while an exchange with more than one persona is running, and hidden
+           again when the room goes quiet. It moved out of
+           fragments/chat_roster.html when the roster moved into a sheet — it
+           names no conversation, so nothing about it needed to travel with
+           one. #}
+        <button type="button" class="btn btn-secondary" data-chat-stop hidden
+                title="{{ stop_title }}">{{ icon('x') }} {{ stop_label }}</button>
+      </div>
+
+      <p class="htmx-indicator text-muted" id="chat-waiting" style="font-size:13px; margin:0">
+        {{ icon('spinner') }} Waiting for the conversation model…
+      </p>
+
+      {# ── a message waiting its turn — contract §3 ──
+         Send should allow adding to and queueing a message without aborting
+         a currently running session — stop is a separate, deliberate action.
+         So a send while a reply is being written does
+         not touch the running turn: it waits here, where it can be seen and
+         taken back, and goes the moment the reply finishes.
+
+         Empty and hidden until chat.js has something to put in it. There is
+         nothing to queue without a script — with none there is no streamed
+         turn to queue behind — which is why this row is the script's to fill
+         rather than something the server ever renders into. #}
+      <div class="chat-queued" data-chat-queued hidden>
+        <span class="chat-queued-what">{{ icon('up') }}</span>
+        <span class="chat-queued-text" data-chat-queued-text></span>
+        <button type="button" class="btn btn-ghost" data-chat-unqueue>{{ icon('x') }} Take it back</button>
+        {# A second send while one is already waiting. One waits — the
+           contract's own depth — so the words go straight back into the box
+           and this says why they did. `.save-note` sets no display, so the
+           `hidden` attribute is what decides here. #}
+        <span class="save-note error" data-chat-queue-full role="status" hidden>Only one message waits.</span>
+      </div>
+
+      {# `data-author` is the name chat.js writes over the question it draws
+         while the reply is still coming, so the message does not gain a header
+         when the server's rendering of it lands. It is this operator's own
+         name and never has parentheses — see `author_label`. #}
+      {# `data-turn-running` says a reply is still being written in this thread
+         right now (detached-turns contract §3/§6). A turn no longer belongs to
+         the connection that started it, so this page may well have been opened
+         — or reopened by a tablet waking up — while one is in flight. chat.js
+         reads this once on load and attaches to it. It is not a control and
+         there is nothing to press: §6 asks for this not to be broken any more,
+         not for a Resume button. #}
+      <form class="chat-compose" id="chat-form" data-author="{{ me }}"
+            {% if turn_running %}data-turn-running{% endif %}
+            method="post" action="/admin/chat" enctype="multipart/form-data"
+            hx-post="/admin/chat/fragment" hx-target="#chat-messages" hx-swap="beforeend"
+            hx-encoding="multipart/form-data"
+            hx-indicator="#chat-waiting"
+            hx-on::after-request="if (event.detail.successful) this.reset();">
+        {# Which thread the next message joins. Swapped out of band when a
+           conversation is picked, so the composer follows the rail without the
+           page reloading. Reset restores an input's HTML default, so this
+           survives the box being cleared. #}
+        <input type="hidden" id="chat-conversation" name="conversation" value="{{ conversation }}">
+        <div class="chat-compose-main">
+          {# Pending attachments — built by chat.js from the file input above
+             and from a paste too large for the box (contract §5). Empty and
+             collapsed (`:empty` in the stylesheet) with no script running:
+             a preview tile needs to read the file it is a preview of, which
+             needs a script, so there is nothing here for a script-free
+             browser to draw — the file input still chooses and sends files
+             on its own. #}
+          <div class="chat-attach-tiles" id="chat-attach-tiles"></div>
+          <label for="chat-input" style="position:absolute;left:-9999px">Message</label>
+          <textarea class="input" id="chat-input" name="message" rows="1"
+                    maxlength="{{ max_message_chars }}"
+                    placeholder="Ask something the assistant should be able to answer"
+                    {% if not chat_available %}disabled{% endif %}></textarea>
+
+          {# ── the one send/stop button (contract §4a) ──
+             One control, two states, in one place: idle and while there is
+             something typed it sends; with a turn running and the box empty it
+             stops the reply being written. Enter does whatever it currently
+             does — hitting enter is the same thing as clicking the button.
+
+             It stays `type="submit"` so a browser with no script at all still
+             sends with it. There is no stop state without a script, because
+             there is no streamed turn to stop without one.
+
+             BOTH GLYPHS ARE IN THE MARKUP and chat.js only chooses between
+             them. They are drawn here rather than through `icon()` because
+             neither exists anywhere else on this surface: the arrow is a shaft
+             with a head (the shared `up` icon is a bare chevron) and nothing
+             else on the surface draws a filled square. #}
+          <button type="submit" class="chat-send" id="chat-send" data-chat-send
+                  aria-label="Send" title="Send"
+                  {% if not chat_available %}disabled{% endif %}>
+            <span data-send-glyph aria-hidden="true">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8"
+                   stroke-linecap="round" stroke-linejoin="round"><path d="M8 13V3M3.5 7.5L8 3l4.5 4.5"/></svg>
+            </span>
+            <span data-stop-glyph aria-hidden="true" hidden>
+              <svg viewBox="0 0 16 16" fill="currentColor"><rect x="4.5" y="4.5" width="7" height="7" rx="1"/></svg>
+            </span>
+          </button>
+        </div>
+
+        {# ── the microphone ──
+           Server-side gated on the admin's browser-dictation switch
+           ([dictation] browser, PLAN.md) — off by default. With it off, none
+           of this markup is in the response at all: a control the switch has
+           refused must not merely be hidden by CSS or a script, because a
+           control that exists in the markup is a control. With it on, the
+           button is still hidden until chat.js finds a recogniser in this
+           browser, so a browser without one never shows a button that cannot
+           work, and a browser with no JavaScript at all never sees it. Typing
+           works whether any of this is here or not. #}
+        {% if dictation_enabled %}
+        <span data-mic hidden class="hrow" style="gap:var(--space-2)">
+          <button type="button" class="btn btn-secondary" data-mic-toggle
+                  aria-pressed="false" title="Dictate — audio goes to Google">
+            {{ icon('pulse') }} <span data-mic-label>Dictate</span>
+          </button>
+        </span>
+        {% endif %}
+      </form>
+
+      {% if dictation_enabled %}
+      {# The honest line. It lives with the control it is about, is revealed
+         with it, and is repeated louder while the recogniser is running —
+         because the sidebar's "nothing leaves the house" is not true for the
+         seconds the microphone is on and the operator is entitled to know
+         that where they are pressing, not in a document. #}
+      <p class="meta" data-mic hidden style="margin:0; max-width:74ch">{{ mic_disclosure }}</p>
+      <p class="banner warn" data-mic-live hidden role="status" style="margin:0; padding:var(--space-2) var(--space-3)">
+        {{ icon('warn') }} <span>{{ mic_listening }}</span>
+      </p>
+      <p class="meta" data-mic-problem hidden role="status" style="margin:0; max-width:74ch"></p>
+      {% endif %}
+    </div>
+  </section>
+</div>
+
+<script src="/admin/static/chat.js" defer></script>
+{% endblock %}

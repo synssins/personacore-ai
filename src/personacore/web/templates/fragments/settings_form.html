@@ -1,0 +1,65 @@
+{# settings_form.html — the generated settings form for one plugin. This whole
+   <form> is the swap boundary for Save: POST returns this same fragment
+   re-rendered — with per-field errors and the operator's input preserved,
+   or with a save banner. Everything outside it (health card, tabs) stays.
+
+   Context: plugin { name, fields: [field…] },
+            save_result: None | {'kind': 'saved'|'nothing'|'invalid', 'message': str},
+            form_note: str  (why there is no form at all, when there is none),
+            schema_notes: [str], unrenderable: [{key, label, reason}] #}
+{% from "_controls.html" import render_field, icon %}
+{% set pname = plugin.name %}
+<form id="plugin-settings"
+      hx-post="/admin/plugins/{{ plugin.name }}/settings"
+      hx-target="#plugin-settings" hx-swap="outerHTML">
+
+  {% if form_note %}
+  {# No form, and the reason said out loud. A plugin whose settings cannot be
+     drawn is still a plugin whose settings need fixing — the Raw tab above is
+     where that happens, and an empty panel would not say so. #}
+  <p class="save-note none" role="status" style="margin:0; max-width:640px">{{ form_note }}</p>
+  {% else %}
+
+  <div class="hrow" style="margin-bottom: var(--space-4)">
+    <span class="meta">
+      <span class="field-state default">dashed border — plugin default</span> ·
+      <span class="field-state unsaved">accent border — unsaved change</span>
+    </span>
+  </div>
+
+  {% for note in schema_notes %}
+  <p class="field-help" style="max-width:640px">{{ note }}</p>
+  {% endfor %}
+
+  {% if unrenderable %}
+  {# Named, never silently dropped: a setting the form does not show and does
+     not save is an operator's setting quietly lost. #}
+  <p class="field-help" style="max-width:640px">
+    Edited as text on the Raw tab, because this form cannot draw them:
+    {% for item in unrenderable %}<strong>{{ item.label }}</strong> ({{ item.reason }}){% if not loop.last %}; {% endif %}{% endfor %}
+  </p>
+  {% endif %}
+
+  <div class="stack" style="max-width:640px">
+    {% for field in plugin.fields %}
+      {{ render_field(field, plugin.name) }}
+    {% endfor %}
+
+    <div class="hrow">
+      <button type="submit" class="btn btn-primary">Save and restart {{ plugin.name }}</button>
+      <span class="htmx-indicator meta">{{ icon('spinner') }} writing…</span>
+
+      {% if save_result %}
+        {% if save_result.kind == 'saved' %}
+          {# names what was written and where; the restart is part of the promise #}
+          <span class="save-note ok" role="status">{{ icon('check') }} {{ save_result.message }}</span>
+        {% elif save_result.kind == 'nothing' %}
+          <span class="save-note none" role="status">{{ save_result.message }}</span>
+        {% elif save_result.kind == 'invalid' %}
+          <span class="save-note error" role="alert">{{ icon('warn') }} {{ save_result.message }}</span>
+        {% endif %}
+      {% endif %}
+    </div>
+  </div>
+  {% endif %}
+</form>

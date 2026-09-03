@@ -1,0 +1,30 @@
+{# logs.html — what was said and what the system did. Read-only: a record,
+   not surveillance. Native <details> per entry; no JS needed to expand.
+   Context: surface_filter, entries: [{id, time, surface, client, persona,
+     message, reply, tools_offered, tools_called: [], model_label, duration}],
+   empty_text #}
+{% extends "base.html" %}
+{% from "_controls.html" import icon %}
+{% block title %}Logs — PersonaCore admin{% endblock %}
+{% block content %}
+<header>
+  <h3 style="margin:0 0 6px">Logs</h3>
+  <p class="text-muted" style="margin:0; font-size:13px; max-width:62ch">What was said and what the system did. Read-only — kept per the retention windows in Core settings.</p>
+</header>
+
+{# SWAP BOUNDARY: the filter swaps only #log-entries #}
+<div class="seg" role="radiogroup" aria-label="Surface filter">
+  {% for s in [('all','All'), ('voice','Voice'), ('api','API'), ('admin','Admin'), ('anonymous','Anonymous')] %}
+  <label class="seg-opt">
+    <input type="radio" name="surface" value="{{ s[0] }}" {% if surface_filter == s[0] %}checked{% endif %}
+           hx-get="/admin/logs/fragment" hx-vals='{"surface": "{{ s[0] }}"}'
+           hx-target="#log-entries" hx-swap="innerHTML">
+    {{ s[1] }}
+  </label>
+  {% endfor %}
+</div>
+
+<div id="log-entries">
+{% include "fragments/log_entries.html" %}
+</div>
+{% endblock %}

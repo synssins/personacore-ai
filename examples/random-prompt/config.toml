@@ -1,0 +1,29 @@
+# random-prompt settings.
+#
+# Editable from the admin UI: Plugins → random-prompt → Configuration. Change a
+# subject, save, and the next pick uses the new list — which also makes this a
+# convenient way to check that per-plugin config editing works.
+
+[random_prompt]
+
+# Kept deliberately dull. Each one should be answerable in a few words without
+# the model stopping to think, so a slow reply means something is wrong with the
+# pipeline rather than with the question.
+subjects = [
+    "the colour of the sky on a clear day",
+    "how many legs a spider has",
+    "the capital city of France",
+    "what sound a cat makes",
+    "how many days are in a week",
+    "whether water is wet",
+    "the first letter of the alphabet",
+    "what you use an umbrella for",
+    "how many wheels a bicycle has",
+    "what season comes after winter",
+    "the opposite of up",
+    "what bees make",
+]
+
+# Appended to the tool result so the model knows how much to say. It is data,
+# not an instruction — the request to answer comes from the person typing.
+answer_style = "one short sentence"

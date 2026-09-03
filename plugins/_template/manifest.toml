@@ -1,0 +1,217 @@
+# ============================================================================
+#  PersonaCore plugin template — manifest.toml
+#
+#  Copy this whole folder into /appdata/plugins/ and rename it. The folder name
+#  and the `name` below must be identical, or the core refuses to load it.
+#
+#      cp -r plugins/_template /appdata/plugins/kitchen-timer
+#      # then edit `name` below to "kitchen-timer"
+#
+#  Work top to bottom. Every field is explained. Delete the comments you no
+#  longer need, but leave the ones that would help the next person.
+#
+#  The rule behind all of it: THE MANIFEST DECLARES, THE CORE ENFORCES. This
+#  file is a request for privileges, checked before your code runs. Your code
+#  cannot widen it at runtime, so anything you forget to ask for here simply
+#  will not work — and anything you ask for and do not need is a hole you dug
+#  yourself.
+# ============================================================================
+
+[plugin]
+
+# CHANGE THIS. Lowercase letters, digits and hyphens; 2-64 characters; starts
+# with a letter. It is the folder name, it appears in event topics, and it
+# appears in the audit log, so it is kept boring on purpose. It must be unique
+# across every installed plugin.
+name = "example-plugin"
+
+# CHANGE THIS as you release. Your plugin's own version, semver.
+#
+# BUMP IT WHENEVER YOU CHANGE THIS PLUGIN'S FILES — code, config schema, or
+# this manifest. It is the only way anybody can tell two copies of your plugin
+# apart: the admin UI shows it in the plugin list and in the install result,
+# and "which version is on this machine" has no other answer.
+#
+# It has NOTHING TO DO with `contract` below. They are two independent numbers:
+# this one moves when YOUR files change; `contract` moves only when the CORE
+# changes its plugin contract, which is rare and not up to you.
+version = "0.3.0"
+
+# LEAVE THIS unless you know why you are changing it. Which version of the
+# PersonaCore plugin contract you were written against.
+#   "2.x" -> any 2.y core. Right for almost everyone: minor versions only ever
+#            add things, so they cannot break you.
+#   "2.1" -> needs a feature added in 2.1. Loads on 2.1 and later, refused on
+#            2.0 with an error saying so instead of failing halfway through.
+# A major bump is breaking and a core refuses a manifest from an older one,
+# naming what changed. 2.0 is the current major: it made `secrets` below a list
+# of tables instead of a list of names. 2.1 added `provides` below, which is
+# optional — so leaving this at "2.x" is still right unless you actually use it.
+contract = "2.x"
+
+# "stdio" or "http".
+#   stdio -> the core starts your plugin as a subprocess and talks to it over
+#            its standard input and output. Right for almost everything: no
+#            port, no container, no network, and it lives and dies with the
+#            core. Needs `entry` below.
+#   http  -> your plugin is its own service somewhere else and the core calls
+#            it over HTTP. For heavy things (a vision model), things in another
+#            language, or things you deliberately want at arm's length. Needs
+#            `url` instead of `entry`, and the folder goes in
+#            /appdata/plugins-http.d/ instead of /appdata/plugins/.
+transport = "stdio"
+
+# stdio only. The command that starts your plugin, relative to this folder.
+# Absolute paths, `..`, drive letters and symlinks pointing out of the folder
+# are all rejected — a plugin may only run its own code (spec 7).
+entry = "python main.py"
+
+# http only. Delete `entry` and uncomment this instead:
+# url = "http://my-plugin:8080/mcp"
+
+# CHANGE THIS. One line. It is what a human sees in the admin UI plugin list.
+description = "Template plugin. Copy it, rename it, make it do something."
+
+# LEAVE THIS EMPTY unless your plugin IS one of the things below, rather than
+# merely offering tools. Added in contract 2.1.
+#
+# Every other field says what your plugin HAS. This one says what it IS — the
+# job the system can hand to it. Today there are two:
+#
+#   "tts"   a speech engine. It turns text into audio: the voice the assistant
+#           speaks in.
+#   "stt"   a transcriber. It turns audio into text: what somebody said, as
+#           words.
+#
+# IT IS A LIST, ALWAYS — even for one entry, and because one box can genuinely
+# be both a speaker and a microphone:
+#
+#   provides = ["tts"]
+#   provides = ["tts", "stt"]
+#
+# A name that is not on the list above is REFUSED and your plugin does not
+# load, naming what you wrote and what is accepted. That is deliberate: a
+# plugin that thinks it registered a service and did not would fail silently,
+# somewhere else, much later.
+#
+# Almost every plugin leaves this empty. A weather plugin offers a tool; it is
+# not a speech engine.
+provides = []
+
+[permissions]
+
+# LEAST PRIVILEGE (spec 7). Every list here starts empty in a real plugin, and
+# empty means nothing — not "everything". Declaring nothing gets you nothing.
+# Declare exactly what you need and nothing you merely might. (`secrets` below
+# is the one exception in this file: it carries two worked examples for you to
+# copy or delete.)
+
+# Hostnames your plugin may reach. Empty = no outbound network at all.
+# Allowlist real hosts, one per entry: ["api.example.com"]. Do not add a host
+# "just in case"; every entry here is a place your plugin could exfiltrate the
+# household's data to, and a reviewer has to justify each one.
+network = []
+
+# Credentials you are asking the person installing this plugin for — API keys,
+# tokens. You get these and only these; a plugin never sees the whole store.
+# The VALUES are never written in this file, in your config, or in your code
+# (spec 7): the admin pastes each one into a box on the install screen and the
+# core hands it to you in an environment variable named exactly `name`.
+#
+# Each request is a table with three keys:
+#
+#   name         Required. What you read it as. It becomes a filename, so:
+#                letters, digits, dots, hyphens, underscores; starts with a
+#                letter.
+#
+#   description  REQUIRED, and the reason this is a table at all. It is printed
+#                beside the box. Write what an admin who has never heard of
+#                your service needs: what the credential is, where to get one,
+#                and which plan or scope is enough. "API key" is not a
+#                description — they can already see the field's name.
+#
+#   required     Optional, defaults to true.
+#                true  -> your plugin does not start without it. The admin sees
+#                         it as "waiting", naming this credential, and one
+#                         paste starts it.
+#                false -> it starts without it and the box still appears, so
+#                         somebody whose setup does need one can fill it in.
+#                         Use this for a credential that is conditional — an
+#                         instance behind basic auth, an optional paid tier.
+#
+# DELETE BOTH OF THESE if your plugin needs no credentials, leaving `secrets =
+# []`. Asking for one you do not use is a box you make somebody hunt for a
+# value to fill — and while the required one below is still here, your copy of
+# this template will sit as "waiting" until somebody pastes something into it.
+# That is the contract working; it is still the first thing to delete.
+#
+# ONE TABLE PER LINE. TOML 1.0 does not allow a newline inside `{ }`, so each
+# request is written as a single line however long it gets. The longer,
+# roomier form below does the same thing if you prefer it:
+#
+#   [[permissions.secrets]]
+#   name = "example_api_key"
+#   description = "..."
+#   required = true
+#
+# — but it has to come after every other key in [permissions], because
+# everything under a [[...]] header belongs to it.
+secrets = [
+  { name = "example_api_key", description = "Your API key for example.com. Create one under Account -> API keys; the free tier is enough. It looks like 32 hex characters.", required = true },
+  { name = "example_proxy_password", description = "Only if your example.com instance sits behind HTTP basic auth. Leave it empty otherwise -- the plugin runs fine without it.", required = false },
+]
+
+# Extra filesystem paths beyond this folder, relative to it. You already have
+# your own folder; most plugins need nothing here. Absolute paths and `..` are
+# rejected, and pointing at the appdata secrets directory is rejected outright.
+paths = []
+
+# ---------------------------------------------------------------------------
+#  TOOLS — one [tools.<name>] block per tool your MCP server exposes.
+#
+#  A tool that is not listed here is not callable. The core will not invent a
+#  risk level for it, because guessing would mean guessing "safe".
+#
+#  CHOOSING A RISK LEVEL is the most consequential thing in this file:
+#
+#    safe       Runs silently, no questions asked. Only for things that read
+#               something or change nothing: a lookup, a status check, a
+#               forecast. If getting it wrong is merely embarrassing, it's safe.
+#
+#    confirm    The assistant asks first ("shall I send that?") and does not act
+#               without a yes. For anything that changes the world in a way you
+#               would want to be asked about: sending a message, starting the
+#               washing machine, changing the persona.
+#
+#    restricted Only certain household members may invoke it at all, and they
+#               are asked to confirm as well. For anything you would not let a
+#               guest, a child, or a voice on a video do: unlocking a door,
+#               dialling a phone, spending money, deleting things.
+#
+#  THE RULE: anything irreversible is never `safe`. If you cannot undo it, or
+#  cannot un-say it, or it costs money, or it opens something — pick `confirm`
+#  at the very least. Ask yourself what happens the day a television advert
+#  says your tool's name out loud in an empty kitchen.
+#
+#  Rate the tool, not your intentions. "It's safe because I validate the
+#  argument" is not what these levels mean.
+# ---------------------------------------------------------------------------
+
+[tools.hello]
+risk = "safe"                          # reads nothing, changes nothing
+description = "Say hello, to prove the plugin is alive."
+
+# A second tool, shown as an example of the other levels. Uncomment, and make
+# sure a matching tool actually exists in main.py.
+#
+# [tools.empty_the_bin]
+# risk = "confirm"                     # cannot be un-emptied -> never "safe"
+# description = "Empty the recycling bin."
+
+[events]
+
+# The event bus (spec 5.2) is the push channel: your plugin tells the house
+# something happened, instead of waiting to be asked. Topics look like
+# personacore/events/<source>/<type>. Leave both empty if you do not use it.
+publishes = []     # e.g. ["example-plugin/something-happened"]
+subscribes = []    # topics you want delivered to you

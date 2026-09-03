@@ -1,0 +1,17 @@
+{# fragments/chat_persona_pill.html — the name on the control that opens the
+   persona sheet.
+   Context: personas [PersonaChoice], swap_persona (bool — true when this is an
+            out-of-band replacement)
+
+   composer.md §5 calls it "the persona pill", and a pill that does not name
+   anybody is a second gear. So it says who is answering in this conversation,
+   which is the question the control exists to answer before it is pressed.
+
+   ITS OWN FILE, and its own id, for exactly the reason the picker beside it
+   has one: the persona belongs to the thread, so opening another conversation
+   without a page load has to move this too. The name is read off the same
+   `personas` list the rows are built from rather than from a second context
+   key — one source, so the pill and the checked row cannot disagree. #}
+{%- set current = personas | selectattr('selected') | first -%}
+<span id="chat-persona-name" {% if swap_persona %}hx-swap-oob="true"{% endif %}
+  >{{ current.label if current else 'Persona' }}</span>

@@ -1,0 +1,49 @@
+{# plugin_uninstall.html — the destructive confirmation for one plugin, as a
+   PAGE rather than a dialog.
+   Context: name, title, body, confirm_label, keep_label, can_uninstall,
+   unavailable.
+
+   NO SCRIPT IS INVOLVED IN ANY PART OF THIS. There is no hx- attribute below,
+   no data- hook, and nothing for admin.js to open. An anchor brought the
+   operator here and a form takes them onward; both work in a browser with
+   JavaScript switched off, blocked, or simply not finished loading.
+
+   That is not a preference, it is the bug: the dialog this replaces rendered
+   correctly, answered 200 and really did delete the folder, and a plugin
+   still could not be uninstalled — because between the click and that request
+   sat htmx, admin.js, an event listener and showModal(). A destructive action
+   is the last place to stack four things that can each fail silently.
+
+   The form carries no `action`: it posts to the URL it is already on, and the
+   GET/POST pair on that one path is the whole mechanism. Nothing here can
+   point at a route that does not exist, because it points at itself. #}
+{% extends "base.html" %}
+{% from "_controls.html" import icon %}
+{% block title %}Uninstall {{ name }} — PersonaCore admin{% endblock %}
+{% block content %}
+<p style="margin:0"><a href="/admin/plugins">← Plugins</a></p>
+
+<section class="card elev-sm" role="alertdialog" aria-labelledby="confirm-title"
+         aria-describedby="confirm-body" style="max-width:60ch; gap:var(--space-3)">
+  <h3 class="dialog-title danger" id="confirm-title" style="margin:0">{{ title }}</h3>
+  {# The body names every thing that is destroyed — the folder, config.toml,
+     the credentials, the captured output and the on/off record. It is a
+     constant in screens/plugins.py so it cannot drift away from what uninstall
+     actually removes. #}
+  <p id="confirm-body" style="margin:0; font-size:14px; line-height:1.6">{{ body }}</p>
+
+  <form method="post" class="hrow" style="gap:var(--space-3)">
+    {# The safe way out is a link, so it cannot post anything by accident, and
+       it is first in the tab order so a stray Enter does not delete a plugin. #}
+    <a class="btn btn-secondary" href="/admin/plugins">{{ keep_label }}</a>
+    <button type="submit" class="btn btn-danger outlined" {% if not can_uninstall %}disabled{% endif %}>
+      {{ icon('trash') }} {{ confirm_label }}
+    </button>
+    {% if not can_uninstall %}<span class="later">later</span>{% endif %}
+  </form>
+
+  {% if not can_uninstall %}
+  <p class="save-note error" role="alert" style="margin:0">{{ icon('hand') }} {{ unavailable }}</p>
+  {% endif %}
+</section>
+{% endblock %}

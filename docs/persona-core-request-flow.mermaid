@@ -1,0 +1,34 @@
+flowchart TB
+    subgraph PULL["Pull path — a spoken request"]
+        A["Wake word detected"] --> B["STT transcribes speech"]
+        B --> C["Speaker ID → user profile<br/>(guest profile if unknown)"]
+        C --> D["Memory plugin: retrieve context<br/>L1 always + L2/L3 scored recall"]
+        D --> E["Agent loop: persona + context → LLM host"]
+        E --> F{"LLM wants a tool?"}
+        F -->|no| K["Stream reply"]
+        F -->|yes| G{"Tool risk level<br/>(from plugin manifest)"}
+        G -->|safe| H["Execute plugin tool"]
+        G -->|confirm| I{"Spoken/UI confirmation?"}
+        G -->|restricted| J{"User permitted?"}
+        I -->|yes| H
+        I -->|no| X["Refuse politely · audit"]
+        J -->|"yes → confirm"| I
+        J -->|no| X
+        H --> E
+        X --> K
+        K --> L["TTS speaks sentence-by-sentence<br/>(~2s to first audio)"]
+        L --> M{"User talks over it?"}
+        M -->|"yes — barge-in"| B
+        M -->|no| N["Done · everything in trace log"]
+    end
+
+    subgraph PUSH["Push path — the world speaks first"]
+        P["Camera: person at front door"] --> Q["Event published to MQTT bus"]
+        Q --> R["Core event rules:<br/>ignore / log / wake agent"]
+        R -->|wake| S["Vision plugin (HTTP container):<br/>scene, people, new vehicles"]
+        S --> T["Description handed to main model<br/>via persona"]
+        T --> U{"Action needed?"}
+        U -->|announce| V["TTS announcement / notification"]
+        U -->|"act (e.g. locks)"| G
+        U -->|no| W["Logged silently"]
+    end

@@ -1,0 +1,97 @@
+{# keys.html — access keys, and keyless access to the API.
+
+   Context: keys / keys_note / revoke_error (see fragments/key_list.html),
+     refused_message?, keyless {enabled, tools}, keyless_tools (every installed
+     tool name), keyless_consequence, keyless_tools_note, keyless_unreadable?,
+     keyless_save? {kind, message}
+
+   The keyless panel is ADR-0018, and it is real: the switch writes `[keyless]`
+   in core.toml and `/v1` reads it on the next request. The sentence beside it
+   carries the one fact the switch cannot — that "keyless" means whatever can
+   reach the port — and there is deliberately nothing reassuring under it. #}
+{% extends "base.html" %}
+{% from "_controls.html" import icon %}
+{% block title %}Access keys — PersonaCore admin{% endblock %}
+{% block content %}
+<header class="hrow" style="align-items:flex-start">
+  <div style="flex:1">
+    <h3 style="margin:0 0 6px">Access keys</h3>
+    <p class="text-muted" style="margin:0; font-size:13px; max-width:60ch">One key per client. Shown once, when it's issued — never again.</p>
+  </div>
+  <button type="button" class="btn btn-primary"
+          hx-get="/admin/keys/new/fragment" hx-target="#modal" hx-swap="innerHTML">
+    {{ icon('plus') }} Issue a key
+  </button>
+</header>
+
+{# refused — whatever the key API said no to, in its own words #}
+{% if refused_message %}
+<div class="banner danger" role="alert" id="refused">
+  {{ icon('hand') }}
+  <p class="grow" style="margin:0; font-size:13.5px">{{ refused_message }}</p>
+</div>
+{% endif %}
+
+{% include "fragments/key_list.html" %}
+
+{# keyless access — ADR-0018. One switch, one tool list, and nothing else: the
+   ceilings are fixed in `KeylessSettings.profile` and refused at construction
+   by `PolicyProfile`, so there is no control here that could widen them. #}
+<section class="card elev-sm" style="gap:var(--space-3)" id="keyless">
+  {% if keyless_unreadable %}
+  <div class="banner danger" role="alert">
+    {{ icon('hand') }}
+    <p class="grow" style="margin:0; font-size:13.5px">{{ keyless_unreadable }}</p>
+  </div>
+  {% endif %}
+
+  {# A boosted POST at a path that answers POST only, which used to mean the
+     next refresh became {"detail":"Method Not Allowed"}. It carried
+     `hx-push-url="false"` against that and the attribute does nothing on a
+     boosted element — the guard is `KeepsTheAddressBar` in
+     `web/shared.py` now, and it applies here without being asked. #}
+  <form method="post" action="/admin/keys/keyless" style="display:contents">
+    <div class="hrow" style="align-items:flex-start; gap:12px">
+      <input type="checkbox" role="switch" class="switch danger" id="keyless-toggle"
+             name="enabled" value="on" style="margin-top:2px"
+             {% if keyless.enabled %}checked{% endif %} aria-describedby="keyless-help">
+      <div style="flex:1">
+        <label for="keyless-toggle" style="font-size:14.5px">Keyless access to the API
+          {# `down` is the design's danger colour, and open is the state worth
+             colouring here — there is no `on` variant and inventing one would
+             paint the risky state in the calm one's ink. #}
+          <span class="state-word {{ 'down' if keyless.enabled else 'off' }}" style="font-size:12px">{{ 'on' if keyless.enabled else 'off' }}</span>
+        </label>
+        <p class="meta" id="keyless-help" style="margin:2px 0 0; max-width:58ch">Lets a client with no key use <code>/v1</code>. {{ keyless_consequence }}</p>
+        <p class="meta" style="margin:6px 0 0; max-width:58ch">The admin interface is a separate door and is not affected by this.</p>
+      </div>
+    </div>
+
+    <div style="padding-left:50px; display:flex; flex-direction:column; gap:var(--space-3)">
+      <fieldset style="border:0; padding:0; margin:0" class="field">
+        <legend style="font-size:12px; padding:0; margin-bottom:5px; color:color-mix(in srgb, var(--color-text) 70%, transparent)">Tools a keyless caller may use</legend>
+        <div class="hrow" style="gap:8px; flex-wrap:wrap">
+          {% for t in keyless_tools %}
+          <label class="tag" style="cursor:pointer; border:1px solid var(--color-divider); padding:4px 12px; font-size:12px; gap:6px">
+            <input type="checkbox" class="check" name="tools" value="{{ t }}"
+                   {% if t in keyless.tools %}checked{% endif %}> {{ t }}
+          </label>
+          {% else %}
+          <span class="meta">No plugin offers a tool yet, so there is nothing to allow.</span>
+          {% endfor %}
+        </div>
+        <p class="field-help">{{ keyless_tools_note }}</p>
+      </fieldset>
+
+      <div class="hrow" style="gap:10px; align-items:center">
+        <button type="submit" class="btn btn-primary">Save keyless access</button>
+        {% if keyless_save %}
+          {% if keyless_save.kind == 'ok' %}<span class="save-note ok" role="status">{{ icon('check') }} {{ keyless_save.message }}</span>
+          {% elif keyless_save.kind == 'refused' %}<span class="save-note error" role="alert">{{ icon('hand') }} {{ keyless_save.message }}</span>
+          {% else %}<span class="save-note none" role="status">{{ keyless_save.message }}</span>{% endif %}
+        {% endif %}
+      </div>
+    </div>
+  </form>
+</section>
+{% endblock %}

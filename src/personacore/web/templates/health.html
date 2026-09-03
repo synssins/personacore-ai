@@ -1,0 +1,23 @@
+{# health.html — the landing screen for "what is running and why not".
+   Context: overall ('ok'|'degraded'|'down'), notices: [{tone,title,body,href,link_label}],
+   components: [{state ('ok'|'degraded'|'down'|'off'), name, state_label, detail, facts:[], href?}]
+   The row list polls; the notices are part of the same fragment so a cleared
+   bypass disappears without a full reload. #}
+{% extends "base.html" %}
+{% from "_controls.html" import icon %}
+{% block title %}Health — PersonaCore admin{% endblock %}
+{% block content %}
+<header class="hrow">
+  <h3 style="margin:0">Health</h3>
+  <span class="hrow" style="gap:7px; font-size:13px">
+    <span class="dot {{ 'ok' if overall == 'ok' else 'warn' }}" role="img" aria-label="{{ overall }}"></span>
+    <span class="state-word {{ 'ok' if overall == 'ok' else 'warn' }}">{{ overall }}</span>
+  </span>
+  <span class="meta" style="margin-left:auto">checked {{ checked_ago or 'just now' }}</span>
+</header>
+
+{# SWAP BOUNDARY: this whole div refreshes on a poll #}
+<div id="health-body" hx-get="/admin/health/fragment" hx-trigger="every 15s" hx-swap="innerHTML">
+{% include "fragments/health_body.html" %}
+</div>
+{% endblock %}

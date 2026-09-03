@@ -1,0 +1,76 @@
+{# setup.html — first run (PC-291).
+
+   The owner chose the setup page over an environment variable. There is no default
+   password anywhere in this product: this form is where the first one is set,
+   and the account it creates is an admin.
+
+   Same reasoning as sign_in.html for not extending base.html.
+
+   Context: error?, username, stylesheet, setup_path, setup_intro,
+     min_password_chars, tls_warning? #}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>First-run setup — PersonaCore</title>
+  <link rel="stylesheet" href="{{ stylesheet }}">
+</head>
+<body>
+  <main class="content" style="display:grid; place-items:center; min-height:100vh; min-height:100dvh; padding:24px">
+    <div style="width:100%; max-width:36rem; display:flex; flex-direction:column; gap:var(--space-4)">
+
+      <div style="text-align:center">
+        <div class="brand" style="justify-content:center; font-size:18px">PersonaCore <small>admin</small></div>
+      </div>
+
+      {% if tls_warning %}
+      <div class="banner warn" role="note">
+        <p class="grow" style="margin:0; font-size:13px">{{ tls_warning }}</p>
+      </div>
+      {% endif %}
+
+      {% if error %}
+      <div class="banner danger" role="alert" id="setup-error">
+        <p class="grow" style="margin:0; font-size:13.5px">{{ error }}</p>
+      </div>
+      {% endif %}
+
+      <form class="card elev-sm" method="post" action="{{ setup_path }}"
+            style="gap:var(--space-3)">
+        <h3 style="margin:0 0 2px">Create the first account</h3>
+        <p class="text-muted" style="margin:0; font-size:13px; max-width:60ch">{{ setup_intro }}</p>
+
+        <div class="field">
+          <span class="label-row"><label for="username">Name</label></span>
+          <input class="input" type="text" id="username" name="username"
+                 value="{{ username }}" autocomplete="username" autocapitalize="none"
+                 spellcheck="false" required autofocus>
+          <p class="meta" style="margin:2px 0 0">Letters, digits, dots, dashes or underscores.</p>
+        </div>
+
+        <div class="field">
+          <span class="label-row"><label for="password">Password</label></span>
+          <input class="input" type="password" id="password" name="password"
+                 autocomplete="new-password" required>
+          <p class="meta" style="margin:2px 0 0">At least {{ min_password_chars }} characters.</p>
+        </div>
+
+        <div class="field">
+          <span class="label-row"><label for="confirm_password">Password again</label></span>
+          <input class="input" type="password" id="confirm_password" name="confirm_password"
+                 autocomplete="new-password" required>
+        </div>
+
+        <div class="hrow" style="justify-content:flex-end">
+          <button type="submit" class="btn btn-primary">Create account and sign in</button>
+        </div>
+      </form>
+
+      <p class="meta" style="text-align:center; margin:0">
+        The core can't show this password again — it's stored hashed, and unrecoverable.
+      </p>
+    </div>
+  </main>
+</body>
+</html>

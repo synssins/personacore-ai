@@ -1,0 +1,47 @@
+{# key_list.html — the issued keys, on their own so a revoke or an issue can
+   swap the list without the page around it. #key-list is the swap boundary.
+
+   Context: keys: [{id, note, meta, enabled, summary}], keys_note?, revoke_error?
+
+   **No key value and no key hash appears here, ever.** The rows are built by
+   `routes.key_rows` from ApiKeyView, which has a field for neither and forbids
+   extras — so a value could only reach this file by somebody adding it. #}
+{% from "_controls.html" import icon %}
+<div id="key-list" {% if oob %}hx-swap-oob="true"{% endif %}>
+  {% if revoke_error %}
+  <div class="banner danger" role="alert">
+    {{ icon('warn') }}
+    <p class="grow" style="margin:0; font-size:13.5px">{{ revoke_error }}</p>
+  </div>
+  {% endif %}
+
+  {% if keys_note %}
+  <div class="empty">
+    {{ icon('key') }}
+    <p style="margin:0">{{ keys_note }}</p>
+  </div>
+  {% elif not keys %}
+  <div class="empty">
+    {{ icon('key') }}
+    <p style="margin:0">No keys issued. Nothing can talk to the assistant except this admin interface — issue a key for each client.</p>
+  </div>
+  {% endif %}
+
+  {% for k in keys %}
+  <div class="row" style="display:flex; gap:14px; align-items:flex-start" id="key-{{ k.id }}">
+    {{ icon('key') }}
+    <div style="flex:1; min-width:0">
+      <div class="hrow" style="gap:10px">
+        <span style="font-size:14.5px">{{ k.note }}</span>
+        <span class="meta">{{ k.meta }}</span>
+        {% if not k.enabled %}<span class="tag tag-neutral">switched off</span>{% endif %}
+      </div>
+      {# readable profile summary — never raw JSON #}
+      <p style="margin:3px 0 0; font-size:13px; color:var(--color-neutral-300)">{{ k.summary }}</p>
+    </div>
+    <button type="button" class="btn btn-danger"
+            hx-get="/admin/keys/{{ k.id }}/revoke/confirm/fragment"
+            hx-target="#modal" hx-swap="innerHTML">revoke</button>
+  </div>
+  {% endfor %}
+</div>

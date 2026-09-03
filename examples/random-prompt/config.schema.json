@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "random-prompt settings",
+  "description": "What this plugin picks from, and how much it asks for back.",
+  "type": "object",
+  "properties": {
+    "subjects": {
+      "title": "Subjects",
+      "description": "One is chosen at random each time the tool runs. Keep them simple enough to answer without thinking, so a slow reply means the pipeline is wrong rather than the question being hard.",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 200,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+      }
+    },
+    "answer_style": {
+      "title": "Answer style",
+      "description": "Sent along with the subject so the model knows how much to say.",
+      "type": "string",
+      "maxLength": 120,
+      "default": "one short sentence",
+      "enum": [
+        "one short sentence",
+        "one word",
+        "two sentences",
+        "a single paragraph"
+      ]
+    }
+  },
+  "required": ["subjects"],
+  "additionalProperties": false
+}

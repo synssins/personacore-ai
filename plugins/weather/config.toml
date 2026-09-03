@@ -1,0 +1,60 @@
+# Weather plugin settings.
+#
+# This file belongs to the plugin, not to the core (spec 5.1: per-plugin config
+# lives in the plugin's own folder; the core never stores plugin settings
+# centrally). The admin UI edits this file in place, with validation, so keep
+# the keys flat and obvious and keep these comments — they are the field help.
+#
+# Nothing secret ever goes in here. This file is backed up with appdata and is
+# readable by anyone who can open the admin UI. Secrets are declared in
+# manifest.toml under permissions.secrets and handed over by the core; this
+# plugin needs none.
+
+[weather]
+
+# Which of the locations below to use when nobody says where.
+default_location = "home"
+
+# "metric"   -> degrees Celsius, millimetres
+# "imperial" -> degrees Fahrenheit, inches
+units = "metric"
+
+# Look up places nobody configured — a postcode, a town, a city and country.
+# On by default: telling someone their own postcode does not exist, while
+# holding the coordinates for it, is not a privacy feature. Turn it off and only
+# the locations below will answer, and nothing anyone says reaches a lookup
+# service.
+look_up_unknown_places = true
+
+# How many days to report, 1-7. Today counts as day one.
+forecast_days = 3
+
+# Give up on the weather service after this many seconds and say so plainly
+# rather than leaving the assistant silent (spec 10).
+timeout_seconds = 10
+
+# Locations the assistant may be asked about. The name in brackets is the key;
+# `label` is what it calls the place back to you; `aliases` are the other names
+# a person might actually use for it — the town, a postcode, a nickname.
+#
+# Give it the aliases you would really say. Asking for a place by its postcode
+# and being told "I only know home" is the plugin being obtuse about somewhere
+# it already has, and aliases are how that stops.
+#
+# Coordinates, not place-name searches: nothing a speaker says is forwarded to
+# an outside service. Matching a name you configured here is recognition, not a
+# lookup.
+#
+# You should not have to find coordinates yourself, though: the admin UI's
+# settings page has a search box on this setting. Type a town, pick it from the
+# list, and the three fields below fill in (ADR-0016). That is one deliberate
+# act by the person who owns the system, on a string they typed themselves —
+# which is a different thing from forwarding whatever someone said out loud.
+#
+# The entry below is a placeholder. Replace it with your own.
+
+[weather.locations.home]
+label     = "London"
+latitude  = 51.5072
+longitude = -0.1276
+aliases   = ["London", "home"]

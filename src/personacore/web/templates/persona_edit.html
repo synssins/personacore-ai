@@ -1,0 +1,170 @@
+{# persona_edit.html — create or edit a persona. Serves both
+   GET /admin/personas/new (persona=None) and GET /admin/personas/{slug}/edit.
+
+   Context: persona? {slug, name, prompt, voice, voice_value, pauses,
+     connection_mode, connection_address, connection_model,
+     connection_key_secret, problem?},
+     identifier_note, model_field_note, max_prompt_chars, save_result?,
+     connection_label, connection_help, connection_default_label,
+     connection_custom_label, connection_key, connection_mode_default,
+     connection_mode_custom, max_connection_address_chars,
+     max_connection_model_chars,
+     pauses_label, pauses_help, max_pauses_chars,
+     voice_options: [{value, label}], voice_value, voice_note, voice_warning
+
+   **The identifier is fixed at creation.** The design said renaming changes it
+   and that clients pinned to the old one fall back to the default — they do
+   not: an access key stores the identifier, and a key naming a folder that no
+   longer exists raises PersonaNotFoundError on the next turn, which is a client
+   that stops answering rather than one that changes character. So the Name box
+   sets the display name and the identifier stays put. See
+   `routes.PERSONA_IDENTIFIER_FIXED`. #}
+{% extends "base.html" %}
+{% from "_controls.html" import icon %}
+{% block title %}{{ persona.name if persona else 'New persona' }} — PersonaCore admin{% endblock %}
+{% block content %}
+<p style="margin:0"><a href="/admin/personas">← Personas</a></p>
+<h3 style="margin:0">{{ persona.name if persona else 'New persona' }}</h3>
+
+{% if persona and persona.problem %}
+<div class="banner danger" role="alert">
+  {{ icon('warn') }}
+  <div class="grow">
+    <div class="title">This persona cannot be loaded as it stands.</div>
+    <p class="meta" style="margin:2px 0 0">{{ persona.problem }} Saving from this form writes the prompt and the display name again, which is usually what fixes it.</p>
+  </div>
+</div>
+{% endif %}
+
+<form class="stack" style="max-width:640px" method="post"
+      action="{{ '/admin/personas/' ~ persona.slug if persona else '/admin/personas' }}">
+  <div class="field" style="max-width:300px">
+    <label for="p-name">Name</label>
+    <input class="input" type="text" id="p-name" name="name" required
+           value="{{ persona.name if persona else '' }}">
+    {% if persona %}
+    <p class="field-help">{{ identifier_note }}</p>
+    {% else %}
+    <p class="field-help">The identifier is made from this name — “Vex the sharp one” becomes <code>vex-the-sharp-one</code>. It is fixed once the persona exists.</p>
+    {% endif %}
+  </div>
+
+  {% if persona %}
+  {# the identifier, copyable, on the screen where it is created #}
+  <div class="hrow" style="gap:10px; flex-wrap:wrap; padding:var(--space-3); border-radius:var(--radius-sm); background:var(--color-bg); border:1px solid var(--color-divider)">
+    <code style="font-size:13.5px; color:var(--color-accent-300)">{{ persona.slug }}</code>
+    <button type="button" class="btn btn-ghost" style="font-size:12.5px" data-copy="{{ persona.slug }}">{{ icon('copy') }} copy</button>
+    <span class="meta" style="font-size:12.5px">{{ model_field_note }}</span>
+  </div>
+  {% endif %}
+
+  <div class="field">
+    <label for="p-prompt">Prompt — the character, in its own words</label>
+    <textarea class="input" id="p-prompt" name="prompt" required maxlength="{{ max_prompt_chars }}"
+              style="min-height:140px">{{ persona.prompt if persona else '' }}</textarea>
+    <p class="field-help">Describe manner, not capability. What the assistant <em>can</em> do is the tool list, and the model can see that for itself — a prompt that says “you have no tools” keeps being obeyed after tools arrive.</p>
+  </div>
+
+  {# THIS PERSONA'S MODEL (ADR-0036). Two radios: the system's connection, or
+     one of its own. The boxes are always in the markup and always submitted —
+     the radio is what the server reads — so the reveal is one stylesheet rule
+     (.reveal-when-chosen) and nothing else. With no CSS at all the boxes are
+     simply visible, which is a form that still works; markup that hid them
+     would be a form whose fields nothing can reach.
+
+     Choosing the system default REMOVES the section from persona.toml rather
+     than copying today's values into it. Absence is the only thing that means
+     "follow the system", so a persona that spelled the default out would stay
+     on those values when the Models screen moves — which is exactly what
+     pinning is for, and exactly what must not happen to somebody who never
+     asked for it.
+
+     The API key box is the same one the Models screen has (see
+     fragments/connection_key.html). It is write-only: a typed key goes into the
+     secret store and persona.toml goes on holding only the NAME, and a stored
+     key is never rendered back to this page. An empty box leaves an existing key
+     alone — removing one has its own control. #}
+  <fieldset class="stack" style="border:0; padding:0; margin:0; gap:var(--space-3)">
+    <legend style="font-size:14px; padding:0">{{ connection_label }}</legend>
+    <p class="meta" style="margin:0; max-width:60ch">{{ connection_help }}</p>
+
+    <div class="hrow" style="align-items:flex-start; gap:12px">
+      <input type="radio" id="p-conn-default" name="connection_mode" value="{{ connection_mode_default }}"
+             style="margin-top:3px"
+             {% if not persona or persona.connection_mode != connection_mode_custom %}checked{% endif %}>
+      <label for="p-conn-default" style="font-size:14px">{{ connection_default_label }}</label>
+    </div>
+
+    <div class="hrow reveal-choice" style="align-items:flex-start; gap:12px">
+      <input type="radio" id="p-conn-custom" name="connection_mode" value="{{ connection_mode_custom }}"
+             style="margin-top:3px"
+             {% if persona and persona.connection_mode == connection_mode_custom %}checked{% endif %}>
+      <label for="p-conn-custom" style="font-size:14px">{{ connection_custom_label }}</label>
+    </div>
+
+    <div class="stack reveal-when-chosen" style="gap:var(--space-3); margin-left:27px">
+      <div style="display:grid; grid-template-columns:1.6fr 1fr; gap:var(--space-3)">
+        <div class="field">
+          <label for="p-conn-address">Address</label>
+          <input class="input" type="text" id="p-conn-address" name="connection_address"
+                 maxlength="{{ max_connection_address_chars }}" placeholder="http://host:port/v1"
+                 value="{{ persona.connection_address if persona else '' }}">
+        </div>
+        <div class="field">
+          <label for="p-conn-model">Model</label>
+          <input class="input" type="text" id="p-conn-model" name="connection_model"
+                 maxlength="{{ max_connection_model_chars }}"
+                 value="{{ persona.connection_model if persona else '' }}">
+        </div>
+      </div>
+      {% with key = connection_key %}{% include "fragments/connection_key.html" %}{% endwith %}
+    </div>
+  </fieldset>
+
+  {# SPEECH PAUSES (persona, not voice). A tic like "Hmm." belongs to this
+     character, so it is timed here rather than on the voice every persona
+     shares. The box changes no text at all — it says how much silence goes
+     either side of a word when it is spoken, which is the actual fault: on its
+     own, "Hmm." is a complete sentence and gets a full sentence gap on both
+     sides. One rule per line, `word = before, after` in milliseconds, the same
+     shape as the pronunciation box on the voice screen. #}
+  <div class="field">
+    <label for="p-pauses">{{ pauses_label }}</label>
+    <textarea class="input" id="p-pauses" name="pauses" rows="4" spellcheck="false"
+              maxlength="{{ max_pauses_chars }}" aria-describedby="p-pauses-help"
+              placeholder="Hmm = 120, 180">{{ persona.pauses if persona else '' }}</textarea>
+    <p class="field-help" id="p-pauses-help">{{ pauses_help }}</p>
+  </div>
+
+  {# THE VOICE PICKER (PC-202, ADR-0029 section 5). One list, every voice from
+     every engine, each rendered NAME (Engine). There is no engine dropdown in
+     front of it and there is not going to be one: the engine is how a voice is
+     spoken, not a step the operator navigates.
+
+     Voices belonging to a switched-off engine stay in the list. Hiding them
+     would make choosing one conditional on remembering to switch the engine on
+     first; the warning below says what an off engine costs, which is speech and
+     nothing else (PC-336). #}
+  <div class="field" style="width:320px">
+    <label for="p-voice">Voice</label>
+    <select class="input" id="p-voice" name="voice" aria-describedby="p-voice-help">
+      {% for option in voice_options %}
+      <option value="{{ option.value }}" {% if option.value == voice_value %}selected{% endif %}>{{ option.label }}</option>
+      {% endfor %}
+    </select>
+    <p class="field-help" id="p-voice-help">{{ voice_note }}</p>
+    {% if voice_warning %}
+    <p class="field-help" style="color:var(--color-warn)">{{ voice_warning }}</p>
+    {% endif %}
+  </div>
+
+  <div class="hrow">
+    <button type="submit" class="btn btn-primary">Save</button>
+    {% if save_result %}
+      {% if save_result.kind == 'saved' %}<span class="save-note ok" role="status">{{ icon('check') }} {{ save_result.message }}</span>
+      {% elif save_result.kind == 'invalid' %}<span class="save-note error" role="alert">{{ icon('warn') }} {{ save_result.message }}</span>
+      {% elif save_result.kind == 'nothing' %}<span class="save-note none" role="status">{{ save_result.message }}</span>{% endif %}
+    {% endif %}
+  </div>
+</form>
+{% endblock %}

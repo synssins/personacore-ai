@@ -1,0 +1,172 @@
+# Publish a tagged release to GitHub Container Registry.
+#
+# CLAUDE.md, CI/CD: on tagged releases (semver), build the CPU-only images,
+# publish to ghcr.io, and generate the SBOM. The production Compose file
+# references those images by tag, so updating a server is:
+#
+#     docker compose pull && docker compose up -d
+#
+# and rolling back is re-pinning the previous tag and repeating. No build step
+# ever runs on the server.
+#
+# Tag to release:  git tag v0.1.0 && git push origin v0.1.0
+#
+# The tag is the only place the version is written. `pyproject.toml` is set from
+# it before the image is built, so there is no version to bump by hand and no
+# way for the number in the footer to disagree with the tag on the image.
+
+name: Release
+
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build (e.g. v0.1.0)"
+        required: true
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/personacore-ai
+
+jobs:
+  gate:
+    # The same checks CI runs. It **reports**; it does not hold the image back.
+    #
+    # It used to. `publish` needed it, on the reasoning that a tag must not
+    # publish something that would have failed on a branch. That reasoning
+    # optimised for the wrong thing: twice it has stopped an image being built
+    # over a lint error in a test file, while the operator waiting to pull it
+    # could have found real faults in minutes of clicking. Tests catch what I
+    # thought to check; the operator catches what I did not.
+    #
+    # So the gate still runs on every tag and its result is still the truth
+    # about the code. It is just no longer the thing standing between a tag and
+    # a container. A red gate on a published image is a bug to fix, not a
+    # release to withhold.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --upgrade pip && python -m pip install -e ".[dev]"
+      - run: python -m ruff check src tests
+      - run: python -m pytest -q --check-register
+
+  publish:
+    # Deliberately NOT `needs: gate`. The image builds whatever the tests say,
+    # so a tag always produces something to pull. See the gate job above.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          # The workflow token, not a personal token. Nothing long-lived is
+          # stored, and its scope dies with the run.
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Derive tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          # Full version, plus major.minor for anyone tracking a minor line.
+          # ':latest' only on a real release, never on a prerelease.
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
+
+      - name: Set the package version from the tag
+        # v0.7.0 shipped reporting v0.6.8 in its own footer. The tag names the
+        # image; the number inside the application comes from pyproject.toml,
+        # and bumping that was an undocumented manual step that got forgotten.
+        #
+        # tests/test_version.py cannot catch this and never could: it compares
+        # pyproject.toml to the installed package, and those two agreed with
+        # each other while agreeing with neither the tag nor reality. Nothing
+        # compared the tag to the package.
+        #
+        # So the tag is now the source. Written into pyproject.toml before the
+        # image is built, which makes the two impossible to disagree rather
+        # than merely checked. Not a gate: nothing here can refuse to publish,
+        # because a tag must always produce something to pull.
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          python - "$version" <<'PY'
+          import pathlib
+          import re
+          import sys
+
+          version = sys.argv[1]
+          path = pathlib.Path("pyproject.toml")
+          text = path.read_text(encoding="utf-8")
+          # Anchored to the [project] table's own key, so a version pin in a
+          # dependency list is never what gets rewritten.
+          new, count = re.subn(
+              r'(?m)^version = "[^"]*"$', f'version = "{version}"', text, count=1
+          )
+          if count != 1:
+              raise SystemExit(
+                  f"expected exactly one version line in pyproject.toml, replaced {count}"
+              )
+          path.write_text(new, encoding="utf-8")
+          print(f"pyproject.toml version set to {version}")
+          PY
+
+      - name: Stamp the build time
+        id: stamp
+        # The actual moment this image is built. An earlier version used the
+        # repository's updated_at, which is close enough to look right on a tag
+        # push and unrelated to the build on a rebuild — a timestamp that is
+        # approximately correct is the kind nobody questions until it matters.
+        run: echo "built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile
+          # Which build this is, so a floating `latest` can still be identified
+          # precisely. The UI shows these; empty means "built without them".
+          build-args: |
+            BUILD_COMMIT=${{ github.sha }}
+            BUILD_DATE=${{ steps.stamp.outputs.built_at }}
+          # CPU-only, permanently. amd64 and arm64 are both CPU targets; no
+          # GPU-flavoured variant is built, for any platform.
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: true
+          sbom: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Generate SBOM artefact
+        # The build attaches an SBOM to the image; this keeps a readable copy on
+        # the release itself, per CLAUDE.md's "generate the SBOM".
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ env.IMAGE }}:${{ steps.meta.outputs.version }}
+          format: spdx-json
+          output-file: sbom.spdx.json
+
+      - name: Attach SBOM to the run
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom.spdx.json

@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Weather settings",
+  "type": "object",
+  "properties": {
+    "default_location": {
+      "title": "Default location",
+      "description": "Which location to use when nobody says where.",
+      "type": "string",
+      "minLength": 1
+    },
+    "look_up_unknown_places": {
+      "title": "Look up places I have not configured",
+      "description": "Resolve a postcode, town, or city and country by asking the place-lookup service. Off means only the locations below will answer, and nothing anyone says reaches a lookup service.",
+      "type": "boolean",
+      "default": true
+    },
+    "units": {
+      "title": "Units",
+      "type": "string",
+      "enum": ["metric", "imperial"],
+      "default": "metric"
+    },
+    "forecast_days": {
+      "title": "Days to report",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 7,
+      "default": 3
+    },
+    "timeout_seconds": {
+      "title": "Give up after (seconds)",
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "maximum": 60,
+      "default": 10
+    },
+    "locations": {
+      "title": "Locations",
+      "description": "Places the assistant can be asked about. At least one is needed: the plugin will not start without somewhere to report on.",
+      "type": "object",
+      "minProperties": 1,
+      "x-personacore-lookup": {
+        "tool": "search_locations",
+        "query_argument": "query",
+        "results": "results",
+        "label": "label",
+        "fill": {
+          "label": "label",
+          "latitude": "latitude",
+          "longitude": "longitude"
+        }
+      },
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "label": { "title": "Name", "type": "string", "minLength": 1 },
+          "latitude": { "title": "Latitude", "type": "number", "minimum": -90, "maximum": 90 },
+          "longitude": { "title": "Longitude", "type": "number", "minimum": -180, "maximum": 180 },
+          "aliases": {
+            "title": "Also called",
+            "description": "Other names for this place — the town, a postcode, a nickname.",
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 }
+          }
+        },
+        "required": ["label", "latitude", "longitude"]
+      }
+    }
+  },
+  "required": ["default_location", "locations"],
+  "additionalProperties": false
+}

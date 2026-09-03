@@ -1,0 +1,36 @@
+{# fragments/voice_speak.html — the player, beside the button that asked for it.
+   Context: audio_url, spoken, carried
+
+   **This never becomes a page of its own.** The control used to navigate at the
+   .wav, and a browser handed a media file by navigation may play it, download
+   it, or print the bytes on the screen — the last is what happened on a
+   tablet. The fix is not a nicer page to be sent to: it is not being sent
+   anywhere. Pressing Test speak swaps this in next to the button, so the voice
+   you are editing is still in front of you while you listen to it.
+
+   Without JavaScript this fragment is what the browser lands on instead. Plain,
+   and it still plays.
+
+   **audio_url is a data: URI, not a link to the wav route.** The route only
+   ever renders this fragment once synthesis has already succeeded, so there is
+   no second request left for a bad model file to fail on the far side of an
+   element that cannot show what went wrong. #}
+<span class="hrow" style="gap:10px; flex-wrap:wrap; align-items:center">
+  {# `data-play-once`, NOT `autoplay`. Pressing the button is the request to
+     hear it, so it plays on the swap that the press caused. `autoplay` fires
+     whenever the browser renders the element — including when it restores this
+     page from cache after you navigate away and come back, which replayed the
+     last thing tested unbidden. A restore is not a request.
+
+     Controls stay, because once is rarely enough when checking a pronunciation
+     you just changed, and because with no JavaScript the play button is the
+     fallback. #}
+  <audio controls data-play-once preload="auto" style="max-width:320px; vertical-align:middle" src="{{ audio_url }}">
+    <a hx-boost="false" download href="{{ audio_url }}" target="_blank" rel="noopener">Download the audio</a>
+  </audio>
+  {% if carried %}
+  {# One word was typed and a sentence was spoken. Said here, because hearing
+     words you did not type is how somebody concludes the control is broken. #}
+  <span class="meta" style="max-width:46ch">{{ carried }}</span>
+  {% endif %}
+</span>

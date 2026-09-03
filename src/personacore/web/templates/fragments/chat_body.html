@@ -1,0 +1,17 @@
+{# fragments/chat_body.html — everything inside the message region.
+   Context: exchanges [dict] (oldest first)
+
+   Split out from chat.html so the page and the switch-conversation fragment
+   render the same messages the same way. Read-back messages and a reply that
+   arrived a second ago go through the SAME exchange partial: one description
+   of what a message looks like, so a conversation cannot change appearance
+   just by being reloaded. #}
+{% if not exchanges %}
+<p class="text-muted" id="chat-empty" style="font-size:13px; margin:0">
+  Nothing said in this conversation yet. Try “what's the weather?”
+</p>
+{% else %}
+{% for exchange in exchanges %}
+{% include "fragments/chat_exchange_body.html" %}
+{% endfor %}
+{% endif %}

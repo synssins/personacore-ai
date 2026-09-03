@@ -1,0 +1,308 @@
+{# core_form.html — the core settings form, lifted verbatim out of core.html so
+   that POST /admin/core can return it on its own: the design makes this <form>
+   the swap boundary (hx-target="#core-form"), and a swap target that only
+   exists inside a whole page cannot be re-rendered without one.
+
+   Context: core {instance_name, instance_editable, listen, log_level,
+     log_level_editable, auth_bypass, auth_bypass_editable, bus_auth,
+     bus_auth_editable,
+     auth {method, running, running_label, bypassed, bypass_note,
+       choices: [{value, label, help, selected}]},
+     playback {autoplay, choices: [{value, label, help, selected}]},
+     dictation {browser},
+     wyoming {enabled, host, port, host_placeholder, port_placeholder,
+       address, running, loopback, error},
+     bus {host, port, client_id, username, password_set,
+       password_secret, password_secret_broken},
+     retention: [{surface, label, value, error?}], purge {ok, schedule,
+     last_success, last_error, consecutive_failures, can_retry}}, save_result?
+
+   Fields whose setting does not exist in CoreSettings — instance name, log
+   level, and both security toggles — are disabled and marked `later` rather
+   than removed, per the rule the plugins screen already follows. #}
+{% from "_controls.html" import icon %}
+<form class="stack" style="max-width:640px" id="core-form"
+      hx-post="/admin/core" hx-target="#core-form" hx-swap="outerHTML">
+
+  <section class="stack" style="gap:var(--space-4)">
+    <h6 class="text-muted" style="margin:0">Instance</h6>
+    <div style="display:grid; grid-template-columns:1.4fr 1fr; gap:var(--space-3)">
+      <div class="field">
+        <label for="instance-name">Instance name {% if not core.instance_editable %}<span class="later">later</span>{% endif %}</label>
+        <input class="input" type="text" id="instance-name" name="instance_name" value="{{ core.instance_name }}"
+               {% if not core.instance_editable %}disabled{% endif %}>
+      </div>
+      <div class="field">
+        <label for="listen">Listen address</label>
+        <input class="input" type="text" id="listen" name="listen" value="{{ core.listen }}" placeholder="host:port — empty for the default">
+      </div>
+    </div>
+    <div class="field" style="max-width:220px">
+      <label for="log-level">Log level {% if not core.log_level_editable %}<span class="later">later</span>{% endif %}</label>
+      <select class="input" id="log-level" name="log_level" {% if not core.log_level_editable %}disabled{% endif %}>
+        {% for lvl in ['error','warning','info','debug'] %}
+        <option value="{{ lvl }}" {% if core.log_level == lvl %}selected{% endif %}>{{ lvl }}</option>
+        {% endfor %}
+      </select>
+    </div>
+  </section>
+
+  <section class="stack" style="gap:var(--space-4)">
+    <h6 class="text-muted" style="margin:0">Event bus</h6>
+    <div style="display:grid; grid-template-columns:1.4fr 1fr; gap:var(--space-3)">
+      <div class="field">
+        <label for="bus-host">Broker address</label>
+        <input class="input" type="text" id="bus-host" name="bus_host" value="{{ core.bus.host }}" placeholder="mosquitto">
+      </div>
+      <div class="field">
+        <label for="bus-port">Broker port</label>
+        <input class="input" type="text" inputmode="numeric" id="bus-port" name="bus_port" value="{{ core.bus.port }}">
+      </div>
+    </div>
+    <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:var(--space-3)">
+      <div class="field">
+        <label for="bus-client-id">Client id</label>
+        <input class="input" type="text" id="bus-client-id" name="bus_client_id" value="{{ core.bus.client_id }}">
+      </div>
+      <div class="field">
+        <label for="bus-username">User name</label>
+        <input class="input" type="text" id="bus-username" name="bus_username" value="{{ core.bus.username }}" placeholder="empty for none">
+      </div>
+      <div class="field">
+        {# Write-only. There is no `value` here and there never may be: this box
+           posts a password up and never renders one back, so the page source
+           carries no trace of it whatever the browser or a screenshot does.
+           An empty box means "leave it as it is" — clearing has its own
+           control below, because a blank field must never be read as delete. #}
+        <label for="bus-password">Broker password</label>
+        <input class="input" type="password" id="bus-password" name="bus_password"
+               autocomplete="new-password" spellcheck="false"
+               placeholder="{% if core.bus.password_set %}unchanged{% else %}empty for none{% endif %}"
+               aria-describedby="bus-password-help">
+      </div>
+    </div>
+    <p class="meta" id="bus-password-help" style="margin:0; max-width:60ch">
+      {% if core.bus.password_set %}
+      <span class="state-word ok" style="font-size:12px">a password is set</span>
+      Leave the box empty to keep it. Type a new one to replace it.
+      <button class="btn btn-ghost" type="submit" name="bus_password_clear" value="1"
+              style="font-size:12.5px"
+              hx-confirm="Remove the broker password? The event bus will then connect with no password at all.">remove the password</button>
+      {% else %}
+      <span class="state-word off" style="font-size:12px">no password is set</span>
+      The event bus connects with no password. Type one here to change that.
+      {% endif %}
+      {% if core.bus.password_secret %}
+      <br>This core also still has <code>password_secret = "{{ core.bus.password_secret }}"</code> in its configuration{% if core.bus.password_secret_broken %}, naming a secret that is not in the store — which is why no password is in use{% endif %}. A password typed above is used instead of it.
+      {% endif %}
+    </p>
+  </section>
+
+  <section class="stack" style="gap:var(--space-4)">
+    <h6 class="text-muted" style="margin:0">Security</h6>
+
+    {# Sign-in — `[auth] method` (ADR-0023), applied live (ADR-0010). A real
+       setting, so unlike the two toggles below it is enabled. It is a radio
+       group rather than a dropdown because both choices need their sentence
+       visible at once: picking the proxy without a proxy in front locks
+       everybody out, and that is not something to discover after saving.
+
+       Saving swaps the door on this request. The core refuses the save if the
+       door picked would not admit whoever asked for it, and the refusal says
+       which and why — so there is nothing here that waits, and no badge for
+       waiting. #}
+    <fieldset class="stack" style="border:0; padding:0; margin:0; gap:var(--space-3)">
+      <legend style="font-size:14px; padding:0">Sign-in
+        {% if core.auth.bypassed %}<span class="state-word down" style="font-size:12px">not in use — the bypass is on</span>{% endif %}
+      </legend>
+      <p class="meta" style="margin:0; max-width:60ch">How somebody proves who they are before this interface will open. It changes as soon as you save.{% if core.auth.bypass_note %} {{ core.auth.bypass_note }}{% endif %}</p>
+      {% for choice in core.auth.choices %}
+      <div class="hrow" style="align-items:flex-start; gap:12px">
+        <input type="radio" id="auth-method-{{ choice.value }}" name="auth_method" value="{{ choice.value }}"
+               style="margin-top:3px" {% if choice.selected %}checked{% endif %}
+               aria-describedby="auth-method-{{ choice.value }}-help">
+        <div>
+          <label for="auth-method-{{ choice.value }}" style="font-size:14px">{{ choice.label }}
+            {% if choice.value == core.auth.running %}<span class="state-word ok" style="font-size:12px">in use</span>{% endif %}
+          </label>
+          <p class="meta" id="auth-method-{{ choice.value }}-help" style="margin:2px 0 0; max-width:52ch">{{ choice.help }}</p>
+        </div>
+      </div>
+      {% endfor %}
+    </fieldset>
+
+    {# Speech playback for the whole household (ADR-0030). Three values, not a
+       switch: "everyone chooses" is a real third state and collapsing it into
+       "off" would silence people who had chosen otherwise. #}
+    <fieldset class="stack" style="border:0; padding:0; margin:0; gap:var(--space-3)">
+      <legend style="font-size:14px; padding:0">Speech playback</legend>
+      <p class="meta" style="margin:0; max-width:60ch">Whether a spoken reply starts playing by itself. Choosing on or off sets it for everybody and takes their own control away.</p>
+      {% for choice in core.playback.choices %}
+      <div class="hrow" style="align-items:flex-start; gap:12px">
+        <input type="radio" id="playback-autoplay-{{ choice.value }}" name="playback_autoplay" value="{{ choice.value }}"
+               style="margin-top:3px" {% if choice.selected %}checked{% endif %}
+               aria-describedby="playback-autoplay-{{ choice.value }}-help">
+        <div>
+          <label for="playback-autoplay-{{ choice.value }}" style="font-size:14px">{{ choice.label }}</label>
+          <p class="meta" id="playback-autoplay-{{ choice.value }}-help" style="margin:2px 0 0; max-width:52ch">{{ choice.help }}</p>
+        </div>
+      </div>
+      {% endfor %}
+    </fieldset>
+
+    {# Browser dictation, globally — a household fact about where audio goes,
+       not a per-person choice (PLAN.md, "Next — Speech to text, in the
+       container"). A switch rather than a radio group: unlike playback there
+       is no third state to offer, because there is no per-person half for an
+       administrator's choice to override. Off by default. #}
+    <div class="hrow" style="align-items:flex-start; gap:12px">
+      <input type="hidden" name="present.dictation_browser" value="1">
+      <input type="checkbox" role="switch" class="switch" id="dictation-browser" style="margin-top:2px"
+             name="dictation_browser" value="1"
+             {% if core.dictation.browser %}checked{% endif %}
+             aria-describedby="dictation-browser-help">
+      <div>
+        <label for="dictation-browser" style="font-size:14px">Browser dictation
+          {% if core.dictation.browser %}<span class="state-word warn" style="font-size:12px">on</span>
+          {% else %}<span class="state-word off" style="font-size:12px">off</span>{% endif %}
+        </label>
+        <p class="meta" id="dictation-browser-help" style="margin:2px 0 0; max-width:56ch">Lets the chat screen's microphone use the browser's own speech recogniser, which sends what is said to the browser vendor — Google, in every browser that ships one. A household member cannot turn this on for themselves.</p>
+      </div>
+    </div>
+
+    <div class="hrow" style="align-items:flex-start; gap:12px">
+      {# toggles post immediately — a security change should not wait on Save #}
+      <input type="checkbox" role="switch" class="switch danger" id="auth-bypass" style="margin-top:2px"
+             {% if core.auth_bypass %}checked{% endif %}
+             {% if core.auth_bypass_editable %}hx-post="/admin/core/auth-bypass" hx-target="body"{% else %}disabled{% endif %}
+             aria-describedby="auth-bypass-help">
+      <div>
+        <label for="auth-bypass" style="font-size:14px">Admin authentication bypass
+          {% if core.auth_bypass %}<span class="state-word down" style="font-size:12px">ON — visible on Health</span>
+          {% else %}<span class="state-word off" style="font-size:12px">off</span>{% endif %}
+          {% if not core.auth_bypass_editable %}<span class="later">later</span>{% endif %}
+        </label>
+        <p class="meta" id="auth-bypass-help" style="margin:2px 0 0; max-width:52ch">Lets this interface open without signing in. While it is on, the Health screen shows it.{% if not core.auth_bypass_editable %} Set by the environment variable PERSONACORE_ADMIN_DEV_USER; it cannot be switched off here yet.{% endif %}</p>
+      </div>
+    </div>
+    <div class="hrow" style="align-items:flex-start; gap:12px">
+      <input type="checkbox" role="switch" class="switch" id="bus-auth" style="margin-top:2px"
+             {% if core.bus_auth %}checked{% endif %}
+             {% if core.bus_auth_editable %}hx-post="/admin/core/bus-auth" hx-target="body"{% else %}disabled{% endif %}
+             aria-describedby="bus-auth-help">
+      <div>
+        <label for="bus-auth" style="font-size:14px">Event bus authentication
+          {% if core.bus_auth %}<span class="state-word ok" style="font-size:12px">on</span>
+          {% else %}<span class="state-word warn" style="font-size:12px">OFF — the bus runs degraded</span>{% endif %}
+          {% if not core.bus_auth_editable %}<span class="later">later</span>{% endif %}
+        </label>
+        <p class="meta" id="bus-auth-help" style="margin:2px 0 0; max-width:52ch">With this off the bus runs, but degraded: anything on the local network may publish events.{% if not core.bus_auth_editable %} It follows the user name and password above.{% endif %}</p>
+      </div>
+    </div>
+  </section>
+
+  {# The Wyoming server — [wyoming] in core.toml. Home Assistant connects to
+     us and we answer as its speech-to-text and text-to-speech.
+
+     The security sentence is not decoration and is not a hedge: the protocol
+     carries no credential of any kind, so the switch cannot express what
+     turning it on means. It is one sentence, stated once, and the address is
+     printed beside it so nobody has to open a document to learn what to type
+     into Home Assistant. #}
+  <section class="stack" style="gap:var(--space-4)">
+    <h6 class="text-muted" style="margin:0">Home Assistant (Wyoming)</h6>
+    <p class="text-muted" style="margin:0; font-size:13px; max-width:60ch">Lets Home Assistant use this core as its speech-to-text and text-to-speech. The port has no sign-in, no permissions and no encryption, so anything that can reach it can transcribe through this core and make it speak.</p>
+
+    <div class="hrow" style="align-items:flex-start; gap:12px">
+      {# The marker says the block was drawn. Without it an unticked switch and
+         a form that never rendered this section post the same nothing, and the
+         two empty text boxes below would move a widened host back to
+         loopback. #}
+      <input type="hidden" name="present.wyoming_enabled" value="1">
+      <input type="checkbox" role="switch" class="switch" id="wyoming-enabled" style="margin-top:2px"
+             name="wyoming_enabled" value="1"
+             {% if core.wyoming.enabled %}checked{% endif %}
+             aria-describedby="wyoming-enabled-help">
+      <div>
+        <label for="wyoming-enabled" style="font-size:14px">Wyoming server
+          {% if core.wyoming.running %}<span class="state-word ok" style="font-size:12px">listening</span>
+          {% elif core.wyoming.enabled %}<span class="state-word warn" style="font-size:12px">on — the port did not open</span>
+          {% else %}<span class="state-word off" style="font-size:12px">off</span>{% endif %}
+        </label>
+        <p class="meta" id="wyoming-enabled-help" style="margin:2px 0 0; max-width:56ch">Off unless you turn it on, and turning it on is the whole decision — it listens on every interface so Home Assistant can reach it without a second setting. Keep it on a network you control; there is nothing that can be put in front of it.</p>
+      </div>
+    </div>
+
+    <div style="display:grid; grid-template-columns:1.4fr 1fr; gap:var(--space-3); max-width:520px">
+      <div class="field">
+        <label for="wyoming-host">Wyoming address</label>
+        <input class="input" type="text" id="wyoming-host" name="wyoming_host" value="{{ core.wyoming.host }}"
+               placeholder="{{ core.wyoming.host_placeholder }} — empty for the default">
+      </div>
+      <div class="field">
+        <label for="wyoming-port">Wyoming port</label>
+        <input class="input" type="text" inputmode="numeric" id="wyoming-port" name="wyoming_port"
+               value="{{ core.wyoming.port }}" placeholder="{{ core.wyoming.port_placeholder }}">
+      </div>
+    </div>
+
+    {# The address, spelled out, because typing it into Home Assistant is the
+       next thing an operator does and a screen that sent them to a document to
+       find it has not finished the job. #}
+    <p class="meta" style="margin:0; max-width:60ch" id="wyoming-address">Home Assistant connects to <strong>{{ core.wyoming.address }}</strong>, which is the port to open to its container.
+      {% if core.wyoming.loopback %}Nothing outside this container can reach {{ core.wyoming.host_placeholder }}.{% endif %}
+      {% if core.wyoming.error %}Nothing is listening: {{ core.wyoming.error }}{% endif %}</p>
+  </section>
+
+  <section class="stack" style="gap:var(--space-4)">
+    <h6 class="text-muted" style="margin:0">Conversation retention</h6>
+    <p class="text-muted" style="margin:0; font-size:13px; max-width:56ch">How long transcripts are kept, per surface. Shorter is more private.</p>
+    <div style="display:grid; grid-template-columns:repeat(4, 1fr); gap:var(--space-3); max-width:520px">
+      {% for r in core.retention %}
+      <div class="field">
+        <label for="ret-{{ r.surface }}">{{ r.label }}</label>
+        <div class="hrow" style="gap:6px">
+          <input class="input {% if r.error %}is-invalid{% endif %}" type="text" inputmode="numeric"
+                 id="ret-{{ r.surface }}" name="retention_{{ r.surface }}" value="{{ r.value }}"
+                 {% if r.error %}aria-invalid="true" aria-describedby="err-ret-{{ r.surface }}"{% endif %}>
+          <span class="meta">days</span>
+        </div>
+        {% if r.error %}<p class="field-error" id="err-ret-{{ r.surface }}">{{ r.error }}</p>{% endif %}
+        {# e.g. "A number of days, 0 to 3650. You typed 'ninety'." — input preserved #}
+      </div>
+      {% endfor %}
+    </div>
+
+    {# purge status — degraded state made visible, with the way out #}
+    <div class="banner {{ 'warn' if not core.purge.ok else 'neutral' }}" id="purge-status">
+      {% if core.purge.ok %}{{ icon('check') }}{% else %}{{ icon('warn') }}{% endif %}
+      <div class="grow">
+        {% if core.purge.ok %}
+        <div class="title" style="color:var(--color-ok)">The purge is running on schedule.</div>
+        <p class="meta" style="margin:2px 0 0">Transcripts past their window are deleted {{ core.purge.schedule }}.</p>
+        {% else %}
+        <div class="title">The purge is failing — old transcripts are not being deleted.</div>
+        <p class="meta" style="margin:2px 0 0">{{ core.purge.last_error }} Last success {{ core.purge.last_success }} · {{ core.purge.consecutive_failures }} consecutive failures · next attempt {{ core.purge.schedule }}.</p>
+        {% endif %}
+      </div>
+      {% if not core.purge.ok %}
+      <button type="button" class="btn btn-secondary"
+              {% if core.purge.can_retry %}hx-post="/admin/core/purge/run/fragment"
+              hx-target="#purge-status" hx-swap="outerHTML"
+              hx-indicator="#purging"{% else %}disabled{% endif %}>Retry now</button>
+      {% if not core.purge.can_retry %}<span class="later">later</span>{% endif %}
+      <span class="htmx-indicator meta" id="purging">{{ icon('spinner') }} purging…</span>
+      {% endif %}
+    </div>
+  </section>
+
+  <div class="hrow">
+    <button type="submit" class="btn btn-primary">Save</button>
+    {% if save_result %}
+      {% if save_result.kind == 'saved' %}<span class="save-note ok" role="status">{{ icon('check') }} {{ save_result.message }}</span>
+      {% elif save_result.kind == 'nothing' %}<span class="save-note none" role="status">{{ save_result.message }}</span>
+      {% elif save_result.kind == 'invalid' %}<span class="save-note error" role="alert">{{ icon('warn') }} {{ save_result.message }}</span>
+      {% endif %}
+    {% endif %}
+  </div>
+</form>

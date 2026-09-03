@@ -1,0 +1,139 @@
+# Lint, test and scan on every push and pull request.
+#
+# CLAUDE.md, CI/CD: "lint -> tests -> dependency/security scan" on every push/PR.
+# Publishing happens only on a tagged release, in release.yml — a green build here
+# never pushes an image anywhere.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # A newer push supersedes an in-flight run on the same ref. Saves runner time
+  # and stops two runs racing to report on the same commit.
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.12 is the floor pyproject declares. 3.13 is here to catch a
+        # deprecation before it becomes a migration.
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install
+        run: python -m pip install --upgrade pip && python -m pip install -e ".[dev]"
+
+      - name: Lint
+        run: python -m ruff check src
+
+      # A `ruff format --check` gate belongs here and is deliberately absent for
+      # now: the tree predates the formatter and 19 files would fail. Adding the
+      # gate before the one-pass reformat would ship a knowingly-red pipeline,
+      # which teaches everyone to ignore a red pipeline. Reformat, then restore
+      # this step.
+
+      # THE TEST SUITE IS NOT IN THIS REPOSITORY, by the owner's instruction on
+      # 2026-09-03: it was never meant to reach one. It still runs, serially,
+      # on the machine where commits are made -- including the gates that keep
+      # private content out of this repository, which is the one place they
+      # actually need to run, since that is where a commit is created.
+      #
+      # Stating the cost plainly rather than leaving a quiet hole: nothing here
+      # now proves the code works. A push that breaks the suite goes green.
+
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: python -m pip install --upgrade pip && python -m pip install ".[dev]" pip-audit
+
+      - name: Dependency vulnerability scan
+        # Fails the build on a known vulnerability in anything we ship. Spec
+        # section 7 requires dependency scanning in CI; a scan that only warns is
+        # a scan nobody reads.
+        #
+        # The tree is audited rather than the environment: `personacore` itself is
+        # not on PyPI, and under --strict an unresolvable distribution is an error
+        # rather than a finding, so auditing the environment fails for a reason
+        # that has nothing to do with security.
+        run: |
+          python -m pip freeze --exclude-editable | grep -v '^personacore' > audit-requirements.txt
+          python -m pip_audit --strict --desc -r audit-requirements.txt
+
+  secrets:
+    # A secret that reaches a commit is already compromised, so this gate runs on
+    # every push and PR rather than at release. Full history, not just the diff:
+    # a rewritten branch or a force-push can carry an old leak forward.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Scan history for secrets
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-image:
+    # Proves the Dockerfile still builds on every change. Does NOT push — an
+    # image only leaves this repo from a tagged release.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile
+          push: false
+          load: true
+          tags: personacore:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Container starts and answers its health check
+        # A build that produces an image which cannot boot is not a passing build.
+        run: |
+          docker run -d --name personacore-ci \
+            -e PERSONACORE_PORT=8053 \
+            -v "${{ runner.temp }}/appdata:/appdata" \
+            -p 8053:8053 personacore:ci
+          for i in $(seq 1 30); do
+            if curl -fsS "http://127.0.0.1:8053/health" >/dev/null 2>&1; then
+              echo "healthy after ${i}s"; docker rm -f personacore-ci; exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::container never became healthy"
+          docker logs personacore-ci || true
+          docker rm -f personacore-ci
+          exit 1

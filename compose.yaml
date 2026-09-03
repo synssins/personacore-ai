@@ -1,0 +1,95 @@
+# PersonaCore — production stack.
+#
+# Before the first start: copy .env.example to .env and set the two paths in it,
+# and copy deploy/mosquitto/mosquitto.conf to <PERSONACORE_MOSQUITTO_DIR>/config/
+# — the broker mount below hides the config file its image ships with.
+#
+# Standard upgrade path (CLAUDE.md, CI/CD):
+#     docker compose pull && docker compose up -d
+# Rollback: re-pin the previous tag below and repeat. Appdata is never touched by
+# either — spec section 7 requires appdata format changes to be an explicit,
+# documented migration.
+#
+# To build from source instead of pulling, add the build override:
+#     docker compose -f compose.yaml -f deploy/compose.build.yaml up -d --build
+#
+# Every container here is CPU-only. There is no GPU device mapping and there
+# never will be.
+
+services:
+  personacore:
+    image: ghcr.io/synssins/personacore-ai:0.7.2   # pin a tag; never :latest in production
+    container_name: personacore
+    restart: unless-stopped
+    depends_on:
+      mosquitto:
+        condition: service_started
+    environment:
+      - TZ=${TZ:-Etc/UTC}
+      - PERSONACORE_APPDATA=/appdata
+      - PERSONACORE_HOST=${PERSONACORE_HOST:-0.0.0.0}
+      - PERSONACORE_PORT=${PERSONACORE_PORT:-8053}
+    volumes:
+      # Appdata is the assistant. Everything else in this file is disposable.
+      - ${PERSONACORE_APPDATA_DIR}:/appdata:rw
+    ports:
+      # Plain HTTP. TLS terminates at the reverse proxy (spec section 7) — do not
+      # publish this to anything you do not control. Bind to loopback and let the
+      # proxy reach it if the proxy runs on this host.
+      - "127.0.0.1:${PERSONACORE_PORT:-8053}:${PERSONACORE_PORT:-8053}"
+      # Wyoming (ADR-0033) is NOT published here, and that is not an
+      # oversight. It is off until an operator turns it on, and the two
+      # deployments differ:
+      #
+      #   * host networking -- ports cannot be published at all, and whatever
+      #     the container listens on is already reachable. Nothing to do.
+      #   * bridge networking -- add `- "10300:10300"` here, and note that
+      #     `[wyoming] host` must be 0.0.0.0 (the default) for a published
+      #     port to reach it. Loopback inside a container is invisible to the
+      #     forward, which reads from outside as a refused connection while
+      #     /health cheerfully reports the surface as up.
+      #
+      # Either way the port has NO authentication, no authorisation and no
+      # encryption -- the protocol's own design, not an omission here. Anything
+      # that can reach it can transcribe through this core and make it speak,
+      # so the network it sits on is the only boundary there is.
+    logging:
+      driver: json-file
+      options:
+        max-file: ${DOCKERLOGGING_MAXFILE:-3}
+        max-size: ${DOCKERLOGGING_MAXSIZE:-10m}
+
+  # Event bus, spec section 5.2. Small, standard, and what Home Assistant speaks
+  # natively (ADR-0001 item 3).
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: personacore-mosquitto
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-Etc/UTC}
+    volumes:
+      # This mount HIDES the config file the eclipse-mosquitto image ships with,
+      # so the directory must contain a mosquitto.conf or the broker has none.
+      # Copy deploy/mosquitto/mosquitto.conf from this repo to
+      #   ${PERSONACORE_MOSQUITTO_DIR}/config/mosquitto.conf
+      # on the Docker host before the first start.
+      - ${PERSONACORE_MOSQUITTO_DIR}/config:/mosquitto/config:rw
+      - ${PERSONACORE_MOSQUITTO_DIR}/data:/mosquitto/data:rw
+    # Deliberately NOT published. The broker is reachable only from this Compose
+    # network; an MQTT broker on a LAN with no authentication is an open door.
+    expose:
+      - 1883
+    logging:
+      driver: json-file
+      options:
+        max-file: ${DOCKERLOGGING_MAXFILE:-3}
+        max-size: ${DOCKERLOGGING_MAXSIZE:-10m}
+
+# Deliberately absent, and why:
+#
+#   Reverse proxy (Caddy) and OIDC (Authelia) — ADR-0009 and spec section 7 need
+#   both, but this stack is going onto a host that already runs Authelia behind
+#   its own proxy. Standing up a second copy would give you two auth providers to
+#   keep in step. Point the existing proxy at personacore:8053 instead.
+#
+#   Anything GPU-adjacent — by constraint, permanently.

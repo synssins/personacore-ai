@@ -1,0 +1,53 @@
+{# model_form.html — the address/model/test/save/clear block for one role.
+   Included by models.html; also returned whole by POST /admin/models/<id>
+   (Save/Clear re-render it with save_result). #}
+{% from "_controls.html" import icon %}
+<form class="stack" style="gap:var(--space-3)"
+      hx-post="/admin/models/{{ role.id }}"
+      hx-target="closest form" hx-swap="outerHTML">
+  <div style="display:grid; grid-template-columns:1.6fr 1fr; gap:var(--space-3)">
+    <div class="field">
+      <label for="addr-{{ role.id }}">Address</label>
+      <input class="input" type="text" id="addr-{{ role.id }}" name="address" value="{{ role.addr }}" placeholder="http://host:port/v1">
+    </div>
+    {# the model name is a text box until somebody presses Fetch models, which
+       swaps this div for a dropdown of what that host reports #}
+    {% include "fragments/model_field.html" %}
+  </div>
+  {# The key this connection sends, if it needs one. Write-only and outside the
+     grid above, because its help line is a sentence rather than a box. #}
+  {% with key = role.key %}{% include "fragments/connection_key.html" %}{% endwith %}
+  <div class="hrow" style="gap:var(--space-2)">
+    <button type="button" class="btn btn-secondary"
+            hx-post="/admin/models/{{ role.id }}/test/fragment"
+            hx-include="closest form" hx-params="not api_key,api_key_clear"
+            hx-target="#test-{{ role.id }}" hx-swap="innerHTML"
+            hx-indicator="#testing-{{ role.id }}">
+      Test connection
+    </button>
+    <span class="htmx-indicator meta" id="testing-{{ role.id }}">{{ icon('spinner') }} testing…</span>
+    <button type="submit" class="btn btn-primary" name="action" value="save">Save</button>
+    {% if not role.required %}
+    {# the required role has nothing to fall back to, so it is never offered #}
+    <button type="submit" class="btn btn-ghost" name="action" value="clear">Clear and fall back to the conversation model</button>
+    {% endif %}
+  </div>
+
+  <div id="test-{{ role.id }}" aria-live="polite">
+    {% if role.test_result %}{% include "fragments/model_test.html" %}
+    {% else %}<p class="save-note none" style="margin:0">untested — press Test connection to find out whether this address answers.</p>{% endif %}
+  </div>
+
+  {% if role.save_result %}
+    {% if role.save_result.kind == 'saved' %}
+    <p class="save-note ok" role="status" style="margin:0">{{ icon('check') }} {{ role.save_result.message }}</p>
+    {# "Wrote the conversation connection to data/models.json. In use from the next message." #}
+    {% elif role.save_result.kind == 'nothing' %}
+    <p class="save-note none" role="status" style="margin:0">{{ role.save_result.message }}</p>
+    {# "Nothing changed — the connection is as it was." #}
+    {% elif role.save_result.kind == 'error' %}
+    <p class="save-note error" role="alert" style="margin:0">{{ icon('warn') }} {{ role.save_result.message }}</p>
+    {# "The conversation model needs an address — it is the one required connection." #}
+    {% endif %}
+  {% endif %}
+</form>

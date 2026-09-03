@@ -1,0 +1,69 @@
+{# sign_in.html — the core's own sign-in (PC-283).
+
+   Deliberately does NOT extend base.html. That template draws the whole
+   navigation, and a map of the admin surface is not something to hand to
+   somebody who has not signed in.
+
+   Context: error?, username, stylesheet, sign_in_path, setup_path,
+     tls_warning? (PC-286 — shown only when this connection is not HTTPS) #}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign in — PersonaCore</title>
+  <link rel="stylesheet" href="{{ stylesheet }}">
+</head>
+<body>
+  <main class="content" style="display:grid; place-items:center; min-height:100vh; min-height:100dvh; padding:24px">
+    <div style="width:100%; max-width:34rem; display:flex; flex-direction:column; gap:var(--space-4)">
+
+      <div style="text-align:center">
+        <div class="brand" style="justify-content:center; font-size:18px">PersonaCore <small>admin</small></div>
+      </div>
+
+      {% if tls_warning %}
+      {# PC-286 — said out loud, on the page where the password is typed. #}
+      <div class="banner warn" role="note">
+        <p class="grow" style="margin:0; font-size:13px">{{ tls_warning }}</p>
+      </div>
+      {% endif %}
+
+      {% if error %}
+      <div class="banner danger" role="alert" id="sign-in-error">
+        <p class="grow" style="margin:0; font-size:13.5px">{{ error }}</p>
+      </div>
+      {% endif %}
+
+      <form class="card elev-sm" method="post" action="{{ sign_in_path }}"
+            style="gap:var(--space-3)" autocomplete="on">
+        <h3 style="margin:0 0 2px">Sign in</h3>
+
+        <div class="field">
+          <span class="label-row"><label for="username">Name</label></span>
+          <input class="input" type="text" id="username" name="username"
+                 value="{{ username }}" autocomplete="username" autocapitalize="none"
+                 spellcheck="false" required autofocus>
+        </div>
+
+        <div class="field">
+          <span class="label-row"><label for="password">Password</label></span>
+          {# `value` is never filled in. A password echoed back into the page is a
+             password in the browser's cache, in the back button and in any
+             screenshot of the screen. #}
+          <input class="input" type="password" id="password" name="password"
+                 autocomplete="current-password" required>
+        </div>
+
+        <div class="hrow" style="justify-content:flex-end">
+          <button type="submit" class="btn btn-primary">Sign in</button>
+        </div>
+      </form>
+
+      <p class="meta" style="text-align:center; margin:0">
+        Signing in on another device does not sign this one out.
+      </p>
+    </div>
+  </main>
+</body>
+</html>

@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Example plugin settings",
+  "description": "Ship one of these and the admin UI renders a real form for your settings instead of a raw text editor. Without it an operator edits your config.toml by hand. Every property here matches a key in config.toml; delete the ones you do not need.",
+  "type": "object",
+  "properties": {
+    "greeting": {
+      "title": "Greeting",
+      "description": "What the hello tool says. This description is the help text an operator reads, so write it for them rather than for yourself.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "default": "Hello from the PersonaCore plugin template."
+    },
+    "excitement": {
+      "title": "Exclamation marks",
+      "description": "How many to add. The bounds are enforced by the form, so an operator cannot save a value your code would reject.",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 5,
+      "default": 1
+    },
+    "shout": {
+      "title": "Shout it",
+      "description": "A boolean becomes a toggle. This one is here to show the control; delete it with the rest.",
+      "type": "boolean",
+      "default": false
+    },
+    "tone": {
+      "title": "Tone",
+      "description": "A string with enum becomes a dropdown.",
+      "type": "string",
+      "enum": ["cheerful", "flat", "reluctant"],
+      "default": "cheerful"
+    }
+  },
+
+  "x-personacore-notes": [
+    "KEYS ARE FLAT. The form renders top-level properties and repeating groups.",
+    "It does NOT render a plain nested object as a sub-section, so a config.toml",
+    "with [some.section] headings gets the raw editor instead of a form. Keep your",
+    "settings flat and obviously named unless you specifically want a repeating",
+    "group.",
+    "",
+    "THE CORE RENDERS A BOUNDED VOCABULARY AND NEVER EXECUTES ANYTHING FROM A",
+    "SCHEMA. That is a security boundary, not a limitation: your schema is data",
+    "supplied by a third party, so it is read and never run. Keywords outside the",
+    "set below are ignored rather than obeyed.",
+    "",
+    "The controls, and what produces each:",
+    "  toggle           type: boolean",
+    "  dropdown         type: string with enum",
+    "  number           type: integer or number, with minimum / maximum",
+    "  text             type: string, with minLength / maxLength",
+    "  long text        type: string with x-personacore-multiline: true",
+    "  list of strings  type: array of strings",
+    "  secret picker    type: string with x-personacore-secret: true",
+    "                   -- offers the NAMES of stored secrets, never a value.",
+    "                      Declare the name in manifest.toml permissions.secrets.",
+    "  repeating group  type: object with additionalProperties describing one entry",
+    "                   -- several fields per entry, each named by the operator.",
+    "",
+    "SEARCH-AND-FILL. Any field can be filled by searching rather than typing. Add",
+    "x-personacore-lookup naming one of your own tools; the operator types a query,",
+    "picks a result, and one or more fields fill in. It is a general mechanism",
+    "available to any plugin -- weather is simply the first to use it.",
+    "",
+    "For repeating groups and search-and-fill together, read",
+    "plugins/weather/config.schema.json. It is the worked example for both.",
+    "",
+    "A field with a default shows it marked AS a default, so an operator can tell",
+    "'the plugin is using this' from 'the plugin would use this if you saved'.",
+    "",
+    "You still validate your settings when you load them. The form stops the",
+    "obviously wrong ones; it does not know what your settings MEAN."
+  ]
+}

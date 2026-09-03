@@ -1,0 +1,214 @@
+{# plugin_review.html — the install-time disclosure, swapped into #modal.
+
+   WHY THIS SCREEN EXISTS. A stranger's plugin zip was installed. Told that
+   the manifest declares what the plugin asks for, the owner's objection was
+   that most people will not read the instructions before installing a
+   stranger's zip file. Until this dialog, the declaration was visible only to somebody who unzipped
+   the archive and opened a TOML file. That is not a disclosure.
+
+   THE WORDING IS THE FEATURE, AND IT IS NOT WRITTEN HERE. Every load-bearing
+   sentence — the lede, the two "Enforced." notes, the "Not enforced." note and
+   the closing paragraph — is a named constant in ui/routes.py, passed in. They
+   are constants because a screen whose honesty can drift is a screen that will
+   drift. In particular:
+
+     · The word "permission" does not appear about hosts or paths. ADR-0012:
+       `permissions.network` and `permissions.paths` are declared and enforced
+       by nothing for a stdio plugin, which shares the core's network namespace
+       and the core's filesystem view. "A control that appears enforced and is
+       not is worse than no control, because it is trusted."
+     · Secrets and risk levels ARE enforced, and say so, because they are the
+       only two guarantees on this screen.
+
+   Context: disclosure (PackageDisclosure) or none; refusal (str) or none;
+   title, lede, provides_note (str) or none, authors_words, risk_enforced,
+   secrets_enforced,
+   declared_not_enforced, not_a_sandbox, where_it_runs, refused_note,
+   replace_disclosure (str) or none.
+
+   The archive has NOT been unpacked at this point. Cancel closes the dialog and
+   there is nothing to clean up. Install re-posts the page's own file input
+   (hx-include on the form), so the bytes are never parked on the server. #}
+{% from "_controls.html" import icon %}
+{% macro risk_word(risk) -%}
+  {%- if risk == 'restricted' -%}down{%- elif risk == 'confirm' -%}warn{%- else -%}off{%- endif -%}
+{%- endmacro %}
+<div class="dialog" role="alertdialog" aria-labelledby="review-title"
+     style="width:min(640px,94vw); max-height:84vh; overflow:auto">
+
+{% if refusal %}
+  <h4 class="dialog-title danger" id="review-title">{{ title }}</h4>
+  <p class="save-note error" role="alert" style="margin:0">{{ icon('hand') }} {{ refusal }}</p>
+  <p class="meta" style="margin:0">{{ refused_note }}</p>
+  <div class="dialog-actions">
+    <button type="button" class="btn btn-secondary" data-modal-close autofocus>Close</button>
+  </div>
+{% else %}
+  <h4 class="dialog-title" id="review-title">{{ title }}</h4>
+  <p style="margin:0; font-size:14px; opacity:0.9">{{ lede }}</p>
+
+  {# ── what the author says it is ── #}
+  <section>
+    <h6 class="text-muted" style="margin:var(--space-3) 0 6px">What it says it is</h6>
+    <div class="hrow" style="gap:10px; flex-wrap:wrap">
+      <span style="font-size:14.5px">{{ disclosure.name }}</span>
+      <span class="meta">{{ disclosure.version }}</span>
+      <span class="tag tag-neutral">{{ disclosure.transport.value }}</span>
+    </div>
+    <p style="margin:4px 0 0; font-size:13.5px; line-height:1.5">
+      {% if disclosure.description %}{{ disclosure.description }}
+      {% else %}<span class="text-muted">No description.</span>{% endif %}
+    </p>
+    {# `provides` (contract 2.1): what kind of service this package says it IS,
+       not what it offers. Printed here, beside the name, because it is a
+       different sort of fact from the tool list below — the operator is
+       agreeing to let this become the voice the assistant speaks in. Absent
+       for the overwhelming majority of packages, which declare no service and
+       get no line; the sentence itself is `plugin_install.REGISTERS_AS_*` and
+       is deliberately two short ones, because this dialog is already long. #}
+    {% if provides_note %}
+    <p style="margin:6px 0 0; font-size:13.5px; line-height:1.5">{{ provides_note }}</p>
+    {% endif %}
+    <p class="meta" style="margin:6px 0 0">{{ authors_words }}</p>
+  </section>
+
+  {# ── the tools: the half of the list the decision turns on ── #}
+  <section>
+    <h6 class="text-muted" style="margin:var(--space-3) 0 6px">
+      What it will be able to do — {{ disclosure.tools | length }}
+      tool{{ '' if disclosure.tools | length == 1 else 's' }}
+    </h6>
+    {% if not disclosure.tools %}
+    <p style="margin:0; font-size:13.5px">It exposes no tools.</p>
+    {% else %}
+    {% if disclosure.acting_tools %}
+    <p style="margin:0 0 6px; font-size:13.5px">
+      {% if disclosure.acting_tools | length == 1 %}One of them can change something, not just
+      answer.{% else %}{{ disclosure.acting_tools | length }} of them can change something, not
+      just answer.{% endif %}
+    </p>
+    {% endif %}
+    <div class="stack" style="gap:6px">
+      {% for tool in disclosure.tools %}
+      <div class="row hrow" style="gap:12px; align-items:flex-start">
+        <span class="dot {{ risk_word(tool.risk.value) }}" style="margin-top:6px"></span>
+        <div style="flex:1; min-width:0">
+          <div class="hrow" style="gap:10px; flex-wrap:wrap">
+            <span style="font-size:13.5px">{{ tool.name }}</span>
+            <span class="state-word {{ risk_word(tool.risk.value) }}" style="font-size:12px">{{ tool.risk.value }}</span>
+          </div>
+          {% if tool.description %}
+          <p class="meta" style="margin:2px 0 0; font-size:12.5px">{{ tool.description }}</p>
+          {% endif %}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+    <p class="save-note ok" style="margin:8px 0 0; font-size:12.5px">{{ risk_enforced }}</p>
+  </section>
+
+  {# ── secrets: the one boundary on this screen ── #}
+  <section>
+    <h6 class="text-muted" style="margin:var(--space-3) 0 6px">
+      Secrets it will be given — {{ disclosure.secrets | length }}
+    </h6>
+    {% if disclosure.secrets %}
+    <div class="hrow" style="gap:6px; flex-wrap:wrap">
+      {% for secret in disclosure.secrets %}<span class="tag tag-accent">{{ secret }}</span>{% endfor %}
+    </div>
+    {# A request, not an entitlement (ADR-0025 §4) — so it is asked for here,
+       on the screen the operator is already on, rather than being a thing they
+       have to go and create somewhere with shell access. The fields are pulled
+       into the install post by the Install button's hx-include below.
+
+       SKIPPING IS ALLOWED and is said out loud: leave them empty and the
+       plugin installs waiting for a credential, which is a state its page can
+       resolve later in one paste. It is not a crashloop and not an error. #}
+    <div id="install-secrets" class="stack" style="gap:var(--space-3); margin-top:var(--space-3)">
+      {% set secrets = secret_requests %}
+      {% include "fragments/secret_fields.html" %}
+      <p class="meta" style="margin:0; font-size:12.5px">{{ secrets_optional }}</p>
+      {# REPLACING IS THE ONE CASE WHERE STORED CREDENTIALS CHANGE HANDS, so it
+         is the one case this screen says something about them. Passed as none
+         on every other path — including when no plugin of that name is
+         installed, where the installer clears the orphaned namespace instead
+         and says nothing, because a sentence about it would tell whoever
+         uploaded the .zip what the store holds. Never a state word about a
+         namespace the upload named: see `_replace_disclosure`. #}
+      {% if replace_disclosure %}
+      <div class="banner warn" style="align-items:flex-start; margin:0">
+        {{ icon('warn') }}
+        <p class="grow" style="margin:0; font-size:12.5px; line-height:1.55">{{ replace_disclosure }}</p>
+      </div>
+      {% endif %}
+    </div>
+    {% else %}
+    <p style="margin:0; font-size:13.5px">None.</p>
+    {% endif %}
+    <p class="save-note ok" style="margin:8px 0 0; font-size:12.5px">{{ secrets_enforced }}</p>
+  </section>
+
+  {# ── hosts and paths: a declaration, never called a permission ── #}
+  <section>
+    <h6 class="text-muted" style="margin:var(--space-3) 0 6px">
+      Hosts it says it will reach — {{ disclosure.declared_hosts | length }}
+    </h6>
+    {% if disclosure.declared_hosts %}
+    <div class="hrow" style="gap:6px; flex-wrap:wrap">
+      {% for host in disclosure.declared_hosts %}<span class="tag tag-neutral">{{ host }}</span>{% endfor %}
+    </div>
+    {% else %}
+    <p style="margin:0; font-size:13.5px">It names none.</p>
+    {% endif %}
+    {% if disclosure.declared_paths %}
+    <h6 class="text-muted" style="margin:var(--space-3) 0 6px">
+      Files it says it needs — {{ disclosure.declared_paths | length }}
+    </h6>
+    <div class="hrow" style="gap:6px; flex-wrap:wrap">
+      {% for path in disclosure.declared_paths %}<span class="tag tag-neutral">{{ path }}</span>{% endfor %}
+    </div>
+    {% endif %}
+    <p class="meta" style="margin:8px 0 0; font-size:12.5px">{{ declared_not_enforced }}</p>
+  </section>
+
+  {# ── where the code actually runs ── #}
+  <section>
+    <h6 class="text-muted" style="margin:var(--space-3) 0 6px">Where it runs</h6>
+    <p style="margin:0; font-size:13.5px; line-height:1.5">{{ where_it_runs }}</p>
+    {% if disclosure.entry %}
+    <p class="meta" style="margin:4px 0 0">It starts with: {{ disclosure.entry }}</p>
+    {% elif disclosure.url %}
+    <p class="meta" style="margin:4px 0 0">It is called at: {{ disclosure.url }}</p>
+    {% endif %}
+  </section>
+
+  {# ── the last thing read before Install is clicked ── #}
+  <div class="banner warn" style="align-items:flex-start; margin-top:var(--space-3)">
+    {{ icon('warn') }}
+    <p class="grow" style="margin:0; font-size:13px; line-height:1.55">{{ not_a_sandbox }}</p>
+  </div>
+
+  <div class="dialog-actions">
+    <span class="htmx-indicator meta" id="installing-now" style="margin-right:auto">{{ icon('spinner') }} installing…</span>
+    <button type="button" class="btn btn-secondary" data-modal-close autofocus>Cancel</button>
+    {# The bytes are re-posted from the page's own file input rather than held
+       on the server between the two clicks — hx-include pulls the whole form,
+       so the archive, the filename and the replace checkbox are exactly the
+       ones the operator was just shown. #}
+    {# `#install-secrets` as well as the form: the credential boxes live in
+       this dialog, because this is the first moment the core knows which
+       credentials the package asks for. They ride along in the same multipart
+       post and are stored in the installed plugin's own namespace — never
+       parked on the server between the two clicks, exactly like the bytes. #}
+    <button type="button" class="btn btn-primary"
+            hx-post="/admin/plugins/install"
+            hx-include="#install-form, #install-secrets" hx-encoding="multipart/form-data"
+            hx-target="#plugin-list" hx-swap="outerHTML"
+            hx-indicator="#installing-now"
+            data-modal-close-after>
+      Install {{ disclosure.name }} {{ disclosure.version }}
+    </button>
+  </div>
+{% endif %}
+</div>

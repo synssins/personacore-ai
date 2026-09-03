@@ -1,0 +1,14 @@
+{# fragments/chat_save_link.html — download this conversation.
+   Context: conversation, swap_markers (optional)
+
+   Its own file for one reason: it names the open thread in its href, so it has
+   to be replaced when another thread is picked, and the replacement must be
+   the same anchor rather than a second idea of what Save looks like.
+
+   `hx-boost="false"`: the body is boosted, and a boosted link fetches the zip
+   and tries to swap it into the page. `download` because the answer is a file,
+   not a destination. #}
+{% from "_controls.html" import icon %}
+<a class="btn btn-ghost" id="chat-save-link" hx-boost="false" download
+   {% if swap_markers %}hx-swap-oob="true"{% endif %}
+   href="/admin/chat/save?c={{ conversation|urlencode }}">{{ icon('down') }} Save</a>

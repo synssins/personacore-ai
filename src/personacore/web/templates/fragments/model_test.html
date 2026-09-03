@@ -1,0 +1,10 @@
+{# model_test.html — swaps into #test-<role>. Context: role.test_result {ok, detail} #}
+{% from "_controls.html" import icon %}
+{% if role.test_result.ok %}
+<p class="save-note ok" role="status" style="margin:0">{{ icon('check') }} reachable — {{ role.test_result.detail }}</p>
+{# "Reachable in 240 ms. The server reports it is serving 'qwen2.5-14b-instruct'." #}
+{% else %}
+<p class="save-note error" role="alert" style="margin:0">{{ icon('x') }} not reachable — {{ role.test_result.detail }}</p>
+{# "Nothing answered at 'http://llm-host.lan:8080'. Check the address includes
+   http:// and a port, and that the server is running." #}
+{% endif %}

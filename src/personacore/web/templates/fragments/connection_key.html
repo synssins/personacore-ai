@@ -1,0 +1,42 @@
+{# connection_key.html — the API key box for one model connection.
+
+   Included by fragments/model_form.html (one per role) and by
+   persona_edit.html (one per persona). One fragment rather than two, because
+   two would be two conventions for a credential.
+
+   WRITE-ONLY. There is no `value` here and there never may be: the box posts a
+   key up and never renders one back, so the page source carries no trace of it
+   whatever a screenshot, a password manager or a support thread does. What the
+   page says is *whether* a key is set.
+
+   An empty box means "leave it as it is". Removing has its own control, and it
+   is a checkbox rather than a submit button: a submit button is the default
+   button of the form it appears in first, so pressing Enter in the persona
+   form's name box would have removed a credential instead of saving.
+
+   Context: key {id, named, set, missing, maxlen} #}
+<div class="field">
+  <label for="key-{{ key.id }}">API key</label>
+  <input class="input" type="password" id="key-{{ key.id }}" name="api_key"
+         autocomplete="new-password" spellcheck="false" maxlength="{{ key.maxlen }}"
+         placeholder="{% if key.set %}unchanged{% else %}empty for none{% endif %}"
+         aria-describedby="key-{{ key.id }}-help">
+  <p class="field-help" id="key-{{ key.id }}-help">
+    {% if key.set %}
+    <span class="state-word ok" style="font-size:12px">a key is set</span>
+    Leave the box empty to keep it. Type a new one to replace it.
+    {% elif key.missing %}
+    <span class="state-word off" style="font-size:12px">no key is set</span>
+    This connection names <code>{{ key.named }}</code>, which is not in the secret store.
+    {% else %}
+    <span class="state-word off" style="font-size:12px">no key is set</span>
+    Sent as the bearer token when the address asks for one. A local model needs none.
+    {% endif %}
+  </p>
+  {% if key.named %}
+  <label class="hrow" style="gap:8px; font-size:12.5px">
+    <input type="checkbox" name="api_key_clear" value="1">
+    {% if key.set %}remove the key on save{% else %}stop naming that secret{% endif %}
+  </label>
+  {% endif %}
+</div>

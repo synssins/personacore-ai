@@ -1,0 +1,29 @@
+{# voice_remove.html — the destructive confirmation for one voice, as a PAGE.
+   Context: engine, voice, title, body, confirm_label, keep_label.
+
+   The same shape as plugin_uninstall.html, and for the same reason: an anchor
+   brings the operator here and a form takes them onward, so no script is
+   involved in any part of a destructive action somebody has already decided
+   on. The form carries no `action` — it posts to the URL it is already on, so
+   it cannot point at a route that does not exist. #}
+{% extends "base.html" %}
+{% from "_controls.html" import icon %}
+{% block title %}Remove {{ voice }} — PersonaCore admin{% endblock %}
+{% block content %}
+<p style="margin:0"><a href="/admin/voice/voices">← Voices</a></p>
+
+<section class="card elev-sm" role="alertdialog" aria-labelledby="confirm-title"
+         aria-describedby="confirm-body" style="max-width:60ch; gap:var(--space-3)">
+  <h3 class="dialog-title danger" id="confirm-title" style="margin:0">{{ title }}</h3>
+  <p id="confirm-body" style="margin:0; font-size:14px; line-height:1.6">{{ body }}</p>
+
+  <form method="post" class="hrow" style="gap:var(--space-3)">
+    {# The safe way out is a link, first in the tab order, so a stray Enter
+       does not delete a 60 MB voice somebody downloaded once. #}
+    <a class="btn btn-secondary" href="/admin/voice/voices">{{ keep_label }}</a>
+    <button type="submit" class="btn btn-danger outlined">{{ icon('trash') }} {{ confirm_label }}</button>
+  </form>
+
+  <a hx-boost="false" download class="btn btn-ghost" href="/admin/voice/voices/{{ engine }}/{{ voice }}/export">{{ icon('down') }} Download the pack first</a>
+</section>
+{% endblock %}

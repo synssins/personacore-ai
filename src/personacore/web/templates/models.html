@@ -1,0 +1,68 @@
+{# models.html — five roles, one required, plus the image generator, which is
+   neither: docs/contracts/image-conversations.md's responder for an image
+   conversation, not a chat-completions endpoint with a persona.
+   The conversation role is an open elevated card; the optional four are quiet
+   disclosure rows; the image generator gets its own card below them so it is
+   never mistaken for a sixth role.
+   Context: roles: [{id, label, required, configured, addr, model,
+     saved_model, test_result?, save_result?}]
+   image: {addr, model, total_timeout, configured, off_note, raw_editor_note,
+     save_result?} or None
+   SWAP BOUNDARIES: Test swaps only that role's #test-<id> line; Save swaps
+   that role's whole <article>. The image generator's Save swaps its own
+   <form>. #}
+{% extends "base.html" %}
+{% from "_controls.html" import icon %}
+{% block title %}Model connections — PersonaCore admin{% endblock %}
+{% block content %}
+<header>
+  <h3 style="margin:0 0 6px">Model connections</h3>
+  <p class="text-muted" style="margin:0; font-size:13px; max-width:60ch">Only the conversation model is required. Every other role falls back to it until given its own connection.</p>
+</header>
+
+{% if config_error %}
+{# whole-section failure: the settings file cannot be read, so no panel is
+   editable — saving one role would write a document nobody has seen. #}
+<div class="banner danger" id="models-unreadable">
+  {{ icon('warn') }}
+  <div class="grow">
+    <div class="title">The settings file could not be read, so no connection can be changed.</div>
+    <p class="meta" style="margin:2px 0 0">{{ config_error }}</p>
+  </div>
+</div>
+{% else %}
+
+{% for role in roles %}
+{% if role.required %}
+<article class="card elev-sm" id="role-{{ role.id }}" style="padding:var(--space-6)">
+  <div class="hrow">
+    <span style="font-size:15px">{{ role.label }}</span>
+    <span class="tag tag-accent">required</span>
+  </div>
+  {% include "fragments/model_form.html" %}
+</article>
+{% else %}
+<details id="role-{{ role.id }}" style="border:1px solid var(--color-divider); border-radius:var(--radius-md); padding:var(--space-3) var(--space-4)">
+  <summary class="hrow" style="cursor:pointer; list-style:none">
+    <span style="font-size:15px">{{ role.label }}</span>
+    <span class="meta" style="flex:1">
+      {% if role.configured %}own connection — {{ role.saved_model }}{% else %}falls back to the conversation model{% endif %}
+    </span>
+    {{ icon('down') }}
+  </summary>
+  <div style="margin-top:var(--space-4)">
+    {% include "fragments/model_form.html" %}
+  </div>
+</details>
+{% endif %}
+{% endfor %}
+
+<article class="card elev-sm" id="image-generator" style="padding:var(--space-6); margin-top:var(--space-4)">
+  <div class="hrow">
+    <span style="font-size:15px">Image generation</span>
+  </div>
+  <p class="text-muted" style="margin:4px 0 var(--space-3); font-size:13px; max-width:60ch">A separate service that turns a prompt into a picture. Not one of the model roles above, and not itself a language model — it takes no persona and has no conversation.</p>
+  {% include "fragments/image_form.html" %}
+</article>
+{% endif %}
+{% endblock %}

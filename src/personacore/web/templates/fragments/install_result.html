@@ -1,0 +1,20 @@
+{# install_result.html — what happened to the last install or uninstall, in a
+   sentence. #install-result is the swap boundary, and it is always in the page
+   (empty when there is nothing to say) so an out-of-band swap has something to
+   land on.
+
+   Context: install_result: {kind: 'ok'|'refused', message} or none.
+
+   The message is the API's own plain-English refusal or success line, rendered
+   through Jinja's autoescaping like any other untrusted string — an installer
+   message can quote a filename and a filename comes from outside. #}
+{% from "_controls.html" import icon %}
+<div id="install-result" {% if oob %}hx-swap-oob="true"{% endif %}>
+  {% if install_result %}
+    {% if install_result.kind == 'ok' %}
+    <p class="save-note ok" role="status" style="margin:0">{{ icon('check') }} {{ install_result.message }}</p>
+    {% else %}
+    <p class="save-note error" role="alert" style="margin:0">{{ icon('hand') }} {{ install_result.message }}</p>
+    {% endif %}
+  {% endif %}
+</div>

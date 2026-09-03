@@ -1,0 +1,59 @@
+flowchart TB
+    subgraph USERS["People & clients"]
+        VOICE["Voice (wake word, mic/speaker)"]
+        BROWSER["Browser (Admin UI)"]
+        CLIENTS["Other home systems<br/>(standard OpenAI clients)"]
+    end
+
+    subgraph PROXY["Reverse proxy — TLS + auth"]
+        RP["OIDC login (UI)<br/>API keys (OpenAI endpoint)"]
+    end
+
+    subgraph CORE["CORE CONTAINER — PersonaCore"]
+        AGENT["Agent loop + persona<br/>(hot-swappable)"]
+        OAPI["Exposed OpenAI-compatible API<br/>/v1/chat/completions"]
+        WY["Voice pipeline (Wyoming)<br/>STT / TTS / barge-in"]
+        HOST["MCP plugin host<br/>manifest + risk enforcement"]
+        EVH["Event handler<br/>(bus subscriber + rules)"]
+        UI["Admin UI + trace/audit log"]
+    end
+
+    subgraph APPDATA["/appdata volume — all state"]
+        AD["plugins/ · personas/ · voices/<br/>memory/ · users/ · config/ · audit/"]
+    end
+
+    subgraph STDIO["stdio plugins (subprocesses, from appdata)"]
+        P1["weather (reference)"]
+        P2["memory (L1/L2/L3 + dreaming)"]
+        P3["Home Assistant"]
+        P4["scheduler"]
+        P5["comms: Discord / WeChat / SIP"]
+        P6["Spotify …"]
+    end
+
+    subgraph HTTPPL["HTTP plugins (own containers)"]
+        VIS["vision model<br/>(scene description)"]
+    end
+
+    subgraph BUS["Event bus — MQTT"]
+        MQ["personacore/events/#"]
+    end
+
+    subgraph LLMHOST["LLM HOST — separate machine, never modified"]
+        LLM["Standard LLM server<br/>OpenAI-compatible API"]
+    end
+
+    CAM["Cameras / sensors /<br/>Home Assistant events"]
+
+    VOICE --> WY --> AGENT
+    BROWSER --> RP --> UI
+    CLIENTS --> RP --> OAPI --> AGENT
+    AGENT -->|"config-only swap"| LLM
+    AGENT --> HOST
+    HOST -->|stdio| P1 & P2 & P3 & P4 & P5 & P6
+    HOST -->|"HTTP (MCP)"| VIS
+    CAM --> MQ
+    P3 & P4 & P5 --> MQ
+    MQ --> EVH --> AGENT
+    CORE --- AD
+    STDIO --- AD

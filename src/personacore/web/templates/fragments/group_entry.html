@@ -1,0 +1,94 @@
+{# group_entry.html — ONE repeating-group entry. This fieldset is the swap
+   boundary for search-and-fill: picking a result re-renders THIS fieldset
+   only (hx-target="closest fieldset"), with every already-typed value echoed
+   back via hx-include, so nothing outside it is touched.
+
+   Context: field (the group schema), entry:
+     { index, key, title, name_field, state ('saved'|'unsaved'|'new'), fields: [
+         { key, label, name, list, value, error? } ] }
+   Input names are the server's (see _controls.html's header):
+     entrykey.<group>.<i>          the name the operator gives this entry —
+                                   it becomes the TOML table header, and is
+                                   checked against ENTRY_KEY_PATTERN before use
+     entry.<group>.<i>.<field>     one scalar field of this entry
+     entryitem.<group>.<i>.<field> one row of a list field inside this entry #}
+{% from "_controls.html" import icon %}
+<fieldset class="entry" data-entry>
+  <legend>
+    <span>{{ entry.title or 'New ' ~ (field.entry_label or 'entry') }}</span>
+    {% if entry.state == 'unsaved' %}<span class="field-state unsaved">unsaved change</span>
+    {% elif entry.state == 'new' %}<span class="field-state unsaved">not saved yet</span>{% endif %}
+    <button type="button" class="btn btn-ghost btn-danger" data-entry-action="remove" style="margin-left:auto">
+      {{ icon('x') }} remove
+    </button>
+  </legend>
+
+  <div class="entry-grid">
+    {# The entry's own name. It is not decoration: config.toml refers to this
+       entry by it, so the operator chooses it and the core checks it. #}
+    <div class="field">
+      <label for="g-{{ field.key }}-{{ entry.index }}-name">Name</label>
+      <input type="text" id="g-{{ field.key }}-{{ entry.index }}-name"
+             name="{{ entry.name_field }}" value="{{ entry.key }}"
+             class="input {% if entry.state == 'new' %}is-default{% elif entry.state == 'unsaved' %}is-unsaved{% endif %}">
+      <p class="field-help">Short name — letters, digits, _ and -.</p>
+    </div>
+
+    {% for sub in entry.fields %}
+    <div class="field">
+      <label for="g-{{ field.key }}-{{ entry.index }}-{{ sub.key }}">{{ sub.label }}</label>
+      {% if sub.list %}
+      {# a list inside an entry: same control as a top-level list, its rows
+         named entryitem.<group>.<i>.<field> so the same validator reads them #}
+      <div class="strlist" data-strlist="{{ sub.name }}">
+        {% for item in sub.value %}
+        <div class="strlist-item">
+          <input type="hidden" name="{{ sub.name }}" value="{{ item }}">
+          <span class="grow">{{ item }}</span>
+          <button type="button" class="btn btn-icon btn-secondary" data-entry-action="up" aria-label="Move {{ item }} up">{{ icon('up') }}</button>
+          <button type="button" class="btn btn-icon btn-secondary" data-entry-action="down" aria-label="Move {{ item }} down">{{ icon('down') }}</button>
+          <button type="button" class="btn btn-icon btn-danger" data-entry-action="remove" aria-label="Remove {{ item }}">{{ icon('x') }}</button>
+        </div>
+        {% endfor %}
+        <div class="hrow">
+          <input type="text" class="input" id="g-{{ field.key }}-{{ entry.index }}-{{ sub.key }}"
+                 data-strlist-input placeholder="add one" style="flex:1">
+          <button type="button" class="btn btn-secondary" data-strlist-add>Add</button>
+        </div>
+      </div>
+      {% else %}
+      <input type="text" id="g-{{ field.key }}-{{ entry.index }}-{{ sub.key }}"
+             name="{{ sub.name }}"
+             value="{{ sub.value }}"
+             class="input {% if sub.error %}is-invalid{% elif entry.state == 'unsaved' %}is-unsaved{% elif entry.state == 'new' %}is-default{% endif %}"
+             {% if sub.error %}aria-invalid="true" aria-describedby="err-{{ field.key }}-{{ entry.index }}-{{ sub.key }}"{% endif %}>
+      {% endif %}
+      {% if sub.error %}<p class="field-error" id="err-{{ field.key }}-{{ entry.index }}-{{ sub.key }}">{{ sub.error }}</p>{% endif %}
+    </div>
+    {% endfor %}
+  </div>
+
+  {% if field.searchable %}
+  {# search-and-fill — general mechanism, declared per field in the schema.
+     Search: GETs results into THIS entry's .search-results div only.
+     Opening one set of results closes any other (admin.js), keeping the
+     "only one search at a time" rule the server also enforces per request. #}
+  <div class="stack" style="gap:6px">
+    <div class="hrow" style="gap:6px">
+      <label class="visually-hidden" for="q-{{ field.key }}-{{ entry.index }}" style="position:absolute;left:-9999px">Search</label>
+      <input type="search" class="input" id="q-{{ field.key }}-{{ entry.index }}" name="q"
+             placeholder="{{ field.search_placeholder or 'Search to fill this entry' }}" style="flex:1;max-width:380px">
+      <button type="button" class="btn btn-secondary"
+              hx-get="/admin/plugins/{{ pname }}/settings/{{ field.key }}/search/fragment"
+              hx-include="#q-{{ field.key }}-{{ entry.index }}"
+              hx-vals='{"entry": "{{ entry.index }}"}'
+              hx-target="#results-{{ field.key }}-{{ entry.index }}" hx-swap="innerHTML"
+              hx-indicator="#searching-{{ field.key }}-{{ entry.index }}">
+        {{ icon('search') }} Search
+      </button>
+      <span class="htmx-indicator meta" id="searching-{{ field.key }}-{{ entry.index }}">{{ icon('spinner') }} searching…</span>
+    </div>
+    <div class="search-results" id="results-{{ field.key }}-{{ entry.index }}" aria-live="polite"></div>
+  </div>
+  {% endif %}
+</fieldset>

@@ -1,0 +1,41 @@
+{# log_entries.html — the swap target of the surface filter
+   (GET /admin/logs/fragment?surface=…). Moved out of logs.html verbatim so the
+   filtered swap and the full page render one piece of markup, not two.
+   Context: entries: [{id, time, surface, client, persona, message, reply,
+     tools_offered, tools_called: [], model_label, duration}], empty_text
+
+   `tools_offered` and `model_label` are marked "later": neither the number of
+   tools offered on a turn nor which model answered it is written to any store,
+   so the fact is shown as missing rather than filled with a guess. When the
+   records carry them the marker goes and the value renders. #}
+{% from "_controls.html" import icon %}
+  {% if not entries %}
+  <div class="empty">
+    {{ icon('scroll') }}
+    <p style="margin:0">{{ empty_text }}</p>
+    {# per-surface empties, e.g. "Nothing recorded on the voice surface.
+       Spoken turns are not written to the log yet." /
+       "Nothing recorded from anonymous callers. Keyless access is off,
+       so nothing can call anonymously." #}
+  </div>
+  {% endif %}
+  {% for e in entries %}
+  <details class="log-entry row">
+    <summary>
+      <span class="meta" style="width:108px; flex:none">{{ e.time }}</span>
+      <span class="tag tag-neutral" style="flex:none">{{ e.surface }}</span>
+      <span class="meta" style="flex:none">{{ e.client }}</span>
+      <span style="font-size:13.5px; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap">{{ e.message }}</span>
+      {{ icon('down') }}
+    </summary>
+    <div class="stack" style="gap:var(--space-3); padding:var(--space-3) 0 var(--space-2) 120px; max-width:620px">
+      <p style="margin:0; font-size:13.5px"><span class="text-muted">asked · </span>{{ e.message }}</p>
+      <p style="margin:0; font-size:13.5px; line-height:1.55"><span class="text-muted">{{ e.persona }} replied · </span>{{ e.reply }}</p>
+      <div class="trace">
+        <div class="hrow" style="gap:8px"><span class="k">tools</span><span>{% if e.tools_offered is none %}<span class="later">later</span>{% else %}{{ e.tools_offered }} offered{% endif %} · {% if e.tools_called %}called {{ e.tools_called|join(', ') }}{% else %}none called{% endif %}</span></div>
+        <div class="hrow" style="gap:8px"><span class="k">model</span><span>{% if e.model_label is none %}<span class="later">later</span>{% else %}{{ e.model_label }}{% endif %}</span></div>
+        <div class="hrow" style="gap:8px"><span class="k">took</span><span>{{ e.duration }}</span></div>
+      </div>
+    </div>
+  </details>
+  {% endfor %}

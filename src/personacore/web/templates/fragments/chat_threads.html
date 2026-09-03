@@ -1,0 +1,97 @@
+{# fragments/chat_threads.html — the rail of earlier conversations.
+   Context: conversations [ConversationRow], conversation_groups [RailGroup],
+            conversations_shown (int), conversation (the open thread's marker),
+            collapsed_groups [str] (the groups this person has folded),
+            swap_rail (bool — true when this is an out-of-band replacement),
+            manages_rooms (bool — whether the bulk-delete checkbox is drawn)
+
+   THE CHECKBOX. One per row, present only when `manages_rooms` — the same
+   gate the single Delete button already goes through, because there is
+   nothing to bulk-delete with on a store that cannot hide a conversation at
+   all. It lives here, in the one place a row is drawn, rather than being
+   duplicated wherever this fragment is included: chat.html wraps the whole
+   of this template in the bulk-delete form (docs/contracts/conversation-
+   list-bulk-actions.md), and the out-of-band swap this file also serves
+   (fragments/chat_messages.html) replaces the `<nav>` in place *inside* that
+   same form, so a checkbox drawn here survives a thread switch exactly as
+   the rest of the row does.
+
+   Included by chat.html, and returned again inside the send and switch
+   fragments with `swap_rail` set, so htmx replaces this list in place. That is
+   why it carries its own id: a conversation you have just started has to
+   appear in the list of conversations you have, and a list that only caught up
+   on the next full page load was the behaviour rejected.
+
+   GROUPED, ungrouped last. The headings are the labels somebody typed into the
+   group field; "Ungrouped" is not one of them, which is why it is at the
+   bottom and why it is the only heading this file writes itself — putting a
+   name somebody chose over a decision nobody made would read as a group they
+   had created.
+
+   Each row is BOTH a link and an htmx target. With scripting the click swaps
+   the messages alone and pushes the address; without it, the same href is an
+   ordinary navigation to the same conversation. One control, two ways of
+   working, no dead alternative.
+
+   A HEADING IS ALSO THE CONTROL that folds its group down to the name alone.
+   `collapsed_groups` holds the names this person has folded, with "" standing
+   for the ungrouped bucket — a group cannot be named "" (a name made of
+   whitespace clears the group instead), so the sentinel cannot be typed. The
+   fold is decided here, server-side, for the same reason the rail's is: this
+   list is redrawn on every send and a fold restored by a script would flicker
+   open each time. A group with no heading — the single ungrouped bucket — has
+   nothing to press and does not fold. #}
+{% from "_controls.html" import icon %}
+<nav id="chat-threads" {% if swap_rail %}hx-swap-oob="true"{% endif %}
+     aria-label="Earlier conversations"
+     style="display:flex; flex-direction:column; gap:2px; margin-top:var(--space-2)">
+  {% if not conversations %}
+  <p class="meta" style="padding:var(--space-3) 10px; margin:0">
+    No earlier conversations yet. This one is kept as soon as you say something.
+  </p>
+  {% else %}
+  {% for group in conversation_groups %}
+  {% set key = group.name or '' %}
+  {% set headed = group.name or conversation_groups|length > 1 %}
+  {% set folded = headed and key in (collapsed_groups or []) %}
+  {# A single heading of "Ungrouped" over everything is noise, so it only
+     appears when something is actually filed somewhere else. #}
+  {% if headed %}
+  <form method="post" action="/admin/chat/group-view" style="margin:0">
+    <input type="hidden" name="conversation" value="{{ conversation }}">
+    <input type="hidden" name="group" value="{{ key }}">
+    <input type="hidden" name="collapsed" value="{{ '0' if folded else '1' }}">
+    <button type="submit" class="chat-group" aria-expanded="{{ 'false' if folded else 'true' }}">
+      {{ icon('right') if folded else icon('down') }}
+      <span>{{ group.name if group.name else 'Ungrouped' }}</span>
+    </button>
+  </form>
+  {% endif %}
+  {% if not folded %}
+  {% for row in group.rows %}
+  <div class="hrow" style="gap:4px; padding:0 2px">
+    {% if manages_rooms %}
+    <input type="checkbox" name="selected" value="{{ row.id }}"
+           aria-label="Select “{{ row.title }}” for deletion">
+    {% endif %}
+    <a class="chat-thread" style="flex:1; min-width:0"
+       href="/admin/chat?c={{ row.id|urlencode }}"
+       {% if row.active %}aria-current="true"{% endif %}
+       hx-get="/admin/chat/messages?c={{ row.id|urlencode }}"
+       hx-target="#chat-messages" hx-swap="innerHTML"
+       hx-push-url="/admin/chat?c={{ row.id|urlencode }}">
+      {{ icon(row.kind.value) }}
+      <span>{{ row.title }}</span>
+      <span class="when">{{ row.when }} · {{ row.messages }} message{{ 's' if row.messages != 1 }}</span>
+    </a>
+  </div>
+  {% endfor %}
+  {% endif %}
+  {% endfor %}
+  {% if conversations|length >= conversations_shown %}
+  <p class="meta" style="padding:var(--space-3) 10px 0; margin:0">
+    The {{ conversations_shown }} most recent are listed. Everything older is on <a href="/admin/logs">Logs</a>.
+  </p>
+  {% endif %}
+  {% endif %}
+</nav>

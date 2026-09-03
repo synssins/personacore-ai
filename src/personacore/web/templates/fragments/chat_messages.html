@@ -1,0 +1,38 @@
+{# fragments/chat_messages.html — switching to another conversation.
+   Context: exchanges [dict], conversation, conversations [ConversationRow],
+            conversation_groups [RailGroup], conversations_shown,
+            swap_rail (true), swap_room (true), personas [PersonaChoice],
+            title, group, groups, participants, manages_rooms
+
+   The messages replace #chat-messages and nothing else happens: no navigation,
+   no page render, the composer keeps its focus and whatever was half-typed in
+   it. The rail, the header, the persona picker and every control that names
+   the open thread (fragments/chat_markers.html) come along out of band so the
+   lit row, the name over the messages, who is in the room, the thread the next
+   message joins, who answers in it, what Save downloads and what Delete
+   deletes all follow the click.
+
+   That last one is not a tidiness: Delete used to keep pointing at whichever
+   conversation was open when the page loaded, so it hid nothing and said it
+   had. See fragments/chat_markers.html.
+
+   The header has to come along for the same reason the picker does: a heading
+   that still named the previous thread would be naming the wrong messages, and
+   the rename field under it would rename the wrong conversation.
+
+   The address is pushed by the control (hx-push-url), not by this response, so
+   /admin/chat?c=… is what the browser shows and what a reload asks for. #}
+{% include "fragments/chat_body.html" %}
+{% include "fragments/chat_threads.html" %}
+{% include "fragments/chat_room.html" %}
+{% with swap_persona = True %}{% include "fragments/chat_persona_picker.html" %}{% endwith %}
+{# The name on the control that opens the persona sheet, from the same list
+   the rows are built from. It travels for exactly the reason the rows do: a
+   pill still naming the previous thread's persona would be naming the wrong
+   conversation, and it is the half a person reads without opening anything. #}
+{% with swap_persona = True %}{% include "fragments/chat_persona_pill.html" %}{% endwith %}
+{% include "fragments/chat_roster.html" %}
+{# Split out of the roster when the composer became three sheets; it rides on
+   the same `swap_roster` flag because it is replaced by the same responses. #}
+{% include "fragments/chat_speech_switch.html" %}
+{% include "fragments/chat_markers.html" %}

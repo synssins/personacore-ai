@@ -1,0 +1,117 @@
+{# plugin_list.html — the installed plugins, in two groups: loaded, failed to
+   load. On its own so an install can swap the list without the page around it.
+   #plugin-list is the swap boundary, and the install form targets it with
+   hx-swap="outerHTML", so this file's outermost element must keep that id.
+
+   Context: loaded: [plugin], failed: [plugin], can_toggle, can_uninstall,
+   waiting_word. Each plugin carries `waiting`: the credentials its manifest
+   asked for that nobody has supplied (ADR-0025 section 4). #}
+{% from "_controls.html" import icon %}
+<div id="plugin-list" class="stack">
+  {% if not loaded and not failed %}
+  <div class="empty">
+    {{ icon('puzzle') }}
+    <div>
+      <p style="margin:0; font-size:15px">No plugins installed.</p>
+      <p class="text-muted" style="margin:4px 0 0; font-size:13px; max-width:54ch">Upload a plugin's .zip above to give the assistant a tool.</p>
+    </div>
+  </div>
+  {% endif %}
+
+  {% if loaded %}
+  <section>
+    <h6 class="text-muted" style="margin-bottom:var(--space-3)">Loaded</h6>
+    {% for plugin in loaded %}
+    <div class="row hrow" style="gap:14px" id="plugin-row-{{ plugin.name }}">
+      {# switch on / switch off — a real switch, posts on change, and swaps the
+         list it lives in: the answer is this whole fragment, so the row comes
+         back saying what the plugin is now actually doing. #}
+      <input type="checkbox" role="switch" class="switch" aria-label="Switch {{ plugin.name }} {{ 'off' if plugin.enabled else 'on' }}"
+             {% if plugin.enabled %}checked{% endif %} {% if not can_toggle %}disabled{% endif %}
+             hx-post="/admin/plugins/{{ plugin.name }}/{{ 'disable' if plugin.enabled else 'enable' }}/fragment"
+             hx-target="#plugin-list" hx-swap="outerHTML">
+      <div style="flex:1; min-width:0">
+        <div class="hrow" style="gap:10px">
+          <a href="/admin/plugins/{{ plugin.name }}" style="font-size:14.5px; text-decoration:none">{{ plugin.name }}</a>
+          <span class="meta">{{ plugin.version }}</span>
+          {# WAITING comes first, because it is the one state with something an
+             operator can do about it. A plugin short of a credential is not
+             failing and must not be drawn in the failure colour: it asked for
+             something only a person can give, and the fix is a paste on its own
+             page (ADR-0025 section 4). The names are on the row, because
+             "waiting" without saying what for is a status nobody acts on. #}
+          {% if plugin.waiting %}<span class="state-word warn" style="font-size:12px">{{ waiting_word }}</span>
+          {% elif plugin.enabled %}<span class="state-word ok" style="font-size:12px">running</span>
+          {% else %}<span class="state-word off" style="font-size:12px">switched off</span>{% endif %}
+        </div>
+        {% if plugin.waiting %}
+        <p style="margin:2px 0 0; font-size:12.5px; color:var(--color-warn)">
+          Waiting for {{ 'a credential' if plugin.waiting | length == 1 else 'credentials' }}:
+          {{ plugin.waiting | join(', ') }} —
+          <a href="/admin/plugins/{{ plugin.name }}">paste {{ 'it' if plugin.waiting | length == 1 else 'them' }} in</a>.
+        </p>
+        {% endif %}
+        <p class="meta" style="margin:2px 0 0; font-size:12.5px">{{ plugin.description }}</p>
+      </div>
+      {# One step from a plugin to what it printed — the errand this link
+         exists for is "it isn't working, what did it say" (PC-279). #}
+      <a class="btn btn-ghost" href="/admin/plugins/{{ plugin.name }}/logs">output</a>
+      <a class="btn btn-ghost" href="/admin/plugins/{{ plugin.name }}">settings</a>
+      {# A LINK, NOT A SCRIPTED BUTTON. It goes to the confirmation page, which
+         carries a plain form. No htmx, no dialog, no admin.js — see the note at
+         the top of screens/plugins.py for why that mattered enough to change.
+         Rendered as unavailable rather than removed when this core has no
+         plugin API, the same treatment every other control here gets. #}
+      {% if can_uninstall %}
+      <a class="btn btn-danger" href="/admin/plugins/{{ plugin.name }}/uninstall">
+        {{ icon('trash') }} uninstall
+      </a>
+      {% else %}
+      <button type="button" class="btn btn-danger" disabled>{{ icon('trash') }} uninstall</button>
+      {% endif %}
+      {% if not can_toggle or not can_uninstall %}<span class="later">later</span>{% endif %}
+    </div>
+    {% endfor %}
+  </section>
+  {% endif %}
+
+  {% if failed %}
+  <section>
+    <h6 style="margin-bottom:var(--space-3); color:var(--color-danger)">Failed to load</h6>
+    {% for plugin in failed %}
+    <div class="banner danger" style="align-items:flex-start">
+      {{ icon('warn') }}
+      <div class="grow" style="min-width:0">
+        <div class="hrow" style="gap:10px">
+          <a href="/admin/plugins/{{ plugin.name }}" style="font-size:14.5px; text-decoration:none">{{ plugin.name }}</a>
+          <span class="meta">{{ plugin.version }}</span>
+        </div>
+        {# the reason, in plain English, with room #}
+        <p style="margin:3px 0 0; font-size:13.5px; line-height:1.5">{{ plugin.fail_reason }}</p>
+        <p class="meta" style="margin:4px 0 0">Its settings still open — a bad value is the usual cause.</p>
+      </div>
+      {# The failing row is the one that most needs this: whatever the plugin
+         printed on its way down is one click away, not a shell away. #}
+      <a class="btn btn-ghost" href="/admin/plugins/{{ plugin.name }}/logs">what it printed</a>
+      <a class="btn btn-ghost" href="/admin/plugins/{{ plugin.name }}">open settings</a>
+      {# A LINK, NOT A SCRIPTED BUTTON. It goes to the confirmation page, which
+         carries a plain form. No htmx, no dialog, no admin.js — see the note at
+         the top of screens/plugins.py for why that mattered enough to change.
+         Rendered as unavailable rather than removed when this core has no
+         plugin API, the same treatment every other control here gets. #}
+      {% if can_uninstall %}
+      <a class="btn btn-danger" href="/admin/plugins/{{ plugin.name }}/uninstall">
+        {{ icon('trash') }} uninstall
+      </a>
+      {% else %}
+      <button type="button" class="btn btn-danger" disabled>{{ icon('trash') }} uninstall</button>
+      {% endif %}
+      {# No switch on a plugin that never loaded, so only uninstall can be
+         "later" here — marking the toggle would mark a control that is not
+         drawn in this group. #}
+      {% if not can_uninstall %}<span class="later">later</span>{% endif %}
+    </div>
+    {% endfor %}
+  </section>
+  {% endif %}
+</div>

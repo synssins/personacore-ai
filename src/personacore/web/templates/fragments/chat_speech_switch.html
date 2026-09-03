@@ -1,0 +1,40 @@
+{# fragments/chat_speech_switch.html — whether this conversation speaks.
+   Context: speech_here (bool), speech_here_note, speech_switchable (bool),
+            conversation, swap_roster (bool — true when this is an
+            out-of-band replacement)
+
+   §6.2 of the many-voices contract, unchanged in what it does. One form, one
+   button, and the label says the state it is IN rather than the state it would
+   move to: a control that reads "Silence" when the room is already silent is a
+   control nobody can be sure about. It can only ever silence — with autoplay
+   off for this person there is nothing to turn on.
+
+   SPLIT OUT OF fragments/chat_roster.html when the composer became three
+   sheets (composer.md §5). The roster is "who else is in the room" and belongs
+   with the persona picker; this is a setting for the conversation and belongs
+   under the gear. They were one fragment only because they were one row.
+
+   IT KEEPS ITS OWN ID AND ITS OWN OUT-OF-BAND SWAP for the same reason the
+   roster does: it carries the open thread in a hidden field and reflects that
+   thread's own choice, so opening another conversation without a page load has
+   to replace it. It rides on `swap_roster` rather than inventing a second
+   flag — the two are replaced by the same responses, always. #}
+{% from "_controls.html" import icon %}
+<div id="chat-speech" {% if swap_roster %}hx-swap-oob="true"{% endif %}>
+  {% if speech_switchable %}
+  <form method="post" action="/admin/chat/speech" style="margin:0">
+    <input type="hidden" name="conversation" value="{{ conversation }}">
+    {# What this press would set it to, which is the opposite of what it says.
+       Not optional: the route reads it as a plain boolean, so a form that
+       leaves it out silently un-silences whatever it touches. #}
+    <input type="hidden" name="muted" value="{{ '0' if not speech_here else '1' }}">
+    <button type="submit" class="sheet-row" aria-pressed="{{ 'false' if speech_here else 'true' }}">
+      <span class="sheet-row-icon">{{ icon('pulse') }}</span>
+      <span class="sheet-row-text">
+        <span class="sheet-row-name">{{ 'Voice on' if speech_here else 'Voice off' }}</span>
+        <span class="sheet-row-why">{{ speech_here_note }}</span>
+      </span>
+    </button>
+  </form>
+  {% endif %}
+</div>

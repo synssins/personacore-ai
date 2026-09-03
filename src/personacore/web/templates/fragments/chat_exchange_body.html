@@ -1,0 +1,387 @@
+{# fragments/chat_exchange_body.html — ONE exchange. The design's unit, kept.
+   Context: exchange {message, attachments: [AttachmentChip], attachment_notice,
+                      author, reply_author, reply_model, ok, reply,
+                      reply_html, reply_image_url (str|None), reasoning,
+                      error, persona,
+                      tools_offered (int|None), tools_called: [],
+                      tool_calls: [{name, took}], duration,
+                      first_token, token_rate, first_audio, token_usage,
+                      audio_url (str|None), audio_report_url (str|None),
+                      voice_note, replayed}
+
+   `reply_image_url` is an image conversation's whole "text" — see
+   personacore.web.screens.chat_image. Absent (the ordinary case, every
+   text reply) draws the reply exactly as before; set, it draws a picture
+   instead of `reply_html`, which is left empty by both of that module's own
+   writers (a fresh reply and a replayed one alike) so there is never a stray
+   empty bubble under the tile.
+
+   WHO SAID IT is the line above each bubble: `author` and `reply_author`, the
+   bare name and nothing else — spelled by `author_parts` in chat_thread.py,
+   which hands the model back separately rather than folded into the same
+   string. The model is not printed here any more; it is in the bar under the
+   reply, behind the chevron (see that comment, below, for why). Telling a
+   person from a persona is therefore no longer a matter of reading the name:
+   it is the bubble's own shape, right-aligned and accent for a person,
+   left-aligned and surface for a persona, and that pairing — not a bracket —
+   is the signal now (`author_label`'s own docstring, chat_thread.py, has the
+   full account of why this changed).
+
+   THE REPLY IS UNTRUSTED OUTPUT. `reply_html` is markup built by
+   personacore.web.markdown, which escapes the model's text *before*
+   rendering any markdown from it and emits a closed set of tags with no
+   attribute taken from the reply. It arrives here as Markup, so it is not
+   escaped again — and there is deliberately no `|safe` on this page: that
+   claim belongs next to the escaping that makes it true, not next to the
+   printing. `reply` (the plain text) is kept in the context for the voice
+   pipeline and must not be printed with a filter that would trust it.
+
+   `audio_url` is equally not trusted as a URL: chat.py checks it starts with
+   /admin/chat/reply/ before it is ever put in the context, so this template
+   cannot be made to fetch audio from off this host.
+
+   Unchanged from the design in shape and styling: question bubble, reply
+   bubble. What was added, each because the screen would otherwise have to
+   lie:
+
+     * a failure branch — a turn that never reached the model has no reply, and
+       the reason goes where the reply would have been rather than nowhere;
+     * the name over each message, which is where "who answered" now lives —
+       the bar under a reply used to carry the persona and no longer does;
+     * the tools line copes with "not reported" (None) as distinct from "none
+       offered" (0), which is the distinction that line exists for;
+     * a player when the reply can be spoken, and the voice side's own sentence
+       when a voice was chosen and cannot be heard;
+     * `replayed` used to also gate the bar's numbers off entirely — a message
+       read back out of the transcript had nothing recorded to show. It no
+       longer does: duration and tool calls are now read back from the store
+       for a replayed message too (`chat_thread._fill_reply`), so the bar
+       degrades field by field, same as it always did for a fresh reply that
+       was never spoken or never measured — never by hiding the whole line.
+#}
+{% from "_controls.html" import icon %}
+{# Which of the model's tools it actually used, as the fragment of the
+   sentence that names them — shared by both places that sentence can start
+   (see the `tools_offered` branch below): "N tools offered" is one way into
+   it and "not reported, but the audit trail still knows" is the other, and
+   this is the part the two have in common. #}
+{% macro _tool_calls_sentence(exchange) -%}
+  {%- if exchange.tool_calls -%}
+    the model called
+    {%- for call in exchange.tool_calls %} {{ call.name }}{% if call.took %} ({{ call.took }}){% endif %}{{ ',' if not loop.last }}{% endfor -%}
+  {%- elif exchange.tools_called -%}
+    the model called {{ exchange.tools_called|join(', ') }}
+  {%- else -%}
+    the model called none of them
+  {%- endif -%}
+{%- endmacro %}
+<div class="stack" style="gap:var(--space-3)">
+  {# ── attachments the person sent — attachments.md contract §6a ──
+     Images as thumbnails in a row above the message text, aligned with the
+     sender; anything else as a card — the same shape whether this is a
+     reply that just landed or one read back on a reload
+     (chat_thread._fill_reply / chat.py's `_attach_replay_attachments` fill
+     `exchange.attachments` either way, so this block does not know or care
+     which). An assistant producing a file is not part of this version
+     (contract §10), so this is always the person's own. #}
+  {% if exchange.attachments %}
+  <div class="attach-sent-row" style="align-self:flex-end">
+    {% for chip in exchange.attachments %}
+    {% if chip.is_image %}
+    {# Hover dims the picture and reveals a download in its top-right corner
+       — modelled on a reference client's control, copied in behaviour and
+       drawn in this surface's own palette. A different control from the
+       chip's remove `X` (that one cancels a pending send; this one saves
+       something already sent) even though both sit in the same corner.
+
+       TOUCH HAS NO HOVER, so `:hover`/`:focus-within` alone would hide this
+       from a tablet — a device this screen is read on — for
+       good. `@media (hover: none)` in the stylesheet keeps it permanently
+       visible there instead of chasing a tap gesture that would need a
+       script to detect. It needs none either way: this is an ordinary link
+       to the serve route, `download` and all. #}
+    <span class="attach-image-frame">
+      <img class="attach-sent-thumb" src="{{ chip.url }}" alt="{{ chip.name }}">
+      <a class="attach-download" href="{{ chip.url }}" download
+         title="Download {{ chip.name }}" aria-label="Download {{ chip.name }}">{{ icon('down') }}</a>
+    </span>
+    {% else %}
+    <a class="attach-card" href="{{ chip.url }}">
+      <span class="attach-card-icon">{{ icon('scroll') }}</span>
+      <span class="attach-card-text">
+        <span class="attach-card-title">{{ chip.name }}</span>
+        <span class="attach-card-sub">Document · {{ chip.kind_label }}</span>
+      </span>
+    </a>
+    {% endif %}
+    {% endfor %}
+  </div>
+  {% endif %}
+  {% if exchange.attachment_notice %}
+  {# Contract §4.3/§10: what an attachment could not do, in a sentence where
+     the message is — never silently dropped, never folded into the reply's
+     own wording. #}
+  <p class="meta" style="align-self:flex-end; margin:0; max-width:80%">{{ exchange.attachment_notice }}</p>
+  {% endif %}
+  {% if exchange.message %}
+  {% if exchange.author %}
+  <p class="chat-said" style="align-self:flex-end">{{ exchange.author }}</p>
+  {% endif %}
+  <p style="align-self:flex-end; max-width:80%; margin:0; padding:var(--space-3) var(--space-4); border-radius:var(--radius-md); background:var(--color-accent-900); font-size:14px; white-space:pre-wrap">{{ exchange.message }}</p>
+  {% endif %}
+  {% if exchange.ok %}
+  {% if exchange.reply_author %}
+  <p class="chat-said" style="align-self:flex-start">{{ exchange.reply_author }}</p>
+  {% endif %}
+  {% if exchange.reasoning %}
+  {# The model's own reasoning — shown live and, since
+     2026-09-02, kept as additional context that can be provided back to
+     the model when necessary. Same markup and class names chat.js draws
+     while the reply is still streaming (`chat.js`'s `thinkBubble`), so a
+     person cannot tell the two apart on sight — the one exception is the
+     spinner, which belongs only to the live line, because nothing here is
+     being generated. Plain text, not `reply_html`'s markdown: `exchange.
+     reasoning` is the model's raw words, read back exactly as
+     `ReasoningRecord.text` stored them, and Jinja's default autoescaping is
+     what keeps them from being interpreted as markup. #}
+  <details class="chat-thinking">
+    <summary class="chat-thinking-summary">
+      <span>Thinking</span><span style="flex:1"></span>
+      <span class="chat-thinking-chevron" aria-hidden="true">{{ icon('down') }}</span>
+    </summary>
+    <div class="chat-thinking-body">{{ exchange.reasoning }}</div>
+  </details>
+  {% endif %}
+  {% if exchange.reply_image_url %}
+  {# An image conversation's reply — image-conversations.md contract §7. Not
+     `reply_html`: personacore.web.markdown deliberately emits no `<img>`
+     tag at all (a chat reply is untrusted model output, and that module's
+     closed tag set is what keeps one from restructuring the page it sits in).
+     A generated picture is not that — it is bytes this core made and is
+     immediately serving back to the person who asked for it — so it draws
+     through its own narrow path instead, reusing the sent-attachment tile's
+     own frame and hover-to-download control (chat.html's `.attach-image-frame`
+     / `.attach-sent-thumb`) rather than inventing a second look for a picture
+     that happens to sit on the other side of the thread. #}
+  <span class="attach-image-frame" style="align-self:flex-start">
+    <img class="attach-sent-thumb" src="{{ exchange.reply_image_url }}" alt="Generated image">
+    <a class="attach-download" href="{{ exchange.reply_image_url }}" download
+       title="Download image" aria-label="Download image">{{ icon('down') }}</a>
+  </span>
+  {% else %}
+  {# A div rather than the design's <p>: a rendered reply can contain lists,
+     tables and code blocks, none of which may sit inside a paragraph. Same
+     bubble, same styling. #}
+  <div class="md" style="align-self:flex-start; max-width:85%; margin:0; padding:var(--space-3) var(--space-4); border-radius:var(--radius-md); background:var(--color-surface); font-size:14px; line-height:1.55">{{ exchange.reply_html }}</div>
+  {% endif %}
+
+  {% if exchange.audio_url %}
+  {# `preload="none"`: the audio is synthesised on the request the play button
+     makes, so an engine that is slow or stopped costs this control and can
+     never reach the reply above it.
+
+     `data-play-once` is the existing mechanism admin.js already plays on an
+     htmx swap — never the `autoplay` attribute, which fires again when the
+     browser restores this page from history. It is set only when the person's
+     resolved setting says so (ADR-0030), so a reply speaks itself for somebody
+     who wants that and stays silent for somebody who does not. #}
+  {# The player asks, when it is done, which path produced what it just played:
+     Wyoming or the direct engine, with the timings and the audio-group count.
+     It has to be asked afterwards because those numbers are not known until
+     the last sentence has arrived — and it has to be shown at all because
+     audio that sounds right proves nothing about which code made it.
+
+     `hx-get` sits on the <audio> itself rather than on a span with
+     `hx-trigger="... from:"`, so the element that fires the event is the
+     element that makes the request. `ended` for a reply played through,
+     `error` for one whose audio never arrived. #}
+  {# The voice's name used to be printed beside the player. It is not any more:
+     the voice does not need to be listed there once attribution above is
+     fixed and used. The header owns identity, and two
+     labels for one reply is how they came to disagree — one screenshot had
+     the configured model above one message and a configured persona
+     (a TTS engine name) below it. #}
+  <span class="hrow" style="gap:10px; align-self:flex-start; flex-wrap:wrap">
+    <audio controls preload="none" style="max-width:320px; height:32px"{% if speech_autoplay %} data-play-once{% endif %} src="{{ exchange.audio_url }}"
+      {%- if exchange.audio_report_url %} hx-get="{{ exchange.audio_report_url }}" hx-trigger="ended, error" hx-target="next .speech-report" hx-swap="innerHTML"{% endif %}></audio>
+    <span class="speech-report hrow" style="gap:10px; flex-wrap:wrap"></span>
+  </span>
+  {% elif exchange.voice_note %}
+  {# A persona with no voice says nothing here; this is the other case — a
+     voice was chosen and cannot be heard, in the voice library's own words. #}
+  <p class="meta" style="align-self:flex-start; margin:0">{{ exchange.voice_note }}</p>
+  {% endif %}
+
+  {# ── the bar under a reply ──
+     ONE bar, where a toolbar row and a separate metrics line used to be two.
+     The design moves the model name down to the stats bar; the persona name
+     stays. The stats and model sit underneath a drop-down arrow so they are
+     masked but can be expanded. The copy icon is on the left of the bar and
+     stays when collapsed or expanded; the chevron is on the right end,
+     details hidden until clicked, hidden again when clicked again. Both the
+     metrics and the audio bar survive a reload.
+
+     A NATIVE <details>/<summary> DISCLOSURE, not a script. The chevron needs
+     nothing but a browser to open and close it, which is what lets it survive
+     a reload without chat.js having to restore anything — there is no state
+     for a script to lose. Everything behind it — the model and the numbers —
+     is `<summary>`'s sibling, so it is in the document (and in this page's
+     source) whether the reader has ever clicked it or not; only its *display*
+     is native-hidden, which is what "masked, but can be expanded" asks for.
+
+     THE COPY BUTTON LIVES INSIDE THE SUMMARY, at the left end, so it stays put
+     collapsed or expanded — it is not part of what the chevron reveals. It
+     does not itself open the panel when pressed: `chat.js`'s click handler for
+     `[data-copy-reply]` already calls `preventDefault()` (needed for PC-264's
+     own reasons, below), and a summary's default action — opening or closing
+     the disclosure — is exactly what `preventDefault()` on the click that
+     reached it suppresses. Without a script the same press would toggle the
+     panel instead of copying anything; see the no-clipboard case below for why
+     that costs nothing.
+
+     THE PLAIN TEXT, not the markup. `reply` is what the model produced;
+     `reply_html` is the same words with tags around them, and a clipboard full
+     of `<p>` is a defect. This is the same field the voice pipeline speaks for
+     the same reason (PC-264). It is untrusted output and it is placed as an
+     attribute *value*, where jinja escapes it, and read back with
+     `getAttribute` — a string, never markup.
+
+     THE NO-CLIPBOARD CASE. Only the copy button needs a script — the
+     chevron does not — so only the button is gated on `chat.js` having found
+     somewhere to write (`html.can-copy`, in nocturne.css by way of
+     chat.html's stylesheet block). A bar with nothing on it but a working
+     chevron is a real control; the copy button alone is what disappears,
+     which is the same rule the old toolbar comment stated for the whole row:
+     a button that looks live and is not is worse than no button. #}
+  <details class="msg-bar">
+    <summary class="msg-bar-row" aria-label="Message details">
+      <button type="button" class="btn btn-icon btn-ghost msg-bar-copy" data-copy-reply
+              data-reply-text="{{ exchange.reply }}"
+              aria-label="Copy text" title="Copy text">{{ icon('copy') }}</button>
+      {# ── resend — composer.md §7, detached-turns.md §4b ──
+         Any message already sent needs to be able to be
+         resent by clicking a resend button underneath it, in the chat. The
+         second entry in this row, which is where it was requested.
+
+         A NEW TURN, NEVER AN EDIT. This posts the same words again and the
+         transcript keeps both askings — a conversation that silently rewrites
+         itself is not a record — so it is the ordinary compose form's own
+         action carrying the ordinary compose form's own fields, and the server
+         does not need to learn a new route to answer it.
+
+         It needs no script, which is why it is a form and not a button
+         chat.js binds: with none, this posts and the page comes back with the
+         second answer in it. With one, chat.js takes the click and streams it
+         through the same path the composer uses — and queues it if a reply is
+         still being written, which is §3 and applies to every way of starting
+         a turn, not only to the box.
+
+         `conversation` is written out rather than carrying an id, because
+         chat_markers.html swaps by id and there are as many of these on the
+         screen as there are messages. It does not need to be swapped: every
+         response that changes which conversation is open re-renders the
+         messages, and these come with them.
+
+         The glyph is drawn here for the same reason the send arrow is drawn in
+         chat.html: nothing else on this surface has a circular arrow on it,
+         and `_controls.html` is the shared set rather than a place to put a
+         one-off. #}
+      {# Guarded on the marker as well as on the words: a turn that broke
+         before it reached a conversation renders with none, and a resend
+         naming nothing would start a new thread rather than ask this one
+         again — the same guard chat_exchange.html puts on the markers. #}
+      {% if exchange.message and conversation %}
+      <form method="post" action="/admin/chat" style="margin:0" data-resend>
+        <input type="hidden" name="conversation" value="{{ conversation }}">
+        <input type="hidden" name="message" value="{{ exchange.message }}">
+        <button type="submit" class="btn btn-icon btn-ghost"
+                aria-label="Send this message again" title="Send this message again">
+          <svg class="icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"
+               stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"
+            ><path d="M13.5 8a5.5 5.5 0 1 1-1.9-4.2"/><path d="M13.5 1.5V4h-2.5"/></svg>
+        </button>
+      </form>
+      {% endif %}
+      {# The confirmation is the surface's own: the same `save-note` a saved form
+         gets, so "it worked" reads the same here as everywhere else. Rendered
+         hidden and revealed, rather than composed in the script, so the words
+         and the icon live in the template with the rest of them. #}
+      <span class="save-note ok" data-copy-done role="status" hidden>{{ icon('check') }} Copied</span>
+      <span class="save-note error" data-copy-failed role="alert" hidden>{{ icon('x') }} Could not copy</span>
+      {# The one number that has to be seen before the next message is typed,
+         not after the chevron is pressed — a context-window count that warns
+         before a conversation runs out was requested, not one more thing
+         to find. So it sits on the summary itself, `msg-bar-panel`'s sibling
+         rather than its content, the same reason the copy button does.
+         `token_usage` is a ready-built string (`chat_reply._token_usage`) and
+         empty — not a zero — for a conversation with no turns yet, a message
+         read back from before this existed, or a backend that never reports
+         a real count; the same rule every other number on this bar follows. #}
+      {% if exchange.token_usage %}
+      <span class="meta" title="Tokens this turn sent the model">{{ exchange.token_usage }}</span>
+      {% endif %}
+      <span style="flex:1"></span>
+      <span class="msg-bar-chevron" aria-hidden="true">{{ icon('down') }}</span>
+    </summary>
+    {# Behind the chevron: the model, then the same tools-and-timings line the
+       old metrics `<p>` printed — no longer gated on `replayed` (see the
+       top-of-file comment for why). Every number here is a string built in
+       chat.py or chat_thread.py and is EMPTY when it was not measured — a
+       plain form post, a message read back out of the transcript, a reply
+       that was never spoken. Nothing is printed as a zero, which would be a
+       claim rather than a gap. #}
+    <div class="msg-bar-panel">
+      <p class="hrow" style="margin:0; gap:8px; flex-wrap:wrap">
+        {% if exchange.reply_model %}
+        {# The model, spelled by `author_parts` — the half of the old combined
+           name that used to ride in parentheses over the reply. #}
+        <span class="meta">{{ exchange.reply_model }}</span>
+        {% endif %}
+        {{ icon('gear') }}
+        <span>
+          {# `tools_offered` is the one number a replayed message never gets
+             back (no store ever held it — see the module docstring on
+             `chat_thread.transcript_exchanges`), but that is not the same
+             question as "did the model call anything": a replayed message's
+             `tool_calls` comes back from its own audit trail regardless
+             (`chat_thread._tool_calls_for`), and reporting "not reported"
+             over a line that plainly knows what was called would be the
+             gate this bar just had removed, reappearing one branch lower. So
+             the offered count is asked first, and only when NEITHER it nor
+             any recovered calls exist is there truly nothing to say. #}
+          {% if exchange.tools_offered is not none %}
+            {{ exchange.tools_offered }} tool{{ 's' if exchange.tools_offered != 1 }} offered ·
+            {{- ' ' }}{{ _tool_calls_sentence(exchange) }}
+          {% elif exchange.tool_calls or exchange.tools_called %}
+            {{ _tool_calls_sentence(exchange) }}
+          {% else %}
+            tool use was not reported for this turn
+          {% endif %}
+        </span>
+        {# Joined rather than glued together with separators, so a number that was
+           not measured leaves nothing behind — not a stray "·" where it would
+           have been. #}
+        <span class="meta" style="margin-left:auto">{{ [
+          exchange.duration,
+          ('first token ' ~ exchange.first_token) if exchange.first_token else '',
+          exchange.token_rate,
+          ('first audio ' ~ exchange.first_audio) if exchange.first_audio else '',
+        ]|select|join(' · ') }}</span>
+      </p>
+    </div>
+  </details>
+  {% elif exchange.error %}
+  {# A FAILURE, and only a failure. `ok` is false for two different things: a
+     turn that broke, which has a sentence saying so, and a message nobody
+     answered, which has nothing to say because nothing went wrong — the
+     transcript simply ends on it (many-voices §3.2). Drawing the banner for
+     both printed the second one's absent reason as the literal word "None"
+     over an unanswered question. `error` is what makes a failure a
+     failure, so it is what the banner is drawn from — and a banner is never
+     drawn with nothing in it, which would be the same bug with the evidence
+     removed. #}
+  <p class="banner warn" role="status" style="align-self:flex-start; max-width:85%; margin:0">
+    {{ icon('warn') }} {{ exchange.error }}
+  </p>
+  {% endif %}
+</div>

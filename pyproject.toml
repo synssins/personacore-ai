@@ -1,0 +1,69 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "personacore"
+version = "0.14.2"
+description = "Self-hosted, security-first agentic assistant. Small core, everything else a plugin."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+authors = [{ name = "synssins" }]
+
+# Every dependency here is on the approved list. Adding one that is not
+# requires the owner's approval first.
+dependencies = [
+    "fastapi>=0.141,<0.142",
+    "uvicorn[standard]>=0.52,<0.53",
+    "pydantic>=2.13,<3",
+    "httpx>=0.28,<0.29",
+    "mcp>=2.0,<3",
+    "aiomqtt>=2.5,<3",
+    "structlog>=26.1,<27",
+    "jinja2>=3.1,<4",
+    "tomli-w>=1.2,<2",
+    # Voice (ADR-0029): core owns speech, so the model runtime is a core
+    # dependency rather than a plugin's. CPU-ONLY, PERMANENTLY — `onnxruntime`,
+    # never `onnxruntime-gpu`. The GPU build is a different distribution with a
+    # confusingly similar name, it pulls the CUDA stack, and a build that
+    # acquires it is a defect (CLAUDE.md's hard constraint).
+    "onnxruntime>=1.20,<2",  # MIT. 38.8 MB installed, measured.
+    "numpy>=2.0,<3",  # BSD-3-Clause. 30.3 MB installed, measured.
+    # Home Assistant speaks Wyoming to its speech services, and PersonaCore is
+    # the provider (`personacore.wyoming`). Taken as a dependency rather than
+    # hand-rolled because the protocol's compliance traps are almost all
+    # field-name and missing-required-field mistakes, and its dataclasses make
+    # those impossible to make: `voices` where the README says `models`, and
+    # `attribution`/`installed` as positional arguments rather than optional
+    # decoration. Pure Python, no runtime dependencies of its own, and it ships
+    # its own `audioop` replacement so Python 3.13 removing that from the
+    # stdlib is already handled.
+    "wyoming>=1.10.2,<2",  # MIT. 44 KB wheel, ~200 KB installed.
+]
+
+[project.optional-dependencies]
+dev = [
+    # Apache-2.0. Test-only, and it earns its place: the OpenAI-compatible
+    # surface is judged by real clients, so tests/api/test_tool_calls.py drives
+    # the actual SDK against the app with `_strict_response_validation=True`
+    # rather than asserting on JSON we wrote ourselves. Never imported by
+    # anything under src/.
+    "openai>=3.6,<4",
+    "pytest>=9.1,<10",
+    "pytest-asyncio>=1.0",
+    "ruff>=0.16,<0.17",
+]
+
+[project.scripts]
+personacore = "personacore.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/personacore"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "S", "ASYNC"]

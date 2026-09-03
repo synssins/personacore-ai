@@ -1,0 +1,55 @@
+# PersonaCore reference plugin — weather.
+#
+# This manifest is the whole of what the core knows about this plugin before it
+# runs. The plugin *declares*; the core *enforces*. Nothing this plugin does at
+# runtime can widen what is asked for here (spec 5.1, 7).
+#
+# Schema: src/personacore/contracts/manifest.py. Anything not in that schema is
+# rejected rather than ignored, so a typo is an error you can see instead of a
+# permission you silently never got.
+
+[plugin]
+name        = "weather"          # must equal this folder's name, exactly
+version     = "1.1.0"            # the plugin's own version; semver -- bumped whenever this plugin's files change
+contract    = "2.x"              # plugin contract targeted — "2.x" = any 2.y core
+transport   = "stdio"            # spawned as a subprocess of the core
+entry       = "python main.py"   # relative to this folder; absolute paths are refused
+description = "Current conditions and a short forecast for locations set up in config.toml."
+
+[permissions]
+# Least privilege. Both lists default to empty, and empty means none — a plugin
+# that declares nothing gets nothing (spec 7).
+# Two hosts, and both are stated here so an admin reviewing this plugin can see
+# exactly what it reaches: the forecast API, and the place-lookup service used
+# to turn "55352" or "Paris, France" into coordinates.
+network = ["api.open-meteo.com", "geocoding-api.open-meteo.com"]
+# Since contract 2.0 each credential a plugin asks for is a table — a name, a
+# description an admin reads beside the box, and an optional `required` flag
+# (see plugins/_template/manifest.toml). Open-Meteo needs no key, so this
+# plugin asks for nothing and the list stays empty.
+secrets = []
+
+[tools.get_forecast]
+# safe: runs without asking. Correct here because reading a public forecast
+# changes nothing and cannot be undone wrongly. Anything irreversible —
+# unlocking, sending, buying, deleting — is never "safe" (spec 7).
+risk = "safe"
+description = "Look up the forecast for a configured location."
+
+[tools.search_locations]
+# The tool config.schema.json nominates for its "locations" setting (ADR-0016):
+# the admin types a town, this returns the matches, and picking one fills the
+# coordinate boxes. It must be `safe`, and the core refuses to wire a lookup
+# that is not — a settings page is never a route to something irreversible.
+#
+# Reading a public gazetteer is exactly as safe as reading a public forecast:
+# it changes nothing, and the only thing it sends is a string an admin typed
+# into a form on purpose.
+risk = "safe"
+description = "Find the coordinates of a place by name, for setting up a location."
+
+[events]
+# This plugin neither publishes nor listens on the event bus (spec 5.2). A
+# weather-alert publisher would list its topics under `publishes`.
+publishes  = []
+subscribes = []

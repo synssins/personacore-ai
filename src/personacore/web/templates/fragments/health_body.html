@@ -1,0 +1,46 @@
+{# health_body.html — the polled body of the health screen: the dangerous-state
+   notices and one row per component. Moved out of health.html verbatim so the
+   15s poll (GET /admin/health/fragment) and the full page render the same
+   markup from one source rather than two that can drift.
+   Context: notices: [{tone,title,body,href,link_label}],
+            components: [{state,name,state_label,detail,facts:[],href?}] #}
+{% from "_controls.html" import icon %}
+  {# dangerous states must be visible — constraint 5 #}
+  {% if notices %}
+  <div class="stack" style="gap:var(--space-3); margin-bottom:var(--space-6)">
+    {% for n in notices %}
+    <div class="banner {{ n.tone }}" role="alert">
+      {{ icon('warn') }}
+      <div class="grow">
+        <div class="title">{{ n.title }}</div>
+        {# e.g. "Admin authentication is bypassed." / "Keyless access is on." /
+                "The retention purge is failing." #}
+        <div style="font-size:13px; opacity:0.85; margin-top:2px">{{ n.body }}</div>
+      </div>
+      <a class="btn btn-ghost" href="{{ n.href }}">{{ n.link_label }}</a>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  <div>
+    {% for c in components %}
+    <div class="row" style="display:flex; gap:14px">
+      <span class="dot {{ {'ok':'ok','degraded':'warn','down':'down','off':'off'}[c.state] }}" style="margin-top:7px" role="img" aria-label="{{ c.state }}"></span>
+      <div style="flex:1; min-width:0">
+        <div class="hrow" style="gap:10px">
+          <span style="font-size:14.5px">{{ c.name }}</span>
+          <span class="state-word {{ {'ok':'ok','degraded':'warn','down':'down','off':'off'}[c.state] }}" style="font-size:12px">{{ c.state_label }}</span>
+          {% if c.href %}<a class="btn btn-ghost" style="margin-left:auto; font-size:12.5px" href="{{ c.href }}">open</a>{% endif %}
+        </div>
+        {# THE detail line — the actual reason something is broken. Given room. #}
+        <p style="margin:3px 0 0; font-size:14px; line-height:1.5; {% if c.state in ('down','degraded') %}color:var(--color-text){% else %}color:var(--color-neutral-300){% endif %}">{{ c.detail }}</p>
+        {% if c.facts %}
+        <p class="meta" style="margin:4px 0 0; display:flex; gap:16px; flex-wrap:wrap">
+          {% for f in c.facts %}<span>{{ f }}</span>{% endfor %}
+        </p>
+        {% endif %}
+      </div>
+    </div>
+    {% endfor %}
+  </div>

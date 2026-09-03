@@ -1,0 +1,44 @@
+{# chat_bulk_delete.html — the destructive confirmation for deleting several
+   conversations at once, as a PAGE (docs/contracts/conversation-list-bulk-
+   actions.md, rule 5.1).
+
+   The same shape as plugin_uninstall.html / voice_remove.html, and for the
+   same reason: the operator has already decided, by checking boxes and
+   pressing Delete, so nothing between that decision and the POST that
+   carries it out may depend on a script. NO SCRIPT IS INVOLVED IN ANY PART
+   OF THIS — no `hx-` attribute anywhere below.
+
+   Unlike those two, the form here does carry an explicit `action`: reaching
+   this page is itself a POST (an arbitrary selection cannot be named by a
+   link the way one persona or one voice can, which is exactly why the
+   contract's own rule 6 puts a POST before this page rather than a GET), so
+   there is no single URL for this form to fall back to by posting to
+   itself. The selection travels as hidden fields rather than being
+   re-derived from whatever the rail happens to show by the time this
+   renders — it names exactly what was resolved against this owner's own
+   rail one request ago, and the write re-checks it again regardless
+   (contract rule 3).
+
+   Context: title, body, confirm_label, rows [ConversationRow] #}
+{% extends "base.html" %}
+{% from "_controls.html" import icon %}
+{% block title %}{{ title }} — PersonaCore admin{% endblock %}
+{% block content %}
+<p style="margin:0"><a href="/admin/chat">← Chat</a></p>
+
+<section class="card elev-sm" role="alertdialog" aria-labelledby="confirm-title"
+         aria-describedby="confirm-body" style="max-width:60ch; gap:var(--space-3)">
+  <h3 class="dialog-title danger" id="confirm-title" style="margin:0">{{ title }}</h3>
+  <p id="confirm-body" style="margin:0; font-size:14px; line-height:1.6">{{ body }}</p>
+
+  <form method="post" action="/admin/chat/bulk-delete" class="hrow" style="gap:var(--space-3)">
+    {% for row in rows %}
+    <input type="hidden" name="selected" value="{{ row.id }}">
+    {% endfor %}
+    {# The safe way out is a link, first in the tab order, so a stray Enter
+       does not delete a dozen conversations somebody only meant to look at. #}
+    <a class="btn btn-secondary" href="/admin/chat">Keep them</a>
+    <button type="submit" class="btn btn-danger outlined">{{ icon('trash') }} {{ confirm_label }}</button>
+  </form>
+</section>
+{% endblock %}

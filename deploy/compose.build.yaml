@@ -1,0 +1,16 @@
+# Build override — builds the image from this checkout instead of pulling it.
+#
+#     docker compose -f compose.yaml -f deploy/compose.build.yaml up -d --build
+#
+# For development and for trying an unreleased change. Production pulls a tagged
+# image from ghcr.io (CLAUDE.md, CI/CD) so the server never needs a build step.
+
+services:
+  personacore:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    # Overrides the pinned registry tag so Compose uses what was just built
+    # rather than silently falling back to a pulled image.
+    image: personacore:dev
+    pull_policy: build

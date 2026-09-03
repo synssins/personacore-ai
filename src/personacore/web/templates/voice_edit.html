@@ -1,0 +1,275 @@
+{# voice_edit.html — one voice's details: the half of the round trip where a
+   pack gets built.
+
+   Context: engine, voice, label, fields{...}, files: [str], id_note,
+     sample_rate_note, channels_note, export_note, engine_known,
+     engine_running, engine_display, test_sentence, cannot_speak, unsupported,
+     save_result?
+
+   EVERY BOX MAY BE EMPTY. A stock Piper voice arrives with none of this and
+   works; filling it in is what turns it into a distributable pack. An empty box
+   means the field is not set, and the exported voice.toml writes it as "".
+
+   THE ID IS NOT ON THIS FORM AT ALL. It is the folder name and the reference a
+   persona stores, so it is stated as a fact rather than drawn as a box nobody
+   may use — see routes ID_IS_FIXED, and persona_edit.html for the same
+   decision about a persona's identifier. #}
+{% extends "base.html" %}
+{% from "_controls.html" import icon %}
+{% block title %}{{ label }} — PersonaCore admin{% endblock %}
+{% block content %}
+<p style="margin:0"><a href="/admin/voice/voices">← Voices</a></p>
+<h3 style="margin:0">{{ label }}</h3>
+
+<div class="hrow" style="gap:10px; flex-wrap:wrap; padding:var(--space-3); border-radius:var(--radius-sm); background:var(--color-bg); border:1px solid var(--color-divider)">
+  <code style="font-size:13.5px; color:var(--color-accent-300)">{{ voice }}</code>
+  <span class="meta" style="font-size:12.5px; max-width:70ch">{{ id_note }}</span>
+</div>
+
+{% if unsupported %}
+<div class="banner warn" role="status">
+  {{ icon('warn') }}
+  <div class="grow"><p style="margin:0">{{ unsupported }}</p></div>
+</div>
+{% endif %}
+
+{% if not engine_known %}
+<div class="banner warn" role="status">
+  {{ icon('warn') }}
+  <div class="grow"><p style="margin:0">This voice belongs to the “{{ engine }}” engine, which this core does not have. It reappears when the engine does.</p></div>
+</div>
+{% endif %}
+
+{# Test speak. The text is the operator's, because the errand this control
+   exists for is "I changed how one word is said — did it work?", and a fixed
+   sentence cannot answer that.
+
+   PC-203 still holds: a bare word is not spoken bare. This voice says "about"
+   as "bout" and "put" as "putt" alone, and both correctly in a sentence, so a
+   one-word test reports faults that are not there and hides real ones. One
+   word typed here is carried into a sentence and the operator is told, rather
+   than being refused or quietly lied to. The control is absent rather than
+   disabled when nothing can speak. #}
+<div class="card elev-sm" style="gap:var(--space-3)">
+  {% if engine_running %}
+  {# The player appears BESIDE the button. Nothing navigates: the voice being
+     edited stays in front of you while you listen to it, which is the whole
+     point of a control that answers "did my change work?". Without JavaScript
+     the form still submits and the fragment is what the browser lands on —
+     plain, and it still plays. #}
+  <form class="hrow" style="gap:12px; flex-wrap:wrap; align-items:flex-end"
+        method="get" action="/admin/voice/voices/{{ engine }}/{{ voice }}/speak"
+        hx-get="/admin/voice/voices/{{ engine }}/{{ voice }}/speak"
+        hx-target="#test-speak-player" hx-swap="innerHTML">
+    <label class="stack grow" style="gap:4px; min-width:280px">
+      <span class="meta">Say</span>
+      <input class="input" type="text" name="text" maxlength="{{ speak_max }}"
+             value="{{ test_sentence }}"
+             placeholder="{{ test_sentence }}">
+    </label>
+    <button class="btn btn-secondary" type="submit">{{ icon('pulse') }} Test speak</button>
+    <span id="test-speak-player" class="hrow" style="gap:10px; align-items:center"></span>
+  </form>
+  <p class="meta" style="margin:0; max-width:70ch">{{ speak_hint }}</p>
+  {% else %}
+  <span class="meta">{{ cannot_speak }}</span>
+  {% endif %}
+</div>
+
+<form class="stack" style="max-width:680px" method="post"
+      action="/admin/voice/voices/{{ engine }}/{{ voice }}">
+  <div class="field" style="max-width:360px">
+    <label for="v-name">Name</label>
+    <input class="input" type="text" id="v-name" name="name" value="{{ fields.name }}" maxlength="120">
+    <p class="field-help">What a person sees in the voice list. Empty falls back to the id.</p>
+  </div>
+
+  <div class="field">
+    <label for="v-description">Description</label>
+    <input class="input" type="text" id="v-description" name="description" value="{{ fields.description }}" maxlength="300">
+  </div>
+
+  <div class="hrow" style="gap:12px; align-items:flex-start; flex-wrap:wrap">
+    <div class="field" style="width:180px">
+      <label for="v-language">Language</label>
+      <input class="input" type="text" id="v-language" name="language" value="{{ fields.language }}" placeholder="en-US">
+      <p class="field-help">BCP 47.</p>
+    </div>
+    <div class="field" style="width:160px">
+      <label for="v-version">Pack version</label>
+      <input class="input" type="text" id="v-version" name="version" value="{{ fields.version }}" placeholder="1.0.0">
+    </div>
+    <div class="field" style="width:200px">
+      <label for="v-min">Oldest engine version</label>
+      <input class="input" type="text" id="v-min" name="engine_min_version" value="{{ fields.engine_min_version }}">
+    </div>
+  </div>
+
+  {# AUDIO IS SHOWN, NOT OFFERED. Both of these were editable boxes and
+     neither could ever be honoured: the sample rate is what the model emits
+     and there is no resampler, and nothing anywhere reads a channel count.
+     A box that silently does nothing is the defect test_no_dead_controls.py
+     exists for, so they are read-only facts with the reason beside them —
+     and the reason is stated rather than left to a greyed-out box, exactly as
+     the voice id is. #}
+  <h6 class="text-muted" style="margin:var(--space-3) 0 0">Audio</h6>
+  <div class="hrow" style="gap:12px; align-items:flex-start; flex-wrap:wrap">
+    <div class="field" style="width:220px">
+      <span class="meta">Sample rate</span>
+      <p style="margin:2px 0 0; font-size:14.5px" id="v-rate">{{ fields.sample_rate or '—' }}{% if fields.sample_rate %} Hz{% endif %}</p>
+      <p class="field-help">{{ sample_rate_note }}</p>
+    </div>
+    <div class="field" style="width:200px">
+      <span class="meta">Channels</span>
+      <p style="margin:2px 0 0; font-size:14.5px" id="v-channels">{{ fields.channels or '1' }}</p>
+      <p class="field-help">{{ channels_note }}</p>
+    </div>
+  </div>
+
+  <h6 class="text-muted" style="margin:var(--space-3) 0 0">Synthesis defaults</h6>
+  <div class="hrow" style="gap:12px; align-items:flex-start; flex-wrap:wrap">
+    <div class="field" style="width:150px">
+      <label for="v-length">Length scale</label>
+      <input class="input" type="text" inputmode="decimal" id="v-length" name="length_scale" value="{{ fields.length_scale }}" placeholder="1.0">
+      <p class="field-help">Speed — higher is slower.</p>
+    </div>
+    <div class="field" style="width:150px">
+      <label for="v-noise">Noise scale</label>
+      <input class="input" type="text" inputmode="decimal" id="v-noise" name="noise_scale" value="{{ fields.noise_scale }}" placeholder="0.667">
+      <p class="field-help">Expressiveness.</p>
+    </div>
+    <div class="field" style="width:150px">
+      <label for="v-noisew">Noise w</label>
+      <input class="input" type="text" inputmode="decimal" id="v-noisew" name="noise_w" value="{{ fields.noise_w }}" placeholder="0.8">
+      <p class="field-help">Pitch variance.</p>
+    </div>
+  </div>
+
+  {# PACING — PC-342. One plain box and two behind an advanced control, because
+     one number is the setting and the other two follow it by ratio until
+     somebody has a reason. Empty means "not set" here exactly as it does in
+     every other box on this form; 0 is a value and means no gap, which is what
+     the voice did before this section existed. #}
+  <h6 class="text-muted" style="margin:var(--space-3) 0 0">Pacing</h6>
+  <div class="hrow" style="gap:12px; align-items:flex-start; flex-wrap:wrap">
+    <div class="field" style="width:150px">
+      <label for="v-sentence-gap">Sentence gap</label>
+      <input class="input" type="text" inputmode="numeric" id="v-sentence-gap"
+             name="sentence_gap_ms" value="{{ fields.sentence_gap_ms }}"
+             placeholder="{{ pacing_default }}">
+      <p class="field-help">Milliseconds.</p>
+    </div>
+    <p class="field-help" style="flex:1; min-width:260px; max-width:52ch; margin:22px 0 0">{{ pacing_help }}</p>
+  </div>
+  <details style="border:1px solid var(--color-divider); border-radius:var(--radius-md); padding:var(--space-3) var(--space-4)"{% if pacing_open %} open{% endif %}>
+    <summary class="hrow" style="cursor:pointer; list-style:none">
+      <span style="font-size:15px">Advanced pacing</span>
+      <span class="meta" style="flex:1">clause {{ fields.clause_gap_ms or clause_follows }} ms, paragraph {{ fields.paragraph_gap_ms or paragraph_follows }} ms</span>
+      {{ icon('down') }}
+    </summary>
+    <div class="hrow" style="gap:12px; align-items:flex-start; flex-wrap:wrap; margin-top:var(--space-3)">
+      <div class="field" style="width:150px">
+        <label for="v-clause-gap">Clause gap</label>
+        <input class="input" type="text" inputmode="numeric" id="v-clause-gap"
+               name="clause_gap_ms" value="{{ fields.clause_gap_ms }}"
+               placeholder="{{ clause_follows }}">
+        <p class="field-help">At a clause mark, below.</p>
+      </div>
+      <div class="field" style="width:150px">
+        <label for="v-paragraph-gap">Paragraph gap</label>
+        <input class="input" type="text" inputmode="numeric" id="v-paragraph-gap"
+               name="paragraph_gap_ms" value="{{ fields.paragraph_gap_ms }}"
+               placeholder="{{ paragraph_follows }}">
+        <p class="field-help">A blank line.</p>
+      </div>
+      <p class="field-help" style="flex:1; min-width:240px; max-width:52ch; margin:22px 0 0">{{ pacing_advanced_help }}</p>
+    </div>
+    {# The marks, beside the gaps they time: where a voice breaks, next to how
+       long it breaks for. Each box REPLACES the usual list, which is how one
+       control adds, removes and replaces — "drop the comma" is typing the
+       other three. Empty is the usual list, never "no breaks": that is a 0
+       gap, and the two must stay tellable apart. #}
+    <div class="hrow" style="gap:12px; align-items:flex-start; flex-wrap:wrap; margin-top:var(--space-3)">
+      <div class="field" style="width:150px">
+        <label for="v-sentence-marks">Sentence marks</label>
+        <input class="input" type="text" id="v-sentence-marks"
+               name="sentence_marks" value="{{ fields.sentence_marks }}"
+               placeholder="{{ sentence_marks_default }}">
+        <p class="field-help">Ends a sentence.</p>
+      </div>
+      <div class="field" style="width:150px">
+        <label for="v-clause-marks">Clause marks</label>
+        <input class="input" type="text" id="v-clause-marks"
+               name="clause_marks" value="{{ fields.clause_marks }}"
+               placeholder="{{ clause_marks_default }}">
+        <p class="field-help">Ends a clause.</p>
+      </div>
+      <p class="field-help" style="flex:1; min-width:240px; max-width:52ch; margin:22px 0 0">{{ pacing_marks_help }}</p>
+    </div>
+  </details>
+
+  <h6 class="text-muted" style="margin:var(--space-3) 0 0">Pronunciation</h6>
+  <div class="field">
+    <label for="v-pron">Corrections, one per line</label>
+    <textarea class="input" id="v-pron" name="pronunciation" style="min-height:110px"
+              placeholder="glados = ɡlˈɑːdɑːs">{{ fields.pronunciation }}</textarea>
+    <p class="field-help">Written to pronunciation.json.</p>
+  </div>
+  <div class="field" style="width:160px">
+    <label for="v-notation">Notation</label>
+    <input class="input" type="text" id="v-notation" name="notation" value="{{ fields.notation }}">
+  </div>
+
+  <h6 class="text-muted" style="margin:var(--space-3) 0 0">Licence and attribution</h6>
+  <div class="hrow" style="gap:12px; align-items:flex-start; flex-wrap:wrap">
+    <div class="field" style="width:200px">
+      <label for="v-spdx">SPDX identifier</label>
+      <input class="input" type="text" id="v-spdx" name="licence_spdx" value="{{ fields.licence_spdx }}" placeholder="CC-BY-4.0">
+    </div>
+    <div class="field" style="flex:1; min-width:240px">
+      <label for="v-source">Where this voice came from</label>
+      <input class="input" type="text" id="v-source" name="licence_source" value="{{ fields.licence_source }}">
+    </div>
+  </div>
+  <div class="field">
+    <label for="v-licence">Licence text</label>
+    <textarea class="input" id="v-licence" name="licence_text" style="min-height:100px">{{ fields.licence_text }}</textarea>
+    <p class="field-help">Written to LICENSE in the pack. Clearing this removes the file.</p>
+  </div>
+  <div class="field">
+    <label for="v-attribution">Attribution</label>
+    <textarea class="input" id="v-attribution" name="attribution_text" style="min-height:80px">{{ fields.attribution_text }}</textarea>
+    <p class="field-help">Written to ATTRIBUTION.md.</p>
+  </div>
+  <div class="hrow" style="gap:12px; align-items:flex-start; flex-wrap:wrap">
+    <div class="field" style="width:220px">
+      <label for="v-author">Author</label>
+      <input class="input" type="text" id="v-author" name="author_name" value="{{ fields.author_name }}">
+    </div>
+    <div class="field" style="flex:1; min-width:220px">
+      <label for="v-contact">Author contact</label>
+      <input class="input" type="text" id="v-contact" name="author_contact" value="{{ fields.author_contact }}">
+    </div>
+  </div>
+
+  <div class="hrow">
+    <button type="submit" class="btn btn-primary">Save</button>
+    {% if save_result %}
+      {% if save_result.kind == 'saved' %}<span class="save-note ok" role="status">{{ icon('check') }} {{ save_result.message }}</span>
+      {% elif save_result.kind == 'invalid' %}<span class="save-note error" role="alert">{{ icon('warn') }} {{ save_result.message }}</span>
+      {% else %}<span class="save-note none" role="status">{{ save_result.message }}</span>{% endif %}
+    {% endif %}
+  </div>
+</form>
+
+<section>
+  <h6 class="text-muted" style="margin-bottom:var(--space-3)">Files</h6>
+  <div class="stack">
+    {% for name in files %}<p class="meta" style="margin:0; font-size:12.5px">{{ name }}</p>{% endfor %}
+  </div>
+  <div class="hrow" style="gap:12px; margin-top:var(--space-3); flex-wrap:wrap">
+    <a hx-boost="false" download class="btn btn-secondary" href="/admin/voice/voices/{{ engine }}/{{ voice }}/export">{{ icon('down') }} Download pack</a>
+    <span class="meta" style="max-width:60ch">{{ export_note }}</span>
+  </div>
+</section>
+{% endblock %}

@@ -1,0 +1,156 @@
+{# voice_engines.html — one switch per speech engine (PC-335, PC-338).
+
+   Context: engines: [{id, display, available, reason, switchable, enabled,
+     running, voices, warning}], lede, problems, problems_lede, notes,
+     notes_lede, ignored, ignored_lede, unavailable_note, no_engines,
+     can_switch, save_result?
+
+   NO SCRIPT ANYWHERE ON THIS PAGE. One form, plain checkboxes, one Save. The
+   plugins screen learned what a scripted control costs the day a plugin could
+   not be uninstalled; a switch that starts a speech engine is not the place to
+   relearn it.
+
+   An UNAVAILABLE engine gets no switch at all — not a disabled one. A control
+   that appears to work and does not is this project's recurring failure, and a
+   greyed-out switch is still something people click. #}
+{% extends "base.html" %}
+{% from "_controls.html" import icon %}
+{% block title %}Speech engines — PersonaCore admin{% endblock %}
+{% block content %}
+<h3 style="margin:0">Speech engines</h3>
+<p class="text-muted" style="margin:0; font-size:13px; max-width:64ch">{{ lede }}</p>
+
+{% if unavailable_note %}
+<div class="banner warn" role="status">
+  {{ icon('warn') }}
+  <div class="grow"><p style="margin:0">{{ unavailable_note }}</p></div>
+</div>
+{% endif %}
+
+{% if problems %}
+{# What the core could not do with speech, in the place it is configured. Not
+   fatal and not hidden: an engine that vanished, a switch naming nothing and a
+   setting nobody reads all reached /health and stopped there, which left this
+   page describing a build that simply never had the thing. #}
+<div class="banner warn" role="status">
+  {{ icon('warn') }}
+  <div class="grow">
+    <p style="margin:0">{{ problems_lede }}</p>
+    <ul style="margin:6px 0 0; padding-left:18px">
+      {% for problem in problems %}
+      <li style="font-size:12.5px">{{ problem }}</li>
+      {% endfor %}
+    </ul>
+  </div>
+</div>
+{% endif %}
+
+{% if notes %}
+{# What the last apply had to say. The switch is on and the engine is not, and
+   this is the only line that says why — it used to be returned by apply(),
+   asserted in a test and read by nothing, so an operator who flipped a switch
+   and got silence had nowhere to look. It belongs HERE, where they flipped
+   it. #}
+<div class="banner warn" role="status" id="voice-notes">
+  {{ icon('warn') }}
+  <div class="grow">
+    <p style="margin:0">{{ notes_lede }}</p>
+    <ul style="margin:6px 0 0; padding-left:18px">
+      {% for note in notes %}
+      <li style="font-size:12.5px">{{ note }}</li>
+      {% endfor %}
+    </ul>
+  </div>
+</div>
+{% endif %}
+
+{% if ignored %}
+{# A value arrived for a switch this page does not offer. Answered rather than
+   swallowed: it changed nothing, and saying so is the difference between a
+   control that did nothing and a control that did nothing in silence. #}
+<div class="banner warn" role="alert" id="voice-ignored">
+  {{ icon('hand') }}
+  <div class="grow">
+    <p style="margin:0">{{ ignored_lede }}</p>
+    <ul style="margin:6px 0 0; padding-left:18px">
+      {% for line in ignored %}
+      <li style="font-size:12.5px">{{ line }}</li>
+      {% endfor %}
+    </ul>
+  </div>
+</div>
+{% endif %}
+
+{% if no_engines %}
+<div class="empty">
+  {{ icon('pulse') }}
+  <div><p style="margin:0; font-size:15px">{{ no_engines }}</p></div>
+</div>
+{% endif %}
+
+{% if engines %}
+<form class="stack" method="post" action="/admin/voice/engines">
+  {% for engine in engines %}
+  <div class="row hrow" style="gap:14px" id="engine-row-{{ engine.id }}">
+    {% if engine.switchable %}
+    {# The marker says the switch was on this page. An unticked checkbox
+       submits nothing at all, which is otherwise indistinguishable from an
+       engine that was never drawn — and the safe reading of that is to leave
+       it alone. #}
+    <input type="hidden" name="present.{{ engine.id }}" value="1">
+    <input type="checkbox" role="switch" class="switch" id="engine-{{ engine.id }}"
+           name="engine.{{ engine.id }}" value="1" {% if engine.enabled %}checked{% endif %}
+           aria-label="Switch {{ engine.display }} {{ 'off' if engine.enabled else 'on' }}">
+    {% else %}
+    <span class="dot warn" role="img" aria-label="unavailable"></span>
+    {% endif %}
+    <div style="flex:1; min-width:0">
+      <div class="hrow" style="gap:10px">
+        <label for="engine-{{ engine.id }}" style="font-size:14.5px">{{ engine.display }}</label>
+        <span class="meta">{{ engine.id }}</span>
+        {% if not engine.available %}<span class="state-word off" style="font-size:12px">unavailable here</span>
+        {% elif engine.running %}<span class="state-word ok" style="font-size:12px">running</span>
+        {# Switched ON and not running is not the same state as switched off,
+           and calling it "switched off" beside a ticked box is the screen
+           disagreeing with itself. #}
+        {% elif engine.state == 'failed' %}<span class="state-word off" style="font-size:12px">did not start</span>
+        {% else %}<span class="state-word off" style="font-size:12px">switched off</span>{% endif %}
+      </div>
+      {% if not engine.available %}
+      {# PC-338: the reason, in the engine's own words. Saying so plainly beats
+         shipping something that technically starts and cannot work. #}
+      <p style="margin:2px 0 0; font-size:12.5px; color:var(--color-warn)">{{ engine.reason }}</p>
+      {% else %}
+      <p class="meta" style="margin:2px 0 0; font-size:12.5px">
+        {{ engine.voices }} voice{{ '' if engine.voices == 1 else 's' }} installed.
+      </p>
+      {% endif %}
+      {% if engine.error %}
+      {# The registry's own sentence for an engine that would not start or
+         complained on the way out. It reached /health and stopped there, so
+         the page where the switch lives showed a ticked box beside the words
+         "switched off" and nothing else. #}
+      <p style="margin:3px 0 0; font-size:12.5px; color:var(--color-warn)">{{ engine.error }}</p>
+      {% endif %}
+      {% if engine.warning and engine.available %}
+      {# PC-336, before the switch is flipped rather than after: a consequence
+         explained only once it has happened is not a warning. #}
+      <p style="margin:3px 0 0; font-size:12.5px; color:var(--color-warn)">{{ engine.warning }}</p>
+      {% endif %}
+    </div>
+    <a class="btn btn-ghost" href="/admin/voice/voices">voices</a>
+  </div>
+  {% endfor %}
+
+  <div class="hrow">
+    <button type="submit" class="btn btn-primary" {% if not can_switch %}disabled{% endif %}>Save</button>
+    {% if not can_switch %}<span class="later">later</span>{% endif %}
+    {% if save_result %}
+      {% if save_result.kind == 'ok' %}<span class="save-note ok" role="status">{{ icon('check') }} {{ save_result.message }}</span>
+      {% elif save_result.kind == 'refused' %}<span class="save-note error" role="alert">{{ icon('hand') }} {{ save_result.message }}</span>
+      {% else %}<span class="save-note none" role="status">{{ save_result.message }}</span>{% endif %}
+    {% endif %}
+  </div>
+</form>
+{% endif %}
+{% endblock %}

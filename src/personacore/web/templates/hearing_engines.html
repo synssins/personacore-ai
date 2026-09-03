@@ -1,0 +1,126 @@
+{# hearing_engines.html — one switch per recogniser.
+
+   Context: engines: [{id, display, available, reason, switchable, enabled,
+     running, state, error, note}], lede, problems, problems_lede, ignored,
+     ignored_lede, unavailable_note, no_engines, can_switch, save_result?
+
+   NO SCRIPT ANYWHERE ON THIS PAGE. One form, plain checkboxes, one Save — the
+   same shape voice_engines.html settled on, for the same reason.
+
+   An UNAVAILABLE recogniser gets no switch at all — not a disabled one. And
+   "switched on" and "running" are printed as different things, because they
+   are: a recogniser whose model files are missing stays on in the file and is
+   not listening, and a row that said only one of those would be lying about
+   the other. #}
+{% extends "base.html" %}
+{% from "_controls.html" import icon %}
+{% block title %}Recognisers — PersonaCore admin{% endblock %}
+{% block content %}
+<h3 style="margin:0">Recognisers</h3>
+<p class="text-muted" style="margin:0; font-size:13px; max-width:64ch">{{ lede }}</p>
+
+{% if unavailable_note %}
+<div class="banner warn" role="status">
+  {{ icon('warn') }}
+  <div class="grow"><p style="margin:0">{{ unavailable_note }}</p></div>
+</div>
+{% endif %}
+
+{% if problems %}
+<div class="banner warn" role="status">
+  {{ icon('warn') }}
+  <div class="grow">
+    <p style="margin:0">{{ problems_lede }}</p>
+    <ul style="margin:6px 0 0; padding-left:18px">
+      {% for problem in problems %}
+      <li style="font-size:12.5px">{{ problem }}</li>
+      {% endfor %}
+    </ul>
+  </div>
+</div>
+{% endif %}
+
+{% if ignored %}
+{# A value arrived for a switch this page does not offer. Answered rather than
+   swallowed: it changed nothing, and saying so is the difference between a
+   control that did nothing and one that did nothing in silence. #}
+<div class="banner warn" role="alert" id="hearing-ignored">
+  {{ icon('hand') }}
+  <div class="grow">
+    <p style="margin:0">{{ ignored_lede }}</p>
+    <ul style="margin:6px 0 0; padding-left:18px">
+      {% for line in ignored %}
+      <li style="font-size:12.5px">{{ line }}</li>
+      {% endfor %}
+    </ul>
+  </div>
+</div>
+{% endif %}
+
+{% if no_engines %}
+<div class="empty">
+  {{ icon('pulse') }}
+  <div><p style="margin:0; font-size:15px">{{ no_engines }}</p></div>
+</div>
+{% endif %}
+
+{% if engines %}
+<form class="stack" method="post" action="/admin/hearing/engines">
+  {% for engine in engines %}
+  <div class="row hrow" style="gap:14px" id="recogniser-row-{{ engine.id }}">
+    {% if engine.switchable %}
+    {# The marker says the switch was on this page. An unticked checkbox
+       submits nothing at all, which is otherwise indistinguishable from a
+       recogniser that was never drawn — and the safe reading of that is to
+       leave it alone. #}
+    <input type="hidden" name="present.{{ engine.id }}" value="1">
+    <input type="checkbox" role="switch" class="switch" id="recogniser-{{ engine.id }}"
+           name="engine.{{ engine.id }}" value="1" {% if engine.enabled %}checked{% endif %}
+           aria-label="Switch {{ engine.display }} {{ 'off' if engine.enabled else 'on' }}">
+    {% else %}
+    <span class="dot warn" role="img" aria-label="unavailable"></span>
+    {% endif %}
+    <div style="flex:1; min-width:0">
+      <div class="hrow" style="gap:10px">
+        <label for="recogniser-{{ engine.id }}" style="font-size:14.5px">{{ engine.display }}</label>
+        <span class="meta">{{ engine.id }}</span>
+        {# Available is about this build; enabled is the operator's switch.
+           Both are shown, and neither word stands in for the other. #}
+        {% if not engine.available %}<span class="state-word off" style="font-size:12px">unavailable here</span>
+        {% elif engine.running %}<span class="state-word ok" style="font-size:12px">listening</span>
+        {% elif engine.state == 'failed' %}<span class="state-word off" style="font-size:12px">did not start</span>
+        {% else %}<span class="state-word off" style="font-size:12px">switched off</span>{% endif %}
+        {% if not engine.available %}
+          {% if engine.enabled %}<span class="state-word warn" style="font-size:12px">switched on</span>
+          {% else %}<span class="state-word off" style="font-size:12px">switched off</span>{% endif %}
+        {% endif %}
+      </div>
+      {% if not engine.available %}
+      {# The reason, in the recogniser's own words. Saying so plainly beats
+         shipping something that technically starts and cannot listen. #}
+      <p style="margin:2px 0 0; font-size:12.5px; color:var(--color-warn)">{{ engine.reason }}</p>
+      {% endif %}
+      {% if engine.note %}
+      {# On in the file and not running. The one state an operator cannot work
+         out for themselves, said where they set the switch. #}
+      <p style="margin:3px 0 0; font-size:12.5px; color:var(--color-warn)">{{ engine.note }}</p>
+      {% endif %}
+      {% if engine.error %}
+      <p style="margin:3px 0 0; font-size:12.5px; color:var(--color-warn)">{{ engine.error }}</p>
+      {% endif %}
+    </div>
+  </div>
+  {% endfor %}
+
+  <div class="hrow">
+    <button type="submit" class="btn btn-primary" {% if not can_switch %}disabled{% endif %}>Save</button>
+    {% if not can_switch %}<span class="later">later</span>{% endif %}
+    {% if save_result %}
+      {% if save_result.kind == 'ok' %}<span class="save-note ok" role="status">{{ icon('check') }} {{ save_result.message }}</span>
+      {% elif save_result.kind == 'refused' %}<span class="save-note error" role="alert">{{ icon('hand') }} {{ save_result.message }}</span>
+      {% else %}<span class="save-note none" role="status">{{ save_result.message }}</span>{% endif %}
+    {% endif %}
+  </div>
+</form>
+{% endif %}
+{% endblock %}

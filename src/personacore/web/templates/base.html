@@ -1,0 +1,188 @@
+{# base.html — app shell. Every page extends this.
+   Context: nav_active (str), health_state ('ok'|'degraded'), security_alert (bool),
+   is_admin (bool), nav_collapsed (bool), here (str — where a toggle comes back to)
+
+   COLLAPSING. `nav_collapsed` comes from this person's own preference, read by
+   `_shell` before the page is rendered, so the narrow menu is in the markup the
+   browser receives. That is the whole point of doing it server-side: a menu
+   restored by a script paints wide and then snaps shut on every navigation,
+   and this surface navigates by `hx-boost` constantly.
+
+   Collapsed, the menu is icons alone. The names are gone from the markup
+   rather than hidden with CSS, so every item carries `aria-label` and `title`
+   instead — an icon with no name is unusable with a screen reader and
+   unguessable with a mouse.
+
+   Two things are deliberately NOT in the collapsed menu: the sub-items
+   (Voices, Recognisers, the Security group's children) and Sign out. Neither
+   has an icon, and inventing one for each would be a worse answer than one
+   click on the toggle. The Security group keeps its shield and its warning dot
+   and expands the menu when pressed, so the dot is never a light nobody can
+   follow. #}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}PersonaCore admin{% endblock %}</title>
+  <link rel="stylesheet" href="/admin/static/nocturne.css">
+  <script src="/admin/static/htmx.min.js" defer></script>
+  <script src="/admin/static/admin.js" defer></script>
+</head>
+<body hx-boost="true">
+  {% from "_controls.html" import icon %}
+  {# An icon-only link has no text to read, so it says its name in the two
+     places that are left. Expanded, the name is on the page and repeating it
+     as a tooltip would be noise. #}
+  {%- macro navname(label, collapsed) -%}
+  {%- if collapsed %}aria-label="{{ label }}" title="{{ label }}"{% endif -%}
+  {%- endmacro -%}
+  <div class="app">
+    <nav class="sidebar{% if nav_collapsed %} is-collapsed{% endif %}" aria-label="Admin sections">
+      {# The toggle, at the top, and the whole of the no-JavaScript story: an
+         ordinary form that saves the choice and redirects back to `here`.
+         Boosted like every other form on this surface, so with scripting it is
+         a swap rather than a page load — and the same control either way.
+         `id` so the collapsed Security button below can submit it too. #}
+      <form class="nav-toggle" id="nav-toggle" method="post" action="/admin/profile/menu">
+        {# `id` is load-bearing on the chat screen and inert everywhere else:
+           picking a thread there never reloads the page, so this field has to
+           be swapped out of band with the rest of the controls that name the
+           open conversation. Without it the menu's fold kept sending the
+           browser to whichever thread the page had loaded with — or, from a
+           page opened without ?c=, to a brand new one.
+           See fragments/chat_markers.html. #}
+        <input type="hidden" id="nav-next" name="next" value="{{ here }}">
+        <input type="hidden" name="collapsed" value="{{ '0' if nav_collapsed else '1' }}">
+        <button type="submit" class="navlink"
+                aria-label="{{ 'Show the menu names' if nav_collapsed else 'Hide the menu names' }}"
+                title="{{ 'Show the menu names' if nav_collapsed else 'Hide the menu names' }}">
+          {{ icon('right') if nav_collapsed else icon('left') }}{% if not nav_collapsed %}<span class="grow">Menu</span>{% endif %}
+        </button>
+      </form>
+
+      {% if not nav_collapsed %}<div class="brand">PersonaCore <small>admin</small></div>{% endif %}
+
+      <a class="navlink" href="/admin/chat" {% if nav_active == 'chat' %}aria-current="page"{% endif %} {{ navname('Chat', nav_collapsed) }}>{{ icon('chat') }}{% if not nav_collapsed %}<span class="grow">Chat</span>{% endif %}</a>
+
+      {# Everything from here to Logs administers the household, and the router
+         refuses a member on all of it (ADR-0032). Absent rather than greyed,
+         following ADR-0031: the "Users and sessions" item below is drawn and
+         disabled because the state it reports can change under the same
+         account — switch off the login proxy and the accounts reappear — so
+         naming the reason is information. Admin-ness is not that kind of
+         state. A permanent row of greyed screens explaining doors that never
+         open for this person is clutter, and it invites the question it cannot
+         answer. A member's sidebar is Chat and the gear beside their name. #}
+      {% if is_admin %}
+      <a class="navlink" href="/admin/health" {% if nav_active == 'health' %}aria-current="page"{% endif %} {{ navname('Health', nav_collapsed) }}>
+        {{ icon('pulse') }}{% if not nav_collapsed %}<span class="grow">Health</span>{% endif %}
+        {% if health_state != 'ok' %}<span class="dot warn" role="img" aria-label="degraded"></span>{% endif %}
+      </a>
+      <a class="navlink" href="/admin/models" {% if nav_active == 'models' %}aria-current="page"{% endif %} {{ navname('Model connections', nav_collapsed) }}>{{ icon('plug') }}{% if not nav_collapsed %}<span class="grow">Model connections</span>{% endif %}</a>
+      <a class="navlink" href="/admin/plugins" {% if nav_active == 'plugins' %}aria-current="page"{% endif %} {{ navname('Plugins', nav_collapsed) }}>{{ icon('puzzle') }}{% if not nav_collapsed %}<span class="grow">Plugins</span>{% endif %}</a>
+      {# Two screens about plugins alone, under the list they belong to and in
+         the same style as the Security group's children. Health is a page per
+         PC-280; output is what each plugin has printed, per PC-279. #}
+      {% if not nav_collapsed %}
+      <a class="navlink sub" href="/admin/plugins/health" {% if nav_active == 'plugin-health' %}aria-current="page"{% endif %}><span class="grow">Plugin health</span></a>
+      <a class="navlink sub" href="/admin/plugins/logs" {% if nav_active == 'plugin-output' %}aria-current="page"{% endif %}><span class="grow">Plugin output</span></a>
+      {% endif %}
+      <a class="navlink" href="/admin/personas" {% if nav_active == 'personas' %}aria-current="page"{% endif %} {{ navname('Personas', nav_collapsed) }}>{{ icon('mask') }}{% if not nav_collapsed %}<span class="grow">Personas</span>{% endif %}</a>
+      {# Voice is core, not an extra bolted on beside the plugins: the product
+         is a persona and a voice is part of a character (ADR-0029). Engines
+         above, the voices themselves under it, the same shape the plugin group
+         has. #}
+      <a class="navlink" href="/admin/voice" {% if nav_active == 'voice' %}aria-current="page"{% endif %} {{ navname('Speech engines', nav_collapsed) }}>{{ icon('pulse') }}{% if not nav_collapsed %}<span class="grow">Speech engines</span>{% endif %}</a>
+      {% if not nav_collapsed %}
+      <a class="navlink sub" href="/admin/voice/voices" {% if nav_active == 'voices' %}aria-current="page"{% endif %}><span class="grow">Voices</span></a>
+      {# The listening half, in the same group: speaking and hearing are one
+         subject to the person configuring them, and a recogniser has exactly
+         the switch an engine has. #}
+      <a class="navlink sub" href="/admin/hearing" {% if nav_active == 'hearing' %}aria-current="page"{% endif %}><span class="grow">Recognisers</span></a>
+      {% endif %}
+      {# Core settings — admin-only since ADR-0031, and now one item inside the
+         admin-only run rather than the only one that thought about it. #}
+      <a class="navlink" href="/admin/core" {% if nav_active == 'core' %}aria-current="page"{% endif %} {{ navname('Core settings', nav_collapsed) }}>{{ icon('gear') }}{% if not nav_collapsed %}<span class="grow">Core settings</span>{% endif %}</a>
+
+      {% if nav_collapsed %}
+      {# Collapsed, the Security group has nothing to disclose — its children
+         are names without icons. So the shield opens the menu instead of the
+         group, and the warning dot rides on it: a light with nowhere to go
+         would be worse than no light. It submits the toggle form above. #}
+      <button type="submit" form="nav-toggle" class="navlink"
+              aria-label="Security — show the menu names" title="Security — show the menu names">
+        {{ icon('shield') }}
+        {% if security_alert %}<span class="dot warn" role="img" aria-label="attention"></span>{% endif %}
+      </button>
+      {% else %}
+      {# Security group — a native disclosure; open when a child is active #}
+      <details {% if nav_active in ('keys', 'users', 'review') %}open{% endif %}>
+        <summary class="navlink">{{ icon('shield') }}<span class="grow">Security</span>
+          {% if security_alert %}<span class="dot warn" role="img" aria-label="attention"></span>{% endif %}
+        </summary>
+        <a class="navlink sub" href="/admin/keys" {% if nav_active == 'keys' %}aria-current="page"{% endif %}><span class="grow">Access keys</span></a>
+        {# Users and sessions is a real screen only when this core is using its
+           own sign-in. Under a login proxy there are no accounts here to show,
+           so the item stays drawn and disabled rather than linking to a page
+           that would have nothing on it. #}
+        {% if can_sign_out %}
+        <a class="navlink sub" href="/admin/account" {% if nav_active == 'users' %}aria-current="page"{% endif %}><span class="grow">Users and sessions</span></a>
+        {% else %}
+        <span class="navlink sub" aria-disabled="true"><span class="grow">Users</span><span class="later">no accounts</span></span>
+        {% endif %}
+        {# One person's conversations, hidden ones included. Drawn whatever the
+           door is: the screen itself says when this core has no accounts of
+           its own to pick from, which is more use than an item that vanishes
+           and leaves nothing to explain why. #}
+        <a class="navlink sub" href="/admin/review" {% if nav_active == 'review' %}aria-current="page"{% endif %}><span class="grow">Review</span></a>
+        <span class="navlink sub" aria-disabled="true"><span class="grow">Authentication</span><span class="later">later</span></span>
+      </details>
+      {% endif %}
+
+      <a class="navlink" href="/admin/logs" {% if nav_active == 'logs' %}aria-current="page"{% endif %} {{ navname('Logs', nav_collapsed) }}>{{ icon('scroll') }}{% if not nav_collapsed %}<span class="grow">Logs</span>{% endif %}</a>
+      {% endif %}
+
+      <div style="flex:1"></div>
+      {# Who is signed in, on every page. `signed_in_as` comes from the same
+         `require_user` that let this request through, never from a cookie or a
+         form — a footer that could be told who to name is not an identity. #}
+      {% if signed_in_as %}
+      <div style="border-top:1px solid var(--color-divider); padding-top:6px; margin-top:6px">
+        <div class="hrow" style="padding:6px 10px; gap:8px; align-items:center">
+          {% if not nav_collapsed %}<span class="grow" style="font-size:13px; line-height:1.4">{{ signed_in_as }}</span>{% endif %}
+          {# The gear is a navlink so it highlights like every other item when
+             you are on the page it opens. It survives the collapse: it already
+             had an icon and an `aria-label`, which is exactly what the narrow
+             menu needs. #}
+          <a class="navlink" href="/admin/profile" style="padding:5px; border-radius:6px; flex:none"
+             {% if nav_active == 'profile' %}aria-current="page"{% endif %}
+             aria-label="Your profile" {% if nav_collapsed %}title="Your profile"{% endif %}>{{ icon('gear') }}</a>
+        </div>
+        {% if can_sign_out and not nav_collapsed %}
+        <form method="post" action="/admin/sign-out" style="margin:0; padding:0 10px 6px">
+          <button type="submit" class="btn btn-secondary" style="width:100%; font-size:12px; padding:4px 8px">Sign out</button>
+        </form>
+        {% endif %}
+      </div>
+      {% endif %}
+      {% if not nav_collapsed %}
+      <div class="meta" style="padding:10px 10px 0; line-height:1.5;">Self-hosted · nothing leaves the house without permission</div>
+      {# Which core is running. `build` is empty outside a container and the
+         line then carries the version alone — a commit that is not the running
+         commit would be worse than no commit at all. #}
+      <div class="meta" style="padding:2px 10px 10px; line-height:1.5;">v{{ version }}{% if build %} · {{ build }}{% endif %}</div>
+      {% endif %}
+    </nav>
+
+    <main class="content">
+      <div class="page">
+        {% block content %}{% endblock %}
+      </div>
+    </main>
+  </div>
+
+  {# One modal outlet for the whole app. Fragments swap into it and call showModal(). #}
+  <dialog class="modal" id="modal"></dialog>
+</body>
+</html>

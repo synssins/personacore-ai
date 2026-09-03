@@ -1,0 +1,31 @@
+{# search_results.html — swapped into ONE entry's .search-results div.
+   Context: results: [{label, detail}], field, entry_index, pname, query, message.
+   Each hit re-renders the OWNING fieldset via group_entry.html with the picked
+   values merged over whatever the operator already typed (hx-include sends
+   the entry's current inputs along).
+
+   `detail` is built by the server from whatever keys THIS plugin's schema asked
+   to fill — the core does not know that a place has a latitude, and naming one
+   here would make search-and-fill a weather feature instead of the mechanism
+   every plugin gets (ADR-0016).
+
+   Only one search runs per request, and admin.js closes any other open result
+   list when this one opens. #}
+{% if results %}
+  {% for hit in results %}
+  <button type="button" class="search-hit"
+          hx-get="/admin/plugins/{{ pname }}/settings/{{ field.key }}/fill/fragment"
+          {# the query is NOT repeated here: the search box lives inside the
+             fieldset hx-include already sends, and operator text pasted into a
+             JSON attribute is one backslash away from unparseable #}
+          hx-vals='{"entry": "{{ entry_index }}", "pick": "{{ loop.index0 }}"}'
+          hx-include="closest fieldset"
+          hx-target="closest fieldset" hx-swap="outerHTML">
+    <span>{{ hit.label }}</span>
+    <span class="meta">{{ hit.detail }}</span>
+  </button>
+  {% endfor %}
+  <p class="meta" style="padding:6px 12px;margin:0">Pick a result to fill the fields above.</p>
+{% else %}
+  <p class="meta" style="padding:8px 12px;margin:0">{{ message }}</p>
+{% endif %}

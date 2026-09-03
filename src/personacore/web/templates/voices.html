@@ -1,0 +1,120 @@
+{# voices.html — every installed voice, and the upload that adds one (PC-337).
+
+   Context: voices: [{engine, id, display, description, language, label,
+     engine_known, engine_enabled, engine_running, unsupported}],
+     engines: [{id, display}],
+     install_result?, disclosure, max_bytes, engines_note,
+     skipped: [{label, reason}], skipped_lede
+
+   ONE LIST, EVERY ENGINE (ADR-0029 §5). The engine is a label on a row, not a
+   tab above it and not a step before it: picking an engine is not something an
+   operator navigates.
+
+   The form is a plain multipart post. No script, no dialog, no two-step
+   review — a voice pack declares nothing and asks for nothing, so there is
+   nothing to disclose but what the format refuses, which is one line. #}
+{% extends "base.html" %}
+{% from "_controls.html" import icon %}
+{% block title %}Voices — PersonaCore admin{% endblock %}
+{% block content %}
+<h3 style="margin:0">Voices</h3>
+
+<form class="card elev-sm" style="gap:var(--space-3)" method="post"
+      action="/admin/voice/voices/install" enctype="multipart/form-data">
+  <div class="hrow" style="flex-wrap:wrap; gap:12px">
+    <label class="btn btn-secondary" for="voice-zip">{{ icon('plus') }} Choose a .zip…</label>
+    <input type="file" id="voice-zip" name="archive" accept=".zip" required
+           style="position:absolute; width:1px; height:1px; opacity:0" data-file-label>
+    <span class="meta" data-file-name>no file chosen</span>
+
+    <label for="voice-engine" class="meta">Engine</label>
+    <select class="input" id="voice-engine" name="engine" required style="max-width:220px">
+      {% for engine in engines %}
+      <option value="{{ engine.id }}">{{ engine.display }}</option>
+      {% else %}
+      <option value="" disabled selected>no engine in this core</option>
+      {% endfor %}
+    </select>
+
+    <label for="voice-id" class="meta">Id</label>
+    <input class="input" type="text" id="voice-id" name="voice" style="max-width:200px"
+           placeholder="from the file name">
+
+    <label class="hrow" style="gap:8px; font-size:13px; cursor:pointer">
+      <input type="checkbox" class="check" name="replace" value="1">
+      Replace a voice of the same id
+    </label>
+    <button type="submit" class="btn btn-primary" style="margin-left:auto">Install</button>
+  </div>
+  {# Three facts about what a pack may hold. Not an argument for them. #}
+  <p class="field-help" style="margin:0">{{ disclosure }}</p>
+  {% if engines_note %}<p class="field-help" style="margin:0">{{ engines_note }}</p>{% endif %}
+
+  <div id="install-result">
+    {% if install_result %}
+      {% if install_result.kind == 'ok' %}
+      <p class="save-note ok" role="status" style="margin:0">{{ icon('check') }} {{ install_result.message }}</p>
+      {% else %}
+      <p class="save-note error" role="alert" style="margin:0">{{ icon('hand') }} {{ install_result.message }}</p>
+      {% endif %}
+    {% endif %}
+  </div>
+</form>
+
+{% if skipped %}
+{# A voice folder that could not be read. NAMED, with its reason — the whole
+   of "skipped and named, never fatal". A shorter list with nothing said is
+   how an operator concludes their upload silently failed. #}
+<div class="banner warn" role="status" id="skipped-voices">
+  {{ icon('warn') }}
+  <div class="grow">
+    <p style="margin:0">{{ skipped_lede }}</p>
+    <ul style="margin:6px 0 0; padding-left:18px">
+      {% for item in skipped %}
+      <li style="font-size:12.5px"><strong>{{ item.label }}</strong> — {{ item.reason }}</li>
+      {% endfor %}
+    </ul>
+  </div>
+</div>
+{% endif %}
+
+<div class="stack" id="voice-list">
+  {% if not voices %}
+  <div class="empty">
+    {{ icon('mask') }}
+    <div>
+      <p style="margin:0; font-size:15px">No voices installed.</p>
+      <p class="text-muted" style="margin:4px 0 0; font-size:13px; max-width:60ch">Upload a voice's .zip above.</p>
+    </div>
+  </div>
+  {% endif %}
+
+  {% for voice in voices %}
+  <div class="row hrow" style="gap:14px" id="voice-row-{{ voice.engine }}-{{ voice.id }}">
+    <div style="flex:1; min-width:0">
+      <div class="hrow" style="gap:10px">
+        {# ADR-0029 §5's one spelling: GLaDOS (vits-onnx). #}
+        <a href="/admin/voice/voices/{{ voice.engine }}/{{ voice.id }}" style="font-size:14.5px; text-decoration:none">{{ voice.label }}</a>
+        {% if voice.language %}<span class="meta">{{ voice.language }}</span>{% endif %}
+        {# The word, not the sentence. Its siblings below are two words each, and
+           the refusal runs to ninety characters -- in a row of chips that reads
+           as a paragraph wedged into a list. The sentence is the `title`, and
+           the voice's own page carries it in full. #}
+        {% if voice.unsupported %}<span class="state-word down" style="font-size:12px" title="{{ voice.unsupported }}">unsupported</span>
+        {% elif not voice.engine_known %}<span class="state-word off" style="font-size:12px">no such engine</span>
+        {% elif voice.engine_running %}<span class="state-word ok" style="font-size:12px">can speak</span>
+        {% else %}<span class="state-word off" style="font-size:12px">engine off</span>{% endif %}
+      </div>
+      {% if voice.description %}
+      <p class="meta" style="margin:2px 0 0; font-size:12.5px">{{ voice.description }}</p>
+      {% endif %}
+    </div>
+    <a hx-boost="false" download class="btn btn-ghost" href="/admin/voice/voices/{{ voice.engine }}/{{ voice.id }}/export">download pack</a>
+    <a class="btn btn-ghost" href="/admin/voice/voices/{{ voice.engine }}/{{ voice.id }}">details</a>
+    {# A LINK to a confirmation page carrying a plain form — no htmx, no dialog,
+       no admin.js. See screens/plugins.py for why that mattered enough. #}
+    <a class="btn btn-danger" href="/admin/voice/voices/{{ voice.engine }}/{{ voice.id }}/remove">{{ icon('trash') }} remove</a>
+  </div>
+  {% endfor %}
+</div>
+{% endblock %}

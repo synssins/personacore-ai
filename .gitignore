@@ -1,0 +1,32 @@
+# Runtime state. Never in git, never in an image.
+appdata/
+*.db
+*.sqlite*
+
+# Secrets. Compose reads .env; nothing else should.
+.env
+*.env
+secrets/
+*.key
+*.pem
+tokens.md
+
+# Caches and build output.
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+build/
+dist/
+node_modules/
+*.log
+
+# OS and editor litter.
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

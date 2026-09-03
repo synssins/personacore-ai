@@ -1,0 +1,63 @@
+{# core.html — everything that is not a plugin and not a model connection.
+   A real form; the body of it is fragments/core_form.html so that a save can
+   re-render the form alone (the design's swap boundary is #core-form).
+
+   Context: core (see fragments/core_form.html), save_result?,
+     active_tab ('form'|'raw'), raw_json, raw_error?, config_error?
+
+   The raw editor is the same fallback the plugin screen keeps beside its
+   generated form: everything CoreSettings holds that this form has no field
+   for — the LLM roles, the default persona, the per-role timeouts — is still
+   reachable there. #}
+{% extends "base.html" %}
+{% from "_controls.html" import icon %}
+{% block title %}Core settings — PersonaCore admin{% endblock %}
+{% block content %}
+<header>
+  <h3 style="margin:0 0 6px">Core settings</h3>
+  <p class="text-muted" style="margin:0; font-size:13px">Everything that is not a plugin and not a model connection.</p>
+</header>
+
+{% if config_error %}
+{# whole-section failure: the settings file cannot be read, so nothing here is
+   editable. Saving over it would replace a file nobody has seen. #}
+<div class="banner danger" id="core-unreadable">
+  {{ icon('warn') }}
+  <div class="grow">
+    <div class="title">The settings file could not be read, so nothing here can be changed.</div>
+    <p class="meta" style="margin:2px 0 0">{{ config_error }}</p>
+  </div>
+</div>
+{% else %}
+
+{# tabs — full navigations, server renders the active one #}
+<div class="seg" role="tablist">
+  <a class="seg-opt" role="tab" href="/admin/core" aria-selected="{{ 'true' if active_tab == 'form' else 'false' }}">
+    {% if active_tab == 'form' %}<input type="radio" checked>{% else %}<input type="radio">{% endif %}Settings</a>
+  <a class="seg-opt" role="tab" href="/admin/core?tab=raw" aria-selected="{{ 'true' if active_tab == 'raw' else 'false' }}">
+    {% if active_tab == 'raw' %}<input type="radio" checked>{% else %}<input type="radio">{% endif %}Raw</a>
+</div>
+
+{% if active_tab == 'form' %}
+  {% include "fragments/core_form.html" %}
+{% else %}
+  {# raw editor — a fallback beside the form, never instead of it #}
+  <form hx-post="/admin/core/raw" hx-target="body" class="stack" style="max-width:640px; gap:var(--space-3)">
+    <p class="text-muted" style="margin:0;font-size:13px">For anything the form cannot express — the LLM roles, the default persona, the per-role timeouts.</p>
+    <label for="raw-json" style="position:absolute;left:-9999px">Raw settings JSON</label>
+    <textarea class="input" id="raw-json" name="raw" spellcheck="false"
+              style="min-height:220px; font-family:var(--font-mono); font-size:13px">{{ raw_json }}</textarea>
+    <div class="hrow">
+      <button type="submit" class="btn btn-primary">Save settings</button>
+      {% if raw_error %}
+      <span class="save-note error" role="alert">{{ icon('warn') }} {{ raw_error }}</span>
+      {# e.g. "That isn't valid JSON — unexpected character at line 4. Nothing was written." #}
+      {% endif %}
+      {% if raw_saved %}
+      <span class="save-note ok" role="status">{{ icon('check') }} {{ raw_saved }}</span>
+      {% endif %}
+    </div>
+  </form>
+{% endif %}
+{% endif %}
+{% endblock %}

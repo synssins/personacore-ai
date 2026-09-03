@@ -1,0 +1,42 @@
+{# fragments/chat_markers.html — every control that names the open thread.
+   Context: conversation
+
+   Included by BOTH responses that can change what "this conversation" is —
+   switching threads, and a reply landing — so the whole bar follows rather
+   than only the box you type in. It was included by the first alone, which
+   made the rule true of one path and a coincidence on the other: the reply's
+   fragment swapped the composer's field and nothing else, and stayed harmless
+   only for as long as the two happened to hold the same instant.
+
+   WHY THIS FILE EXISTS. Only the composer's hidden field used to be swapped.
+   Everything else in the bar — Delete, the persona picker's form, Save, and
+   the rail's fold — went on carrying the instant the *page* was opened at,
+   which is a conversation that usually does not exist. Found through
+   Delete, on v0.11.1: a conversation reported as deleted still showed in the
+   menu to the left, and could still be participated in. Nothing was hidden,
+   because nothing was found; the button had been pointed at the wrong thread
+   since the moment another one was clicked.
+
+   A control that names a conversation belongs in here. The rule is simple and
+   the failure it prevents is not obvious from any one of them on its own: the
+   marker a control posts must be the thread on the screen, and there is no way
+   to see from the page that it is not.
+
+   THE LAST ONE IS NOT ON THIS SCREEN AT ALL, which is why the first pass at
+   this file missed it. The sidebar's collapse toggle (base.html) names the
+   page rather than the thread, and lands the browser back on it. Found
+   on v0.12.0: collapsing the chat menu bar's vertical bar changed the open
+   conversation to a new conversation automatically. A page
+   opened without ?c= names itself as bare /admin/chat, which is where "New
+   conversation" goes. #}
+<input type="hidden" id="chat-conversation" name="conversation"
+       value="{{ conversation }}" hx-swap-oob="true">
+<input type="hidden" id="chat-hide-conversation" name="conversation"
+       value="{{ conversation }}" hx-swap-oob="true">
+<input type="hidden" id="chat-persona-conversation" name="conversation"
+       value="{{ conversation }}" hx-swap-oob="true">
+<input type="hidden" id="chat-rail-conversation" name="conversation"
+       value="{{ conversation }}" hx-swap-oob="true">
+<input type="hidden" id="nav-next" name="next"
+       value="/admin/chat?c={{ conversation|urlencode }}" hx-swap-oob="true">
+{% with swap_markers = true %}{% include "fragments/chat_save_link.html" %}{% endwith %}
