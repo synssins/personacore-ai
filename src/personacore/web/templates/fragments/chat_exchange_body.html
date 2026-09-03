@@ -99,10 +99,15 @@
        good. `@media (hover: none)` in the stylesheet keeps it permanently
        visible there instead of chasing a tap gesture that would need a
        script to detect. It needs none either way: this is an ordinary link
-       to the serve route, `download` and all. #}
+       to the serve route, `download` and all.
+
+       `hx-boost="false"` because the body is boosted and htmx does not
+       look at `download`: boosted, the click fetched the picture's bytes
+       and swapped them into the page as text. Same opt-out the voice-pack
+       links carry. #}
     <span class="attach-image-frame">
       <img class="attach-sent-thumb" src="{{ chip.url }}" alt="{{ chip.name }}">
-      <a class="attach-download" href="{{ chip.url }}" download
+      <a class="attach-download" href="{{ chip.url }}" download hx-boost="false"
          title="Download {{ chip.name }}" aria-label="Download {{ chip.name }}">{{ icon('down') }}</a>
     </span>
     {% else %}
@@ -165,7 +170,7 @@
      that happens to sit on the other side of the thread. #}
   <span class="attach-image-frame" style="align-self:flex-start">
     <img class="attach-sent-thumb" src="{{ exchange.reply_image_url }}" alt="Generated image">
-    <a class="attach-download" href="{{ exchange.reply_image_url }}" download
+    <a class="attach-download" href="{{ exchange.reply_image_url }}" download hx-boost="false"
        title="Download image" aria-label="Download image">{{ icon('down') }}</a>
   </span>
   {% else %}

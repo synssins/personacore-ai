@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "personacore"
-version = "0.15.0"
+version = "0.15.1"
 description = "Self-hosted, security-first agentic assistant. Small core, everything else a plugin."
 readme = "README.md"
 requires-python = ">=3.12"
