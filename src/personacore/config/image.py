@@ -45,13 +45,32 @@ class ImageSettings(BaseModel):
     request entirely rather than sending an empty string the server would
     have to reject or ignore."""
 
+    prompt_prefix: str = ""
+    """Placed in front of the text of every picture request, with one space
+    between. Empty adds nothing. Some generators want a fixed lead-in before
+    the description proper; this is where it goes, and it never appears in
+    the transcript."""
+
     connect_timeout_seconds: float = Field(default=5.0, gt=0)
-    read_timeout_seconds: float = Field(default=120.0, gt=0)
-    """Generous relative to a chat completion's own timeout
-    (``[llm.*].read_timeout_seconds``): even on the CPU-only hardware this
-    project requires (CLAUDE.md's hard constraint), one image is a slower,
-    but boundable, answer — unlike a chat reply's open-ended token stream,
-    there is one response to wait for and then it is over."""
+    read_timeout_seconds: float = Field(default=600.0, gt=0)
+    """How long to wait for the picture. **This is the whole answer, not a
+    chunk of one.**
+
+    A generator sends nothing at all until the image is finished, so this
+    single read has to outlast the entire render — unlike a chat reply, where
+    a token arriving every second keeps resetting the clock. That difference
+    is what makes a value borrowed from ``[llm.*]`` wrong here.
+
+    **Measured, 2026-09-03**, against the configured generator:
+    a 2048x2048 render answered in 185 seconds end to end over HTTP. The
+    default was 120 and every such request would have failed on a timeout
+    while the server was still working — the picture completes and is thrown
+    away by the caller.
+
+    Six hundred, so a slower prompt, a busier card, or a larger size has room
+    without anybody editing a file. A generator that has genuinely stopped is
+    caught by ``total_timeout_seconds`` below, which is the clock that does
+    not reset; this one only needs to be longer than a real render."""
 
     total_timeout_seconds: float = Field(default=900.0, gt=0)
     """The whole request's ceiling, from the first byte out to the last byte

@@ -189,19 +189,38 @@ the build brief is explicit that unconfigured is a normal state here, not an
 error, and most cores will simply never set this."""
 
 IMAGE_RAW_EDITOR_NOTE = (
-    "The connect and read timeouts are not on this screen — they are rarely "
-    "touched, and Core settings' raw JSON tab reaches them."
+    "The connect timeout is not on this screen — it is rarely touched, and "
+    "Core settings' raw JSON tab reaches it."
 )
 """**Decided here, not settled by the brief**: the screen edits `base_url`,
 `model` and `total_timeout_seconds` — the address turns the feature on at all,
 the model matters the moment a server hosts more than one, and the total
 timeout is the ceiling an operator on CPU-only hardware genuinely has reason
 to raise (`ImageSettings.total_timeout_seconds`'s own docstring: a large
-picture with no GPU takes minutes). `connect_timeout_seconds` and
-`read_timeout_seconds` stay off this screen — the brief's own words are that
-they are "much less likely to be touched" — and are reachable from the raw
-JSON editor Core settings already has, the same fallback every setting with
-no field of its own uses."""
+picture with no GPU takes minutes). `connect_timeout_seconds` stays off this
+screen — it is reachable from the raw JSON editor Core settings already has,
+the same fallback every setting with no field of its own uses.
+`read_timeout_seconds` moved onto this screen (prompt-prefix contract §5): a
+generator's read timeout is the wait an operator actually has reason to
+tune, unlike the connect timeout."""
+
+IMAGE_TIMEOUTS_HELP = (
+    "Wait for the picture is how long to wait for one render: nothing "
+    "arrives until it is done. Ceiling is the limit on the whole request "
+    "and the clock that does not reset; it catches a generator that has "
+    "stopped, which the wait cannot."
+)
+
+MAX_PREFIX_CHARS = 4_000
+"""Ceiling on the image prompt-prefix box (prompt-prefix contract §3). A
+prefix is a short lead-in, not a prompt — the persona prompt's own cap is
+sixteen times this — and it is still a bound on something arriving from
+outside (spec §7)."""
+
+IMAGE_PREFIX_TOO_LONG = (
+    "That prompt prefix is longer than {limit} characters, which is far more "
+    "than a lead-in should ever be. Nothing was written."
+)
 
 
 def _format_seconds(value: Any) -> str:
@@ -227,6 +246,8 @@ def image_context(
     address: str | None = None,
     model: str | None = None,
     total_timeout: str | None = None,
+    read_timeout: str | None = None,
+    prompt_prefix: str | None = None,
     save_result: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """The image generator's own panel context.
@@ -235,8 +256,9 @@ def image_context(
     has no ``LLMRole`` to key it by. Read from the settings document exactly as
     a role's row is — an absent ``[image]`` table and an empty one are the same
     "unconfigured" state to an operator — with :class:`ImageSettings`'s own
-    default standing in for ``total_timeout_seconds`` so the box shows the
-    ceiling the core would actually use rather than a blank.
+    defaults standing in for ``total_timeout_seconds`` and
+    ``read_timeout_seconds`` so the boxes show the values the core would
+    actually use rather than a blank.
 
     The operator's typed input outranks what is stored, the same rule
     :func:`~personacore.web.screens.core.retention_rows` follows: a
@@ -250,14 +272,22 @@ def image_context(
     stored_timeout = _format_seconds(
         stored.get("total_timeout_seconds", defaults.total_timeout_seconds)
     )
+    stored_read_timeout = _format_seconds(
+        stored.get("read_timeout_seconds", defaults.read_timeout_seconds)
+    )
+    stored_prefix = str(stored.get("prompt_prefix") or "")
     shown_addr = stored_addr if address is None else address
     return {
         "addr": shown_addr,
         "model": stored_model if model is None else model,
         "total_timeout": stored_timeout if total_timeout is None else total_timeout,
+        "read_timeout": stored_read_timeout if read_timeout is None else read_timeout,
+        "prompt_prefix": stored_prefix if prompt_prefix is None else prompt_prefix,
         "configured": bool(shown_addr),
         "off_note": IMAGE_OFF_NOTE,
         "raw_editor_note": IMAGE_RAW_EDITOR_NOTE,
+        "timeouts_help": IMAGE_TIMEOUTS_HELP,
+        "max_prefix_chars": MAX_PREFIX_CHARS,
         "save_result": save_result,
     }
 
@@ -679,6 +709,28 @@ def register(router: APIRouter, ctx: UIContext) -> None:
         address = str(form.get("address") or "").strip()
         model = str(form.get("model") or "").strip()
         total_timeout = str(form.get("total_timeout_seconds") or "").strip()
+        read_timeout = str(form.get("read_timeout_seconds") or "").strip()
+        prompt_prefix = str(form.get("prompt_prefix") or "").strip()
+
+        if len(prompt_prefix) > MAX_PREFIX_CHARS:
+            current, config_error = _current_config()
+            before_section = current.settings.get("image") if current is not None else None
+            before = dict(before_section) if isinstance(before_section, dict) else {}
+            return _image_fragment(
+                request,
+                image_context(
+                    before,
+                    address=address,
+                    model=model,
+                    total_timeout=total_timeout,
+                    read_timeout=read_timeout,
+                    prompt_prefix=prompt_prefix,
+                    save_result={
+                        "kind": "error",
+                        "message": IMAGE_PREFIX_TOO_LONG.format(limit=MAX_PREFIX_CHARS),
+                    },
+                ),
+            )
 
         current, config_error = _current_config()
         if current is None:
@@ -689,6 +741,8 @@ def register(router: APIRouter, ctx: UIContext) -> None:
                     address=address,
                     model=model,
                     total_timeout=total_timeout,
+                    read_timeout=read_timeout,
+                    prompt_prefix=prompt_prefix,
                     save_result={"kind": "error", "message": str(config_error)},
                 ),
             )
@@ -696,10 +750,10 @@ def register(router: APIRouter, ctx: UIContext) -> None:
         section = current.settings.get("image")
         before = dict(section) if isinstance(section, dict) else {}
 
-        # Only the three fields this screen owns are touched; anything else
-        # already in the section — a connect or read timeout set from the raw
-        # editor — is carried straight through, the same rule `models_save`
-        # follows for a role's untouched fields.
+        # Only the fields this screen owns are touched; anything else already
+        # in the section — a connect timeout set from the raw editor — is
+        # carried straight through, the same rule `models_save` follows for a
+        # role's untouched fields.
         updated = dict(before)
         if address:
             updated["base_url"] = address
@@ -713,6 +767,14 @@ def register(router: APIRouter, ctx: UIContext) -> None:
             updated["total_timeout_seconds"] = total_timeout
         else:
             updated.pop("total_timeout_seconds", None)
+        if read_timeout:
+            updated["read_timeout_seconds"] = read_timeout
+        else:
+            updated.pop("read_timeout_seconds", None)
+        if prompt_prefix:
+            updated["prompt_prefix"] = prompt_prefix
+        else:
+            updated.pop("prompt_prefix", None)
 
         payload = dict(current.settings)
         payload["image"] = updated
@@ -728,6 +790,8 @@ def register(router: APIRouter, ctx: UIContext) -> None:
                     address=address,
                     model=model,
                     total_timeout=total_timeout,
+                    read_timeout=read_timeout,
+                    prompt_prefix=prompt_prefix,
                     save_result={"kind": "error", "message": message},
                 ),
             )

@@ -94,6 +94,17 @@ PERSONA_PROMPT_TOO_LONG = (
     "system prompt should ever be. Nothing was written."
 )
 
+MAX_PREFIX_CHARS = 4_000
+"""Ceiling on the prompt-prefix box (prompt-prefix contract §3). A prefix is a
+short tone adjustment, not a prompt — the persona prompt's own cap is sixteen
+times this — and it is still a bound on something arriving from outside
+(spec §7)."""
+
+PERSONA_PREFIX_TOO_LONG = (
+    "That prompt prefix is longer than {limit} characters, which is far more "
+    "than a tone adjustment should ever be. Nothing was written."
+)
+
 MAX_PAUSES_CHARS = 8_000
 """Ceiling on the speech-pauses box. A hundred rules of ``word = 120, 180`` is
 a couple of thousand characters; this is roomy against that and still a bound
@@ -376,6 +387,7 @@ def register(router: APIRouter, ctx: UIContext) -> None:
             "max_connection_address_chars": MAX_CONNECTION_ADDRESS_CHARS,
             "max_connection_model_chars": MAX_CONNECTION_MODEL_CHARS,
             "max_prompt_chars": MAX_PROMPT_CHARS,
+            "max_prefix_chars": MAX_PREFIX_CHARS,
             "pauses_label": PERSONA_PAUSES_LABEL,
             "pauses_help": PERSONA_PAUSES_HELP,
             "max_pauses_chars": MAX_PAUSES_CHARS,
@@ -426,6 +438,7 @@ def register(router: APIRouter, ctx: UIContext) -> None:
         name: str | None = None,
         prompt: str | None = None,
         pauses: str | None = None,
+        prefix: str | None = None,
     ) -> dict[str, Any]:
         """One persona in the shape the edit form renders.
 
@@ -453,6 +466,9 @@ def register(router: APIRouter, ctx: UIContext) -> None:
                 # box is empty rather than wrong. Saving from here writes what
                 # is in it, which is the operator's own copy of the file.
                 "pauses": pauses if pauses is not None else "",
+                # A persona that will not load has no readable prefix either,
+                # so the box is empty rather than wrong, for the same reason.
+                "prefix": prefix if prefix is not None else "",
                 # Read off the file, not through the store that just refused it:
                 # the broken thing may be this very section, and the form has to
                 # show what is there or the next save would silently drop it.
@@ -466,6 +482,7 @@ def register(router: APIRouter, ctx: UIContext) -> None:
             "voice": persona_voice_label(loaded.voice_engine, loaded.voice_name),
             "voice_value": voice_value(loaded.voice_engine, loaded.voice_name),
             "pauses": pauses if pauses is not None else pause_lines(loaded.speech_pauses),
+            "prefix": prefix if prefix is not None else loaded.prompt_prefix,
             **connection_fields(loaded.connection),
             "problem": None,
         }
@@ -477,6 +494,7 @@ def register(router: APIRouter, ctx: UIContext) -> None:
         prompt: str,
         voice: str | None = None,
         pauses: tuple[SpeechPause, ...] | None = None,
+        prefix: str | None = None,
         connection: LLMSettings | None = None,
         own_connection: bool = False,
         key_secret: str | None = None,
@@ -535,6 +553,15 @@ def register(router: APIRouter, ctx: UIContext) -> None:
                 existing[SPEECH_TABLE] = speech
             else:
                 existing.pop(SPEECH_TABLE, None)
+        if prefix is not None:
+            # An emptied box removes the key rather than writing an empty
+            # string, so a persona with no prefix is the same file it was
+            # before the box existed (prompt-prefix contract §3).
+            stripped = prefix.strip()
+            if stripped:
+                existing["prompt_prefix"] = stripped
+            else:
+                existing.pop("prompt_prefix", None)
         # The connection, written as the three fields the form has controls for
         # and nothing else; whatever else is in the section survives a save that
         # said nothing about it, because `persona.toml` is the operator's file.
@@ -580,6 +607,7 @@ def register(router: APIRouter, ctx: UIContext) -> None:
         #: The key box. Its value is a ``SecretStr``, so this tuple's ``repr``
         #: — and any traceback or log line that carries it — shows asterisks.
         key: KeySubmission
+        typed_prefix: str
         refusal: str | None
 
     class _KeyPlan(NamedTuple):
@@ -646,6 +674,7 @@ def register(router: APIRouter, ctx: UIContext) -> None:
         display_name = str(form.get("name") or "").strip()[:MAX_PERSONA_NAME_CHARS]
         prompt = str(form.get("prompt") or "")
         typed_pauses = str(form.get("pauses") or "")[:MAX_PAUSES_CHARS]
+        typed_prefix = str(form.get("prompt_prefix") or "")
         connection = read_connection_form(form)
         key = read_key_form(form)
         raw_voice = str(form.get("voice") or "").strip()
@@ -657,14 +686,15 @@ def register(router: APIRouter, ctx: UIContext) -> None:
             except PackageRejected:
                 return _Submission(
                     display_name, prompt, "", typed_pauses, (), connection, key,
-                    PERSONA_VOICE_UNKNOWN,
+                    typed_prefix, PERSONA_VOICE_UNKNOWN,
                 )
         # Parsed before the other checks so that a refusal from this box is
         # reported whichever else is also wrong; it says nothing about the
         # prompt and nothing here is written until every check has passed.
         pauses, pauses_refusal = parse_pause_lines(typed_pauses)
         made = partial(
-            _Submission, display_name, prompt, voice, typed_pauses, pauses, connection, key
+            _Submission,
+            display_name, prompt, voice, typed_pauses, pauses, connection, key, typed_prefix,
         )
         if not display_name:
             return made(PERSONA_NAME_REQUIRED)
@@ -672,6 +702,8 @@ def register(router: APIRouter, ctx: UIContext) -> None:
             return made(PERSONA_PROMPT_REQUIRED)
         if len(prompt) > MAX_PROMPT_CHARS:
             return made(PERSONA_PROMPT_TOO_LONG.format(limit=MAX_PROMPT_CHARS))
+        if len(typed_prefix) > MAX_PREFIX_CHARS:
+            return made(PERSONA_PREFIX_TOO_LONG.format(limit=MAX_PREFIX_CHARS))
         # After the prompt checks, because a persona is its prompt and that is
         # the refusal worth reading first when both boxes are wrong.
         return made(pauses_refusal or connection.refusal or key.refusal)
@@ -713,6 +745,7 @@ def register(router: APIRouter, ctx: UIContext) -> None:
             "voice": "",
             "voice_value": voice,
             "pauses": sub.typed_pauses,
+            "prefix": sub.typed_prefix,
             "connection_mode": sub.connection.mode,
             "connection_address": sub.connection.typed_address,
             "connection_model": sub.connection.typed_model,
@@ -750,6 +783,7 @@ def register(router: APIRouter, ctx: UIContext) -> None:
             prompt=prompt,
             voice=voice,
             pauses=sub.pauses,
+            prefix=sub.typed_prefix,
             connection=sub.connection.connection,
             own_connection=sub.connection.mode == CONNECTION_MODE_CUSTOM,
             key_secret=plan.secret_name,
@@ -798,6 +832,7 @@ def register(router: APIRouter, ctx: UIContext) -> None:
                 name=sub.display_name,
                 prompt=sub.prompt,
                 pauses=sub.typed_pauses,
+                prefix=sub.typed_prefix,
             )
             # The boxes keep what was typed; the key state stays whatever
             # `_persona_form` read off the file, because nothing was written.
@@ -820,6 +855,7 @@ def register(router: APIRouter, ctx: UIContext) -> None:
             typed["connection_model"] = sub.connection.typed_model
             typed["voice_value"] = sub.voice
             typed["pauses"] = sub.typed_pauses
+            typed["prefix"] = sub.typed_prefix
             return await _edit_page(
                 request, typed, {"kind": "invalid", "message": plan.refusal}
             )
@@ -829,6 +865,7 @@ def register(router: APIRouter, ctx: UIContext) -> None:
             prompt=sub.prompt,
             voice=sub.voice,
             pauses=sub.pauses,
+            prefix=sub.typed_prefix,
             connection=sub.connection.connection,
             own_connection=sub.connection.mode == CONNECTION_MODE_CUSTOM,
             key_secret=plan.secret_name,

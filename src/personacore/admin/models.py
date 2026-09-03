@@ -500,6 +500,8 @@ class PersonaDetail(BaseModel):
     voice_name: str | None = None
     is_default: bool = False
     system_prompt: str
+    prompt_prefix: str = ""
+    """Goes in front of the system message on every turn; empty means nothing is set."""
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 

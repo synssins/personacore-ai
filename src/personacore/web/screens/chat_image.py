@@ -202,8 +202,13 @@ async def answer(
         return [_refused(message, IMAGE_NOT_CONFIGURED)]
 
     client = ImageClient(settings)
+    # prompt-prefix contract §4: the prefix goes in front of the text on the
+    # way to the generator only. The stored user message above is `message`,
+    # unchanged — nothing in the transcript shows the prefix.
+    prefix = settings.prompt_prefix.strip()
+    prefixed = f"{prefix} {message}" if prefix else message
     try:
-        image: GeneratedImage = await client.generate(message)
+        image: GeneratedImage = await client.generate(prefixed)
     except ImageUnavailable as exc:
         await conversations.append(conversation, since=since)
         return [_refused(message, _unavailable_sentence(exc))]

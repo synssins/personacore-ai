@@ -442,6 +442,12 @@ class Persona(BaseModel):
     name: str
     display_name: str
     system_prompt: str
+    prompt_prefix: str = ""
+    """Text placed in front of the system message on every turn this persona
+    speaks. Empty adds nothing. A default the persona's own prompt can
+    override, never a constraint on it: see ``AgentLoop._system_prompt`` for
+    where it sits and why. Set by an administrator on a screen, so it is
+    configuration and is not fenced."""
     description: str | None = None
     voice_engine: str | None = None
     voice_name: str | None = None
@@ -621,6 +627,9 @@ class PersonaStore:
         voice_name = voice.get("name") if isinstance(voice, dict) else None
         display_name = metadata.get("display_name")
         description = metadata.get("description")
+        raw_prefix = metadata.get("prompt_prefix")
+        # A broken value costs the prefix, not the persona.
+        prompt_prefix = raw_prefix.strip() if isinstance(raw_prefix, str) else ""
         # Never raises, whatever is in the file: a persona whose pauses block
         # is broken loads without them and speaks exactly as it does today.
         pauses = read_pauses(metadata)
@@ -633,6 +642,7 @@ class PersonaStore:
             name=name,
             display_name=str(display_name) if isinstance(display_name, str) else name,
             system_prompt=system_prompt,
+            prompt_prefix=prompt_prefix,
             description=description if isinstance(description, str) else None,
             voice_engine=voice_engine if isinstance(voice_engine, str) else None,
             voice_name=voice_name if isinstance(voice_name, str) else None,

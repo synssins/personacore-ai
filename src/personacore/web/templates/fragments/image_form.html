@@ -2,7 +2,8 @@
    Test connection, no Fetch models, no key box (docs/contracts/image-
    conversations.md's responder takes no API key today).
    Included by models.html; also returned whole by POST /admin/models/image/save.
-   Context: image {addr, model, total_timeout, configured, save_result?}
+   Context: image {addr, model, total_timeout, read_timeout, prompt_prefix,
+   configured, save_result?}
    SWAP BOUNDARY: this whole <form> — the same shape model_form.html uses. #}
 {% from "_controls.html" import icon %}
 <form class="stack" style="gap:var(--space-3)"
@@ -23,6 +24,19 @@
       <input class="input" type="number" min="1" step="1" id="image-timeout" name="total_timeout_seconds" value="{{ image.total_timeout }}">
     </div>
   </div>
+
+  <div style="display:grid; grid-template-columns:2fr 1fr; gap:var(--space-3)">
+    <div class="field">
+      <label for="image-prefix">Prompt prefix (optional)</label>
+      <input class="input" type="text" id="image-prefix" name="prompt_prefix" maxlength="{{ image.max_prefix_chars }}" value="{{ image.prompt_prefix }}" placeholder="score_9, score_8_up, score_7_up,">
+      <p class="text-muted" style="margin:0; font-size:12px">Put in front of every picture request. Leave it empty and nothing is added.</p>
+    </div>
+    <div class="field">
+      <label for="image-read-timeout">Wait for the picture (seconds)</label>
+      <input class="input" type="number" min="1" step="1" id="image-read-timeout" name="read_timeout_seconds" value="{{ image.read_timeout }}">
+    </div>
+  </div>
+  <p class="text-muted" style="margin:0; font-size:12px">{{ image.timeouts_help }}</p>
 
   {% if image.configured %}
   <p class="meta" style="margin:0">{{ icon('pulse') }} Image generation is on. This is not one of the model roles above — it takes a prompt and hands back a picture, not a conversation.</p>

@@ -107,6 +107,7 @@ def register(router: APIRouter, ctx: AdminApiContext) -> None:
             voice_name=persona.voice_name,
             is_default=persona.name == default,
             system_prompt=persona.system_prompt,
+            prompt_prefix=persona.prompt_prefix,
             metadata=persona.metadata,
         )
 

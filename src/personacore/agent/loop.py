@@ -1187,14 +1187,25 @@ class AgentLoop:
         only, and the precedence is restated after the persona so the last
         thing the model reads is the rule, not the character.
 
+        ``persona.prompt_prefix`` — an operator-set default for tone, never
+        content the caller or the model can reach — sits **between the safety
+        block and the caller block**: after the house rules, before anything
+        else. It is a *default the persona overrides, not a constraint*: the
+        persona prompt itself still comes last and still wins, so a prefix
+        asking for a warm tone does not survive a persona prompt that asks for
+        a clinical one. An empty prefix appends nothing, not even a blank
+        line, so a persona with no prefix set composes byte-identical to
+        before this field existed.
+
         ``caller_block`` — the calling program's own system message, already
-        fenced by :meth:`_caller_block` — sits after the safety rules and
-        **before** the persona. That order is the entire safety argument for
-        admitting it at all: later instructions carry more weight with a model,
-        so the persona is placed last and has the last word. Moving it earlier
-        would let a caller's "you are a pirate" be the freshest thing the model
-        read. The house rules stay first and are restated last, so the caller's
-        text is bracketed by them on both sides.
+        fenced by :meth:`_caller_block` — sits after the safety rules and the
+        prefix, and **before** the persona. That order is the entire safety
+        argument for admitting it at all: later instructions carry more weight
+        with a model, so the persona is placed last and has the last word.
+        Moving it earlier would let a caller's "you are a pirate" be the
+        freshest thing the model read. The house rules stay first and are
+        restated last, so the caller's text is bracketed by them on both
+        sides.
 
         ``room`` — who else is in the room, already flattened by
         :func:`room_block` — sits **after the caller block and immediately
@@ -1223,6 +1234,8 @@ class AgentLoop:
         blocks: list[str] = []
         if profile.safe_mode:
             blocks.append(self._config.safety_block)
+        if persona.prompt_prefix:
+            blocks.append(persona.prompt_prefix)
         if caller_block:
             blocks.append(caller_block)
         if room:

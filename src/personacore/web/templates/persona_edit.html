@@ -1,10 +1,10 @@
 {# persona_edit.html — create or edit a persona. Serves both
    GET /admin/personas/new (persona=None) and GET /admin/personas/{slug}/edit.
 
-   Context: persona? {slug, name, prompt, voice, voice_value, pauses,
+   Context: persona? {slug, name, prompt, voice, voice_value, pauses, prefix,
      connection_mode, connection_address, connection_model,
      connection_key_secret, problem?},
-     identifier_note, model_field_note, max_prompt_chars, save_result?,
+     identifier_note, model_field_note, max_prompt_chars, max_prefix_chars, save_result?,
      connection_label, connection_help, connection_default_label,
      connection_custom_label, connection_key, connection_mode_default,
      connection_mode_custom, max_connection_address_chars,
@@ -63,6 +63,17 @@
     <textarea class="input" id="p-prompt" name="prompt" required maxlength="{{ max_prompt_chars }}"
               style="min-height:140px">{{ persona.prompt if persona else '' }}</textarea>
     <p class="field-help">Describe manner, not capability. What the assistant <em>can</em> do is the tool list, and the model can see that for itself — a prompt that says “you have no tools” keeps being obeyed after tools arrive.</p>
+  </div>
+
+  {# PROMPT PREFIX (prompt-prefix contract §5). Goes in front of the system
+     message on every turn, before the prompt above. Optional: an empty box
+     adds nothing, not even a blank line. #}
+  <div class="field">
+    <label for="p-prefix">Prompt prefix (optional)</label>
+    <textarea class="input" id="p-prefix" name="prompt_prefix" rows="2"
+              maxlength="{{ max_prefix_chars }}" aria-describedby="p-prefix-help"
+              placeholder="Answer in a warm, unhurried tone.">{{ persona.prefix if persona else '' }}</textarea>
+    <p class="field-help" id="p-prefix-help">Goes in front of everything this character is told, on every turn. Leave it empty and nothing is added.</p>
   </div>
 
   {# THIS PERSONA'S MODEL (ADR-0036). Two radios: the system's connection, or
