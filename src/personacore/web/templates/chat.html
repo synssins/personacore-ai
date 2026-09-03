@@ -424,30 +424,12 @@
   .attach-sent-thumb { width: 120px; height: 120px; object-fit: cover; border-radius: var(--radius-md); display: block; }
 
   /* ── the save overlay on a sent image ──
-     Modelled on a reference client's own control: an overlay on top of the
-     image whenever the mouse is on the image, giving a download button. It
-     faintly dims the image and the download button sits in the top right
-     corner. A different control from the chip's remove `X` even
-     though it sits in the same corner — that one cancels a pending send,
-     this one saves something already sent — so it is never merged with it. */
-  .attach-image-frame { position: relative; display: inline-block; line-height: 0; }
-  .attach-image-frame .attach-sent-thumb { transition: filter 0.15s; }
-  .attach-image-frame .attach-download {
-    position: absolute; top: 6px; right: 6px; width: 26px; height: 26px;
-    border-radius: 50%; background: color-mix(in srgb, var(--color-bg) 70%, transparent);
-    color: var(--color-text); display: flex; align-items: center; justify-content: center;
-    opacity: 0; transition: opacity 0.15s;
-  }
-  .attach-image-frame:hover .attach-sent-thumb,
-  .attach-image-frame:focus-within .attach-sent-thumb { filter: brightness(0.6); }
-  .attach-image-frame:hover .attach-download,
-  .attach-image-frame:focus-within .attach-download { opacity: 1; }
-  /* Touch has no hover, and this surface is read on a tablet — the download
-     stays visible there rather than waiting for a gesture nothing here
-     scripts for. */
-  @media (hover: none) {
-    .attach-image-frame .attach-download { opacity: 1; }
-  }
+     `.attach-image-frame` / `.attach-download` themselves moved to
+     nocturne.css on 2026-09-03 (docs/contracts/image-viewer.md §3):
+     attachment_view.html needed the same hover-to-reveal download control
+     over a full-size picture, from a separate template that does not load
+     this page's own <style>. Nothing about the thread's own thumbnail use
+     of them changed. */
   .attach-card {
     display: flex; align-items: center; gap: var(--space-3); max-width: 280px;
     padding: var(--space-2) var(--space-3); border-radius: var(--radius-md);

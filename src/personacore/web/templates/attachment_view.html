@@ -1,0 +1,59 @@
+{# attachment_view.html — one picture, full size, with a way back and a way
+   to keep it. docs/contracts/image-viewer.md.
+   Context: image_url, download_url, name, back_url — built by
+   chat_attachments.py's `chat_attachment_view` route from the stored record
+   alone, never from a query parameter (contract §2).
+
+   A PAGE, not an overlay — the owner's own shape (contract §1), picked so
+   this ships in one commit and reverts in one. Same shell as every other
+   screen: `base.html` keeps the sidebar and the theme, and the content area
+   is just the display.
+
+   NO SCRIPT. Three plain links: Back, Download, and the picture itself
+   (which is also a link back to the conversation) — every one of them works
+   with JavaScript off, on a tablet or anywhere else.
+
+   THE DOWNLOAD ARROW ON THE PICTURE reuses `.attach-image-frame` /
+   `.attach-download` — the same hover-to-reveal control the thread already
+   draws over a sent image's thumbnail (`chat_exchange_body.html`). That pair
+   lived only in chat.html's own page styles until this page needed them too,
+   so they moved to nocturne.css (see that file and chat.html's own comment,
+   both dated 2026-09-03). Contract §3 asks for the arrow "always visible" on
+   this page, not a hover reveal — the one line of CSS below is the override
+   that does that; nothing else about the reused control changes. #}
+{% extends "base.html" %}
+{% from "_controls.html" import icon %}
+{% block title %}{{ name }} — PersonaCore admin{% endblock %}
+{% block content %}
+<style>
+  /* Scoped to this page: sizing for a picture shown whole rather than as a
+     120px cropped thumbnail, and the one override that makes the reused
+     download control permanent instead of a hover reveal — there is no
+     thumbnail row to declutter here, and the control this page asks for is
+     meant to always be seen. */
+  .attach-view-holder { display: flex; justify-content: center; }
+  .attach-view-img {
+    display: block; max-width: 100%; max-height: calc(100vh - 220px);
+    object-fit: contain; width: auto; height: auto;
+    border-radius: var(--radius-md);
+  }
+  .attach-view-frame .attach-download { opacity: 1; }
+</style>
+<div class="hrow" style="gap:var(--space-3)">
+  <a class="btn btn-ghost" href="{{ back_url }}">{{ icon('left') }} Back to conversation</a>
+  <a class="btn btn-secondary" href="{{ download_url }}" download hx-boost="false">{{ icon('down') }} Download</a>
+</div>
+<div class="attach-view-holder">
+  {# The frame holds two sibling anchors, never a nested one: the picture's
+     own link (back to the conversation, contract §3) and the download
+     control drawn over its top-right corner — the same corner the thread's
+     thumbnail uses, on the same class. #}
+  <span class="attach-image-frame attach-view-frame">
+    <a href="{{ back_url }}" aria-label="Back to conversation">
+      <img class="attach-view-img" src="{{ image_url }}" alt="{{ name }}">
+    </a>
+    <a class="attach-download" href="{{ download_url }}" download hx-boost="false"
+       title="Download {{ name }}" aria-label="Download {{ name }}">{{ icon('down') }}</a>
+  </span>
+</div>
+{% endblock %}

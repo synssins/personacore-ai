@@ -106,7 +106,9 @@
        and swapped them into the page as text. Same opt-out the voice-pack
        links carry. #}
     <span class="attach-image-frame">
-      <img class="attach-sent-thumb" src="{{ chip.url }}" alt="{{ chip.name }}">
+      <a href="{{ chip.url }}/view" aria-label="View {{ chip.name }} full size">
+        <img class="attach-sent-thumb" src="{{ chip.url }}" alt="{{ chip.name }}">
+      </a>
       <a class="attach-download" href="{{ chip.url }}" download hx-boost="false"
          title="Download {{ chip.name }}" aria-label="Download {{ chip.name }}">{{ icon('down') }}</a>
     </span>
@@ -169,7 +171,9 @@
      / `.attach-sent-thumb`) rather than inventing a second look for a picture
      that happens to sit on the other side of the thread. #}
   <span class="attach-image-frame" style="align-self:flex-start">
-    <img class="attach-sent-thumb" src="{{ exchange.reply_image_url }}" alt="Generated image">
+    <a href="{{ exchange.reply_image_url }}/view" aria-label="View Generated image full size">
+      <img class="attach-sent-thumb" src="{{ exchange.reply_image_url }}" alt="Generated image">
+    </a>
     <a class="attach-download" href="{{ exchange.reply_image_url }}" download hx-boost="false"
        title="Download image" aria-label="Download image">{{ icon('down') }}</a>
   </span>

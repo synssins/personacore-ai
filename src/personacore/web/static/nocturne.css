@@ -308,3 +308,41 @@ details.log-entry > summary::-webkit-details-marker { display: none; }
 /* a link's text, never an anchor — see markdown.py on why it is not clickable */
 .md .md-url { color: var(--color-accent-300); word-break: break-all; }
 .md .md-link-removed { color: color-mix(in srgb, var(--color-text) 55%, transparent); }
+
+/* ── the save overlay on a sent or displayed image ──
+   Moved here from chat.html's own page styles (2026-09-03, the image
+   viewer, docs/contracts/image-viewer.md §3): drawn only in that page's
+   inline <style> until attachment_view.html needed the same pair of
+   classes from a separate template. Modelled on a reference client's own
+   control: an overlay on top of the image whenever the mouse is on it,
+   giving a download button that faintly dims the image and sits in the
+   top-right corner. A different control from the chip's remove `X` even
+   though it sits in the same corner — that one cancels a pending send,
+   this one saves something already sent or already shown — so it is never
+   merged with it.
+
+   `.attach-view-img` (the viewer page's own full-size picture) is
+   deliberately NOT in the dim-on-hover pair below, nor in its transition
+   (2026-09-03): a 120px thumbnail dims to show it has a control sitting on
+   it; the viewer's picture IS the page, its download arrow is already
+   forced permanently visible by that page's own override, and dimming the
+   one thing the page exists to show on every hover would be a defect, not
+   a hint. */
+.attach-image-frame { position: relative; display: inline-block; line-height: 0; }
+.attach-image-frame .attach-sent-thumb { transition: filter 0.15s; }
+.attach-image-frame .attach-download {
+  position: absolute; top: 6px; right: 6px; width: 26px; height: 26px;
+  border-radius: 50%; background: color-mix(in srgb, var(--color-bg) 70%, transparent);
+  color: var(--color-text); display: flex; align-items: center; justify-content: center;
+  opacity: 0; transition: opacity 0.15s;
+}
+.attach-image-frame:hover .attach-sent-thumb,
+.attach-image-frame:focus-within .attach-sent-thumb { filter: brightness(0.6); }
+.attach-image-frame:hover .attach-download,
+.attach-image-frame:focus-within .attach-download { opacity: 1; }
+/* Touch has no hover, and this surface is read on a tablet — the download
+   stays visible there rather than waiting for a gesture nothing here
+   scripts for. */
+@media (hover: none) {
+  .attach-image-frame .attach-download { opacity: 1; }
+}

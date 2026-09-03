@@ -93,10 +93,11 @@ import base64
 import mimetypes
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
+from urllib.parse import quote
 
 import structlog
 from fastapi import APIRouter, HTTPException, Request, status
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from starlette.datastructures import UploadFile as StarletteUploadFile
 
 from personacore.attachments import (
@@ -117,6 +118,7 @@ from personacore.audit.models import (
     Surface,
     TranscriptRecord,
 )
+from personacore.conversations.service import ConversationService
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from collections.abc import Awaitable, Callable, Sequence
@@ -644,6 +646,12 @@ def register(router: APIRouter, ctx: UIContext) -> None:
     require_user = ctx.require_user
     layout = ctx.layout
     store = ctx.audit
+    templates = ctx.templates
+    # Built locally, the same way `chat.py`'s own `register` does (its own
+    # `conversations = ConversationService(audit, surface=Surface.ADMIN_UI)`)
+    # — a screen module's own `UIContext` carries no conversation service of
+    # its own, so each file that needs one builds it over the same store.
+    conversations = ConversationService(store, surface=Surface.ADMIN_UI)
 
     @router.get(
         "/chat/attachments/{attachment_id}",
@@ -702,6 +710,63 @@ def register(router: APIRouter, ctx: UIContext) -> None:
                 # merely offered. Nothing about the stored bytes changes; this
                 # is the header that stops them being re-interpreted.
                 "X-Content-Type-Options": "nosniff",
+            },
+        )
+
+    @router.get(
+        "/chat/attachments/{attachment_id}/view",
+        response_class=HTMLResponse,
+        summary="One picture, full size, with a way back and a way to keep it",
+    )
+    async def chat_attachment_view(request: Request, attachment_id: str) -> HTMLResponse:
+        """The viewer page — image-viewer.md contract §2.
+
+        **Owner-checked exactly as** :func:`chat_attachment` **is**, for the
+        same reason (contract §2): somebody else's id must answer exactly like
+        a missing one, or an id becomes a way to probe who has what.
+
+        **Not an image** (a document's own id, fetched here anyway) is the
+        same 404 — this route is for pictures; a document still opens through
+        :func:`chat_attachment` as it always has.
+
+        **``back_url`` is never built from the record's own**
+        ``conversation_id`` **directly** — image-viewer.md §2 (corrected
+        2026-09-03): that id is a UUID4 (`Conversation.conversation_id`),
+        and ``/admin/chat``'s own ``?c=`` is not that at all — it is an ISO
+        instant (``chat_thread.conversation_start`` parses it with
+        ``datetime.fromisoformat``), the same value ``chat.py``'s
+        ``chat_new_image`` puts in its own redirect
+        (``quote(conversation.started_at.isoformat())``). A link built from
+        the UUID would not error; it would silently open a fresh, empty
+        conversation instead of this one. So the id is resolved back to the
+        real :class:`~personacore.conversations.models.Conversation` first
+        (:meth:`ConversationService.resolve`, owner-checked the same way
+        this route's own attachment lookup is — a conversation that is not
+        this owner's, or hidden, or gone, resolves to ``None`` exactly like
+        one that never existed), and ``back_url`` is built from *its*
+        ``started_at`` — never from anything a caller sends either way, so a
+        query parameter here can never choose where "Back" goes.
+        """
+        user = require_user(request)
+        owner = Owner.profile(user.id)
+        record = await get_attachment(store, attachment_id, owner=owner)
+        if record is None or record.media_type not in _IMAGE_TYPES:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, NOT_FOUND)
+        chip = chip_for(record)
+        back_url = "/admin/chat"
+        if record.conversation_id:
+            found = await conversations.resolve(owner, conversation_id=record.conversation_id)
+            if found is not None:
+                back_url = f"/admin/chat?c={quote(found.started_at.isoformat())}"
+        return templates.TemplateResponse(
+            request=request,
+            name="attachment_view.html",
+            context={
+                **await ctx.shell(request, "chat"),
+                "image_url": chip.url,
+                "download_url": chip.url,
+                "name": chip.name,
+                "back_url": back_url,
             },
         )
 
