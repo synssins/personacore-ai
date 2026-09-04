@@ -288,6 +288,16 @@ class QuietConversationFinder:
             latest = convo_rows[-1]
             if now - latest.timestamp < timedelta(minutes=quiet_minutes):
                 continue  # still active -- not quiet yet
+            # Owner's rule, 2026-09-04: a conversation a person removed is
+            # never a source. Memories already drawn from it stay; nothing
+            # new is ever read out of it. Hidden is the soft delete the chat
+            # screen performs; an administrator can still see the rows, and
+            # that is exactly why the review pass must not.
+            conversation = await self._audit_store.get_conversation(
+                conversation_id, owner=latest.owner
+            )
+            if conversation is not None and conversation.hidden_at is not None:
+                continue
 
             spoken_personas = sorted(
                 {
