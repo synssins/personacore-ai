@@ -338,6 +338,20 @@ def _build_transcript(rows: Sequence[TranscriptRecord]) -> str:
     return "\n".join(lines)
 
 
+def triage_is_its_own(triage: Any) -> bool:
+    """Whether the triage handle is a connection of its own, ready to use.
+
+    The roster gives every role a handle, and a role nobody configured falls
+    back to ``interactive`` (``LiveLLM.falls_back_to`` names the role it
+    borrowed). Contract §5.2 says the review pass never runs on the
+    interactive model, so a fallen-back triage is treated as absent, exactly
+    like one with nothing usable behind it (``.unusable``).
+    """
+    if getattr(triage, "unusable", None) is not None:
+        return False
+    return getattr(triage, "falls_back_to", None) is None
+
+
 class ReviewRunner:
     """Runs the due reviews one tick finds, against the triage role.
 
@@ -366,8 +380,9 @@ class ReviewRunner:
         self._settings = settings
 
     async def tick(self, now: datetime | None = None) -> ReviewStats:
+        # See ``triage_is_its_own`` for why a fallen-back role does not count.
         stats = ReviewStats()
-        if self._triage is None or self._triage.unusable is not None:
+        if self._triage is None or not triage_is_its_own(self._triage):
             return stats
 
         moment = now or datetime.now(UTC)

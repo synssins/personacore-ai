@@ -127,6 +127,11 @@ from personacore.hearing.registry import builtin_engines as builtin_recognisers
 from personacore.memory.composite import CompositeToolProvider
 from personacore.memory.embed import Embedder
 from personacore.memory.provider import CoreMemoryProvider
+from personacore.memory.review import (
+    QuietConversationFinder,
+    ReviewRunner,
+    run_review_ticker,
+)
 from personacore.memory.store import MemoryStore
 from personacore.memory.tools import MemoryTools
 from personacore.plugins.bundled import install_bundled_plugins
@@ -474,6 +479,9 @@ def create_app(appdata: Path | str | None = None) -> FastAPI:
                 # A purge that has been failing every pass since startup is
                 # otherwise only visible in the log (ADR-0004).
                 "retention": dict(app.state.retention_status),
+                # The memory review pass: whether quiet conversations are
+                # being read, and what the last pass did (memory contract §5.2).
+                "memory_review": dict(app.state.memory_review_status),
                 # Set when [bus].password_secret could not be read: the bus is
                 # running unauthenticated, which is a degraded push channel,
                 # not a healthy one.
@@ -552,6 +560,49 @@ def create_app(appdata: Path | str | None = None) -> FastAPI:
     else:
         log.warning("memory_unavailable", reason="embedding model not bundled")
     app.state.memory_store = memory_store
+
+    # The review pass (memory contract §5.2): a conversation that has gone
+    # quiet is read once by the triage role for facts worth keeping. Built
+    # here beside the store because it is the store's second writer; started
+    # in the lifespan below, the same way the retention purge is. The triage
+    # handle is always returned by the roster; `unusable` is the roster's own
+    # word for a role with nothing behind it, and the runner checks it on
+    # every tick, so configuring the role later needs no restart.
+    app.state.memory_review_task = None
+    app.state.memory_review_status = {
+        "last_success": None,
+        "last_error": None,
+        "reviewed": 0,
+        "written": 0,
+        "touched": 0,
+        "dropped": 0,
+        "skipped": 0,
+    }
+    memory_review_runner: ReviewRunner | None = None
+    if memory_store is not None:
+        triage_llm = roster.for_role(LLMRole.TRIAGE)
+        if triage_llm.unusable is not None:
+            log.warning("memory_review_unavailable", reason=triage_llm.unusable)
+        elif triage_llm.falls_back_to is not None:
+            # Contract §5.2: never on the interactive model. A triage role that
+            # borrowed interactive's connection is, for this pass, no role.
+            log.warning(
+                "memory_review_unavailable",
+                reason="the triage role has no connection of its own",
+            )
+        memory_review_runner = ReviewRunner(
+            memory_store,
+            QuietConversationFinder(
+                audit,
+                personas,
+                # Read live, so a change on Core settings applies on the next
+                # tick rather than after a restart.
+                quiet_minutes_provider=lambda: app.state.settings.memory.quiet_minutes,
+            ),
+            triage_llm,
+            personas,
+            settings.memory,
+        )
 
     # ADR-0036: a persona may carry a connection of its own, and the loop asks
     # the router which client answers for the character it just loaded. The
@@ -865,6 +916,18 @@ def create_app(appdata: Path | str | None = None) -> FastAPI:
                 costs="no persona remembers or recalls anything this run",
             ):
                 await memory_store.open()
+        if memory_review_runner is not None:
+            with optional(
+                pieces,
+                "the memory review pass",
+                costs="nothing is kept after a conversation goes quiet; the tool still works",
+            ):
+                app.state.memory_review_task = asyncio.create_task(
+                    run_review_ticker(
+                        memory_review_runner, status=app.state.memory_review_status
+                    ),
+                    name="memory-review",
+                )
         # Same reasoning as the bus above: creating the task returns
         # immediately, so a slow first purge (a large database, a slow disk)
         # never delays the listener coming up.
@@ -960,6 +1023,12 @@ def create_app(appdata: Path | str | None = None) -> FastAPI:
                     timeout_seconds=RETENTION_SHUTDOWN_TIMEOUT_SECONDS,
                 )
         app.state.retention_purge = None
+        review_task = app.state.memory_review_task
+        if review_task is not None:
+            review_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await review_task
+            app.state.memory_review_task = None
         # Only now: the retention task and its (possibly still-running)
         # worker-thread pass are both stopped above, and that pass is what
         # holds the memory store's own sqlite connection open the same way
