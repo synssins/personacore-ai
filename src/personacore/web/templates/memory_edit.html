@@ -5,7 +5,7 @@
 {% extends "base.html" %}
 {% block title %}Edit memory — PersonaCore admin{% endblock %}
 {% block content %}
-<p style="margin:0"><a href="/admin/memory{% if filters_qs %}?{{ filters_qs }}{% endif %}">← Memory</a></p>
+<p style="margin:0"><a href="/admin/memory?{{ filters_qs }}">← Memory</a></p>
 
 <header style="display:flex; flex-direction:column; gap:6px">
   <h3 style="margin:0">Edit memory</h3>
@@ -18,14 +18,14 @@
     <p class="grow" style="margin:0; font-size:13.5px">{{ error }}</p>
   </div>
   {% endif %}
-  <form method="post" action="/admin/memory/{{ memory.id }}/edit{% if filters_qs %}?{{ filters_qs }}{% endif %}" class="stack" style="gap:var(--space-3)">
+  <form method="post" action="/admin/memory/{{ memory.id }}/edit?{{ filters_qs }}" class="stack" style="gap:var(--space-3)">
     <div class="field">
       <span class="label-row"><label for="memory-text">Text</label><span class="meta" style="margin-left:auto">up to {{ max_chars }} characters</span></span>
       <textarea class="input" id="memory-text" name="text" rows="6" maxlength="{{ max_chars }}">{{ text_value }}</textarea>
     </div>
     <div class="hrow" style="gap:8px">
       <button type="submit" class="btn btn-primary">Save</button>
-      <a class="btn btn-secondary" href="/admin/memory{% if filters_qs %}?{{ filters_qs }}{% endif %}">Cancel</a>
+      <a class="btn btn-secondary" href="/admin/memory?{{ filters_qs }}">Cancel</a>
     </div>
   </form>
 </section>

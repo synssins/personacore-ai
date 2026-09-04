@@ -25,18 +25,18 @@
     </span>
   </div>
   <div class="hrow" style="gap:6px; flex:none">
-    <a class="btn btn-ghost" href="/admin/memory/{{ row.id }}/edit{% if filters_qs %}?{{ filters_qs }}{% endif %}" style="font-size:13px">edit</a>
+    <a class="btn btn-ghost" href="/admin/memory/{{ row.id }}/edit?{{ filters_qs }}" style="font-size:13px">edit</a>
     {% if show_promote %}
-    <form method="post" action="/admin/memory/{{ row.id }}/promote{% if filters_qs %}?{{ filters_qs }}{% endif %}" style="display:contents">
+    <form method="post" action="/admin/memory/{{ row.id }}/promote?{{ filters_qs }}" style="display:contents">
       <button type="submit" class="btn btn-icon mem-ok"
-              hx-post="/admin/memory/{{ row.id }}/promote{% if filters_qs %}?{{ filters_qs }}{% endif %}"
+              hx-post="/admin/memory/{{ row.id }}/promote?{{ filters_qs }}"
               hx-target="#memory-list" hx-swap="outerHTML"
               title="Promote to long term" aria-label="Promote {{ row.text }} to long term">{{ icon('check') }}</button>
     </form>
     {% endif %}
-    <form method="post" action="/admin/memory/{{ row.id }}/delete{% if filters_qs %}?{{ filters_qs }}{% endif %}" style="display:contents">
+    <form method="post" action="/admin/memory/{{ row.id }}/delete?{{ filters_qs }}" style="display:contents">
       <button type="submit" class="btn btn-icon mem-x"
-              hx-post="/admin/memory/{{ row.id }}/delete{% if filters_qs %}?{{ filters_qs }}{% endif %}"
+              hx-post="/admin/memory/{{ row.id }}/delete?{{ filters_qs }}"
               hx-target="#memory-list" hx-swap="outerHTML"
               title="Delete" aria-label="Delete {{ row.text }}">{{ icon('x') }}</button>
     </form>
