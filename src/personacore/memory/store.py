@@ -325,6 +325,19 @@ class MemoryStore:
                 if _cosine_from_l2(distance) >= self._settings.duplicate_threshold:
                     record = self._touch_locked(memory_id, now, importance=importance)
                     return record, False
+            if holder != GLOBAL_HOLDER:
+                # A fact already promoted to long term is not re-kept
+                # short-term (contract §5.1's "store dedupe across long
+                # term" addendum). Checked second, after the same-owner+
+                # holder row: an existing short-term memory of the caller's
+                # own still wins the touch when both are near enough, which
+                # is what "still touches that row first" means.
+                global_candidate = self._find_similar_by_holder_locked(vector, GLOBAL_HOLDER)
+                if global_candidate is not None:
+                    global_memory_id, global_distance = global_candidate
+                    if _cosine_from_l2(global_distance) >= self._settings.duplicate_threshold:
+                        record = self._touch_locked(global_memory_id, now, importance=importance)
+                        return record, False
             record = self._insert_locked(
                 text=truncated_text,
                 owner=owner,
@@ -359,6 +372,34 @@ class MemoryStore:
             ORDER BY distance LIMIT 1
             """,
             (json.dumps(vector), owner, holder),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return None
+        return row["memory_id"], row["distance"]
+
+    def _find_similar_by_holder_locked(
+        self, vector: list[float], holder: str
+    ) -> tuple[str, float] | None:
+        """Nearest existing row for this holder, any owner, or `None`.
+        Caller holds `self._lock`. Used only for the long-term dedupe check
+        in `_add` -- every `holder = GLOBAL_HOLDER` row already carries
+        `owner = HOUSEHOLD_OWNER` (the only writers are `promote` and a
+        direct `add(holder=GLOBAL_HOLDER, ...)`, both of which set it), so
+        this filters by holder alone rather than repeat that assumption
+        here as an owner filter contract §5.1 does not ask for.
+        """
+        conn = self._require_conn()
+        cur = conn.execute(
+            """
+            SELECT memory_id, distance FROM memory_vectors
+            WHERE embedding MATCH ?
+              AND memory_id IN (
+                  SELECT memory_id FROM memories WHERE holder = ?
+              )
+            ORDER BY distance LIMIT 1
+            """,
+            (json.dumps(vector), holder),
         )
         row = cur.fetchone()
         if row is None:

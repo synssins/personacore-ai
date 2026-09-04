@@ -41,10 +41,11 @@ import structlog
 from personacore.agent.errors import PersonaError
 from personacore.agent.personas import PersonaStore
 from personacore.agent.untrusted import UntrustedKind, wrap_untrusted
-from personacore.audit.models import AuthorKind, Owner, Surface, TranscriptRecord
+from personacore.audit.models import AuthorKind, MessageRole, Owner, Surface, TranscriptRecord
 from personacore.boot.llm import LiveLLM
 from personacore.config.memory import MemorySettings
 from personacore.memory.models import (
+    GLOBAL_HOLDER,
     MAX_TEXT_CHARS,
     REVIEW_OUTCOME_MODEL_FAILED,
     REVIEW_OUTCOME_NOTHING,
@@ -75,6 +76,13 @@ _MAX_ROWS_PER_SCAN = 5000
 #: finite cap protects it the same way `agent/untrusted.py`'s own default
 #: protects every other fenced block).
 TRANSCRIPT_MAX_CHARS = 24_000
+
+#: Cap on how many already-known rows (own store plus every long-term row)
+#: are shown to the triage role before it reviews a transcript -- contract
+#: §5.2's "already known" addendum. Merged from two `MemoryStore.list` calls
+#: and cut to this count, newest first, the same generous-but-finite
+#: reasoning as `TRANSCRIPT_MAX_CHARS`.
+KNOWN_MEMORIES_MAX_ROWS = 60
 
 _IMPORTANCE_WORDS: dict[str, float] = {"low": 0.3, "medium": 0.6, "high": 0.9}
 
@@ -432,10 +440,29 @@ def _parse_facts(text: str | None) -> _ParseOutcome:
 
 
 def _build_transcript(rows: Sequence[TranscriptRecord]) -> str:
+    """One line per message, labelled by role so the triage role can tell who
+    is speaking (contract §5.2's "transcript labelling" addendum).
+
+    A persona's line is marked ``ASSISTANT`` and says, in the line itself,
+    that it is never a source of facts -- it stays in the transcript for
+    context (the person's next line often only makes sense next to it), but
+    the prompt and the label both say not to mine it. A person's line
+    (``role == USER``) is marked ``PERSON``. Everything else (system, tool)
+    keeps the plain ``name: content`` shape this had before -- "other roles
+    as they are today".
+    """
     lines = []
     for row in sorted(rows, key=lambda r: (r.timestamp, r.id or 0)):
         name = row.author.name if row.author is not None else row.role.value
-        lines.append(f"{name}: {row.content}")
+        if row.author is not None and row.author.kind is AuthorKind.PERSONA:
+            lines.append(
+                f"ASSISTANT ({name}, its own words -- never a source of facts "
+                f"about the person): {row.content}"
+            )
+        elif row.role is MessageRole.USER:
+            lines.append(f"PERSON ({name}): {row.content}")
+        else:
+            lines.append(f"{name}: {row.content}")
     return "\n".join(lines)
 
 
@@ -556,6 +583,35 @@ class ReviewRunner:
             error=error,
         )
 
+    async def _known_memories_block(self, item: DueReview) -> str | None:
+        """The fenced block of what is already kept for `item` -- contract
+        §5.2's "already known" addendum, so the review pass stops re-keeping
+        a fact (in the person's own words, or a paraphrase) that is already
+        sitting in this persona's store or in long-term memory.
+
+        `None` when nothing is kept yet, so `_review_one` omits the block
+        entirely rather than fencing an empty one.
+        """
+        own_rows = await self._store.list(
+            owners=[item.owner], holders=[item.persona], limit=KNOWN_MEMORIES_MAX_ROWS
+        )
+        global_rows = await self._store.list(
+            holders=[GLOBAL_HOLDER], limit=KNOWN_MEMORIES_MAX_ROWS
+        )
+        combined = sorted(
+            [*own_rows, *global_rows], key=lambda r: r.created_at, reverse=True
+        )[:KNOWN_MEMORIES_MAX_ROWS]
+        if not combined:
+            return None
+        known_text = "\n".join(record.text for record in combined)
+        return wrap_untrusted(
+            known_text,
+            kind=UntrustedKind.REVIEW_TRANSCRIPT,
+            source="memories already known for this person and persona, and every long-term memory",
+            token=secrets.token_hex(8),
+            max_content_chars=TRANSCRIPT_MAX_CHARS,
+        )
+
     async def _review_one(self, item: DueReview, stats: ReviewStats) -> None:
         transcript = _build_transcript(item.rows)
         fenced = wrap_untrusted(
@@ -565,9 +621,13 @@ class ReviewRunner:
             token=secrets.token_hex(8),
             max_content_chars=TRANSCRIPT_MAX_CHARS,
         )
+        user_content = fenced
+        known_block = await self._known_memories_block(item)
+        if known_block is not None:
+            user_content = f"{fenced}\n\n{known_block}"
         messages = [
             {"role": "system", "content": REVIEW_SYSTEM_PROMPT},
-            {"role": "user", "content": fenced},
+            {"role": "user", "content": user_content},
         ]
         started_at = datetime.now(UTC)
         model_name = self._triage.current.config.model
@@ -710,6 +770,7 @@ async def run_review_ticker(
 
 __all__ = [
     "DEFAULT_LOOKBACK_HOURS",
+    "KNOWN_MEMORIES_MAX_ROWS",
     "TRANSCRIPT_MAX_CHARS",
     "DueReview",
     "PersonaNameSource",
