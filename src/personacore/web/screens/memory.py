@@ -46,6 +46,7 @@ from urllib.parse import urlencode
 from fastapi import APIRouter, HTTPException, Request, Response, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+from personacore.agent.errors import PersonaError
 from personacore.audit.models import AuditOutcome
 from personacore.memory.models import (
     ANONYMOUS_OWNER,
@@ -139,19 +140,24 @@ def review_url(record: MemoryRecord) -> str | None:
     """Where this row's conversation can be opened, or `None`.
 
     Only ever the two-argument review page (`user`, `conversation`), and only
-    when the row still names a real person: a promoted row's `owner` has
+    when the row still names a real person. A promoted row's `owner` has
     already become `household` (contract §7's promote is the only way in),
-    which review has no account for, and the anonymous owner has no account
-    at all. Contract §8: "the link is `/admin/review?...` if review can open
-    a conversation by id, else omit the link and say so" — the "say so" half
-    is the template's, not this function's.
+    which review has no account for -- so a promoted row falls back to
+    `written_owner`, the owner *at write time*, which promote never touches
+    (contract §3.1, schema version 2). A row written before that column
+    existed reads back `written_owner == ''`, which is "no link", the same
+    as the anonymous owner, which never had one. Contract §8: "the link is
+    `/admin/review?...` if review can open a conversation by id, else omit
+    the link and say so" — the "say so" half is the template's, not this
+    function's.
     """
     if record.conversation_id is None:
         return None
-    if record.owner in (HOUSEHOLD_OWNER, ANONYMOUS_OWNER):
+    owner = record.written_owner if record.owner == HOUSEHOLD_OWNER else record.owner
+    if not owner or owner in (HOUSEHOLD_OWNER, ANONYMOUS_OWNER):
         return None
     return "/admin/review?" + urlencode(
-        {"user": record.owner, "conversation": record.conversation_id}
+        {"user": owner, "conversation": record.conversation_id}
     )
 
 
@@ -206,13 +212,22 @@ def build_groups(
     holder_order: Sequence[str],
     accounts: Mapping[str, str],
     minors: Mapping[str, bool],
+    persona_labels: Mapping[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     """Person groups, each holding its persona groups, from a flat list of
     non-long-term rows. Ordering is `owner_order` (accounts, then
     "anonymous") then `holder_order` (`PersonaStore.available()`), with
     anything neither names sorted alphabetically after — see the module
     docstring.
+
+    `persona_labels` is folder name -> the persona's `display_name`
+    (`_persona_label`, resolved once per request against `ctx.personas`
+    before this is called, so this stays a pure function of its rows and
+    the two orderings). A holder this mapping does not cover -- a deleted
+    persona whose rows are still shown -- keeps its folder name, the same
+    fallback `_persona_label` itself uses when the persona will not load.
     """
+    labels = persona_labels or {}
     by_owner: dict[str, list[MemoryRecord]] = {}
     for record in records:
         by_owner.setdefault(record.owner, []).append(record)
@@ -233,6 +248,7 @@ def build_groups(
         personas = [
             {
                 "name": holder,
+                "label": labels.get(holder, holder),
                 "count": len(by_holder[holder]),
                 "rows": [memory_row(record) for record in by_holder[holder]],
             }
@@ -248,6 +264,28 @@ def build_groups(
             }
         )
     return groups
+
+
+def _persona_label(ctx: UIContext, name: str) -> str:
+    """What a persona group -- and the persona filter's dropdown option --
+    is titled: the persona's own `display_name`, read the same way every
+    other screen does (`personas.load(name).display_name`). Falls back to
+    the folder name, `name` itself, when the persona will not load at all
+    -- a persona deleted since a memory was written under it, which still
+    needs a reachable group and a stable filter value (`PersonaError`, the
+    same class `resolve_dir`/`load` raise for a missing or unreadable
+    persona)."""
+    try:
+        return ctx.personas.load(name).display_name or name
+    except PersonaError:
+        return name
+
+
+def _persona_labels(ctx: UIContext, names: Sequence[str]) -> dict[str, str]:
+    """`_persona_label` for every name in `names`, resolved once per
+    request rather than once per row -- a persona's files are read from
+    disk on `load` (cached, but still a call worth making once)."""
+    return {name: _persona_label(ctx, name) for name in names}
 
 
 def _accounts(ctx: UIContext) -> tuple[dict[str, str], dict[str, bool], list[str]]:
@@ -324,7 +362,10 @@ def register(router: APIRouter, ctx: UIContext) -> None:
                 "checked": ANONYMOUS_OWNER in filters["person"],
             }
         ]
-        persona_choices = ctx.personas.available()
+        persona_names = ctx.personas.available()
+        persona_choices = [
+            {"id": name, "label": _persona_label(ctx, name)} for name in persona_names
+        ]
 
         base = {
             "filters": filters,
@@ -368,13 +409,23 @@ def register(router: APIRouter, ctx: UIContext) -> None:
         # second time, once here and once in `long_term_records`.
         person_records = [r for r in other_records if r.holder != GLOBAL_HOLDER]
 
+        # A persona whose folder is gone still has to label its group and
+        # stay reachable (module docstring: "a memory that exists must
+        # still be reachable to delete") — resolved once, over every name
+        # `persona_names` already covers plus any holder only the rows
+        # still name.
+        persona_labels = _persona_labels(
+            ctx, sorted({*persona_names, *(r.holder for r in person_records)})
+        )
+
         long_term_rows = [memory_row(record) for record in long_term_records]
         groups = build_groups(
             person_records,
             owner_order=[*people_order, ANONYMOUS_OWNER],
-            holder_order=persona_choices,
+            holder_order=persona_names,
             accounts=accounts,
             minors=minors,
+            persona_labels=persona_labels,
         )
         total_personas = sum(len(group["personas"]) for group in groups)
         total_shown = len(long_term_rows) + sum(group["count"] for group in groups)

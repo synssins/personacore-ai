@@ -107,6 +107,17 @@ def _migration_0001_initial_schema(conn: sqlite3.Connection, *, dimensions: int)
     )
 
 
+def _migration_0002_written_owner(conn: sqlite3.Connection) -> None:
+    """Version 2: `memories.written_owner` -- the owner at write time,
+    never touched by promote (contract §8's promoted-row conversation
+    link; the owner column itself becomes `household` on promote, which
+    left review with no person to open). Existing rows get `''`, which the
+    screen reads as "no link" -- the same "fall back to no link" the
+    contract asks for on a database that ran only version 1.
+    """
+    conn.execute("ALTER TABLE memories ADD COLUMN written_owner TEXT NOT NULL DEFAULT ''")
+
+
 def build_migrations(dimensions: int) -> list[Migration]:
     """The migration ladder, bound to this embedder's vector width.
 
@@ -116,4 +127,7 @@ def build_migrations(dimensions: int) -> list[Migration]:
     keeps every entry a plain `Migration` (one `conn` argument) so the
     ladder-climbing in `store.py` reads exactly like the audit store's.
     """
-    return [functools.partial(_migration_0001_initial_schema, dimensions=dimensions)]
+    return [
+        functools.partial(_migration_0001_initial_schema, dimensions=dimensions),
+        _migration_0002_written_owner,
+    ]

@@ -39,6 +39,11 @@ class MemoryRecord:
     Field-for-field the shape fixed as joint J4 in `working/PLAN-memory.md`
     -- every implementer downstream (the provider, the tools, the review
     pass, the screen) builds against this, not against the table.
+
+    `written_owner` (schema version 2) is `owner` as it stood at insert --
+    set once by `MemoryStore.add` and never touched by `promote`, which
+    changes `owner` itself to `household`. A row from a version-1 database
+    reads back `''` here until it is next written.
     """
 
     memory_id: str
@@ -52,6 +57,7 @@ class MemoryRecord:
     written_by: str
     written_persona: str
     written_model: str
+    written_owner: str
     conversation_id: str | None
     correlation_id: str
     edited_by: str | None

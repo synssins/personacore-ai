@@ -1,7 +1,8 @@
 {# memory.html — the Memory screen (contract memory.md §8).
    Context: help_line (str), filters {person: [str], persona: str, q: str},
      filters_qs (str), people_choices ([{id, label, checked}]),
-     people_selected_count (int), persona_choices ([str]),
+     people_selected_count (int), persona_choices ([{id, label}]) — id is
+     the persona's folder name (the filter value), label its display name,
      unavailable, unavailable_message, long_term, groups, total_people,
      total_personas, total_shown, nothing_to_show — everything
      fragments/memory_list.html needs, since this page renders it inline too.
@@ -48,8 +49,8 @@
       <label for="memory-persona">Persona</label>
       <select class="input" id="memory-persona" name="persona">
         <option value="" {% if not filters.persona %}selected{% endif %}>All personas</option>
-        {% for name in persona_choices %}
-        <option value="{{ name }}" {% if filters.persona == name %}selected{% endif %}>{{ name }}</option>
+        {% for choice in persona_choices %}
+        <option value="{{ choice.id }}" {% if filters.persona == choice.id %}selected{% endif %}>{{ choice.label }}</option>
         {% endfor %}
       </select>
     </div>

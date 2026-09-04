@@ -5,8 +5,10 @@
 
    Context: unavailable (bool), unavailable_message (str|None),
      long_term ([row]), groups ([{owner, label, is_minor, count, personas:
-     [{name, count, rows: [row]}]}]), total_people, total_personas,
-     total_shown (int), nothing_to_show (str), filters_qs (str). #}
+     [{name, label, count, rows: [row]}]}]) — `name` is the persona's folder
+     name (used for filtering), `label` its display name (what is shown) —
+     total_people, total_personas, total_shown (int), nothing_to_show (str),
+     filters_qs (str). #}
 {% from "_controls.html" import icon %}
 <div id="memory-list" class="stack" style="gap:var(--space-6)">
   {% if unavailable %}
@@ -16,7 +18,7 @@
   </div>
   {% elif not long_term and not groups %}
   <div class="hrow meta" style="gap:8px">
-    <span>{{ total_people }} people · {{ total_personas }} personas · {{ total_shown }} memories shown</span>
+    <span>{{ total_people }} person{{ 's' if total_people != 1 else '' }} · {{ total_personas }} persona{{ 's' if total_personas != 1 else '' }} · {{ total_shown }} memor{{ 'y' if total_shown == 1 else 'ies' }} shown</span>
   </div>
   <div class="empty">
     {{ icon('search') }}
@@ -24,7 +26,7 @@
   </div>
   {% else %}
   <div class="hrow meta" style="gap:8px">
-    <span>{{ total_people }} people · {{ total_personas }} personas · {{ total_shown }} memories shown</span>
+    <span>{{ total_people }} person{{ 's' if total_people != 1 else '' }} · {{ total_personas }} persona{{ 's' if total_personas != 1 else '' }} · {{ total_shown }} memor{{ 'y' if total_shown == 1 else 'ies' }} shown</span>
   </div>
 
   {% if long_term %}
@@ -53,7 +55,7 @@
     {% for persona in group.personas %}
     <div style="display:flex; flex-direction:column; gap:4px">
       <div class="hrow" style="gap:8px; padding:0 5.6px">
-        <h6 class="grow" style="color: color-mix(in srgb, var(--color-text) 70%, transparent)">{{ persona.name }}</h6>
+        <h6 class="grow" style="color: color-mix(in srgb, var(--color-text) 70%, transparent)">{{ persona.label }}</h6>
         <span class="meta">{{ persona.count }} memor{{ 'y' if persona.count == 1 else 'ies' }}</span>
       </div>
       {% for row in persona.rows %}

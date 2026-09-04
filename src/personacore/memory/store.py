@@ -136,6 +136,7 @@ def _row_to_record(row: sqlite3.Row) -> MemoryRecord:
         written_by=row["written_by"],
         written_persona=row["written_persona"],
         written_model=row["written_model"],
+        written_owner=row["written_owner"],
         conversation_id=row["conversation_id"],
         correlation_id=row["correlation_id"],
         edited_by=row["edited_by"],
@@ -363,9 +364,9 @@ class MemoryStore:
             INSERT INTO memories (
                 memory_id, text, owner, holder, importance, created_at,
                 last_used_at, use_count, written_by, written_persona,
-                written_model, conversation_id, correlation_id, edited_by,
-                edited_at, promoted_by, promoted_at, truncated
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?)
+                written_model, written_owner, conversation_id, correlation_id,
+                edited_by, edited_at, promoted_by, promoted_at, truncated
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?)
             """,
             (
                 memory_id,
@@ -378,6 +379,7 @@ class MemoryStore:
                 written_by,
                 written_persona,
                 written_model,
+                owner,
                 conversation_id,
                 correlation_id,
                 int(truncated),
