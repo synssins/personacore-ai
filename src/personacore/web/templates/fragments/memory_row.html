@@ -1,7 +1,10 @@
 {# memory_row.html — one memory (contract memory.md §8's row table).
    Context (from the enclosing loop): row {id, text, created, last_used,
-     used, source, model, edited, truncated, promoted, review_url},
-     show_promote (bool), filters_qs (str, no leading '?').
+     used, match, source, model, edited, truncated, promoted, review_url},
+     show_promote (bool), filters_qs (str, no leading '?'). `match` is the
+     cosine similarity the row was last recalled at, to two places, or
+     `None` when it has never been recalled (contract §6: "the score is
+     visible").
 
    Both taps below are real <form>s, deliberately, not scripted buttons: with
    scripts off a bare button does nothing, and this screen has to work that
@@ -16,6 +19,7 @@
     <span class="meta">Kept {{ row.created }}
       {%- if row.last_used %} · last used {{ row.last_used }} · used {{ row.used }} time{{ 's' if row.used != 1 else '' }}
       {%- else %} · never used{% endif -%}
+      {%- if row.match %} · match {{ row.match }}{% endif -%}
       {{ ' · ' }}{{ row.source }}{% if row.model %} · {{ row.model }}{% endif -%}
       {%- if row.promoted %} · promoted {{ row.promoted }}{% endif -%}
       {%- if row.edited %} · <span class="tag tag-neutral" style="vertical-align:middle" title="edited by {{ row.edited }}">edited</span>{% endif -%}

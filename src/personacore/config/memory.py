@@ -47,5 +47,12 @@ class MemorySettings(BaseModel):
     (contract §7). A promoted, long-term memory never expires and this bound
     does not apply to it."""
 
+    recall_floor: float = Field(default=0.3, ge=0, le=1)
+    """Minimum cosine similarity a candidate must clear to be recalled at
+    all -- owner, 2026-09-04. Below this a match is noise, not a memory
+    worth surfacing, and is dropped before ranking rather than merely
+    scored low. `0` disables the floor: every candidate the vector search
+    returns is ranked exactly as it always was."""
+
 
 __all__ = ["MemorySettings"]

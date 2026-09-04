@@ -76,6 +76,13 @@ class MemoryRecord:
     promoted_by: str | None
     promoted_at: datetime | None
     truncated: bool
+    last_score: float | None = None
+    """The cosine similarity `recall` last matched this row against, or
+    `None` when it has never been recalled (schema version 4, contract §6:
+    "the score is visible"). Written only by `MemoryStore._recall`'s own
+    touch -- the dedupe touch in `add` never sets it, so this is
+    specifically "how well the last *recall* matched", not "how well the
+    last write matched"."""
 
 
 @dataclass(frozen=True)

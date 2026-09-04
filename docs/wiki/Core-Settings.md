@@ -170,6 +170,7 @@ Household-wide defaults for [memory](Memory) — recall ranking, review timing, 
 |---|---|---|---|---|
 | `quiet_minutes` | int | `10` | 1–1440 | How long a conversation sits with no new messages before the review pass reads it and asks the triage model what's worth keeping. |
 | `recall_limit` | int | `8` | 1–50 | How many memories come back on a single recall — the persona's own plus the household's long-term ones, combined. |
+| `recall_floor` | float | `0.3` | 0 – 1 | The least similar a memory may be to the message and still be recalled. `0` recalls the top matches whatever their similarity. The match score of each recalled memory is shown on the Memory screen. |
 | `half_life_days` | float | `30.0` | > 0 | Recency half-life for recall ranking: a memory unused for this many days scores half of one used today. |
 | `duplicate_threshold` | float | `0.92` | 0–1 | How close a new memory has to be, by meaning, to an existing one before it's treated as the same fact and updates that row instead of adding a new one. |
 | `short_term_days` | int | `60` | ≥ 1 | A short-term memory with no activity for this many days is purged. A promoted, long-term memory never expires and ignores this. |

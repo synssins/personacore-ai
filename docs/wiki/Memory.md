@@ -84,6 +84,15 @@ what the triage model is choosing to keep and tune the prompt or the model
 from evidence rather than from counts. Runs age out on the same schedule as
 short-term memories. The filters above do not narrow it.
 
+Two controls sit in the Review log's header, each confirming on a plain
+page: **Clear the log** removes every run; **Clear runs from removed
+conversations** removes only the runs whose conversation a person has since
+removed from their list. Memories are untouched by both.
+
+Each memory's row also shows **match**, the similarity score from the last
+time it was recalled, so the floor in `[memory] recall_floor` can be tuned
+from evidence.
+
 ## Privacy rules
 
 - One person's memories with a persona never reach another person. The filter that enforces this is in the database query itself, not layered on afterward.

@@ -47,7 +47,8 @@ from fastapi import APIRouter, HTTPException, Request, Response, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from personacore.agent.errors import PersonaError
-from personacore.audit.models import AuditOutcome
+from personacore.audit.logging import get_logger
+from personacore.audit.models import AuditOutcome, Owner
 from personacore.memory.models import (
     ANONYMOUS_OWNER,
     GLOBAL_HOLDER,
@@ -57,6 +58,8 @@ from personacore.memory.models import (
     ReviewRunRecord,
 )
 from personacore.web.shared import UIContext
+
+logger = get_logger(__name__)
 
 MEMORY_PATH = "/admin/memory"
 """Where the screen lives, for the sidebar link and every redirect back to it."""
@@ -75,7 +78,36 @@ REVIEW_RUNS_SHOWN = 20
 the memory list's person/persona/search filters do not apply to it, per the
 review-log brief."""
 
+REVIEW_RUNS_SWEEP_LIMIT = 5000
+"""A ceiling on the read the two "clear" controls do to find what they are
+about to remove -- the same shape as `MEMORIES_SHOWN`, a bound on the read
+rather than a page size. Both clears purge everything the sweep can see
+(all of it for "clear the log", the hidden-conversation subset for the
+other), so a store past this ceiling is under-swept rather than the request
+hanging on an unbounded scan."""
+
 ANONYMOUS_LABEL = "Anonymous callers"
+
+CLEAR_LOG_TITLE = "Clear the review log?"
+
+CLEAR_LOG_BODY = (
+    "This removes every run in the review log below — what the review pass "
+    "kept and rejected. It does not touch any memory the review pass already "
+    "wrote; those stay until you delete or they expire on their own."
+)
+
+CLEAR_LOG_LABEL = "Clear the log"
+
+CLEAR_HIDDEN_TITLE = "Clear runs from removed conversations?"
+
+CLEAR_HIDDEN_BODY = (
+    "This removes review-log runs whose conversation is no longer on anyone's "
+    "list — hidden by the person it belonged to, or gone entirely. Runs from "
+    "conversations still visible are left alone. It does not touch any memory "
+    "the review pass already wrote."
+)
+
+CLEAR_HIDDEN_LABEL = "Clear runs from removed conversations"
 
 MEMORY_UNAVAILABLE = (
     "Memory is not available on this core — the bundled embedding model was "
@@ -188,6 +220,7 @@ def memory_row(record: MemoryRecord) -> dict[str, Any]:
         "created": _when(record.created_at),
         "used": record.use_count,
         "last_used": None if record.use_count == 0 else _when(record.last_used_at),
+        "match": None if record.last_score is None else f"{record.last_score:.2f}",
         "source": record.written_by,
         "model": record.written_model,
         "edited": edited,
@@ -508,8 +541,12 @@ def register(router: APIRouter, ctx: UIContext) -> None:
             ]
         }
 
-    @router.get(MEMORY_ROUTE, response_class=HTMLResponse, summary="The Memory screen")
-    async def memory_page(request: Request) -> HTMLResponse:
+    async def _memory_page_response(request: Request) -> HTMLResponse:
+        """The whole page, current filters and all -- what a plain GET of
+        `MEMORY_ROUTE` renders, and also what the two review-log "clear"
+        POSTs below hand back to an htmx caller (contract §8's dialog-form
+        `target="body"` shape, same as `persona_delete.py`'s own use of
+        `_personas_page_with`)."""
         person, persona, q = _current_filters(request)
         context = await _list_context(request, person=person, persona=persona, q=q)
         review_log = await _review_log_context(request)
@@ -523,6 +560,175 @@ def register(router: APIRouter, ctx: UIContext) -> None:
                 "help_line": HELP_LINE,
             },
         )
+
+    @router.get(MEMORY_ROUTE, response_class=HTMLResponse, summary="The Memory screen")
+    async def memory_page(request: Request) -> HTMLResponse:
+        return await _memory_page_response(request)
+
+    async def _conversation_is_hidden(owner_id: str, conversation_id: str) -> bool:
+        """Contract §8: "a conversation a person removed from their list ...
+        A conversation that no longer exists at all counts as hidden."
+
+        The lookup, not the store: `MemoryStore` knows nothing about
+        conversations (module docstring), so this reaches `ctx.audit`
+        directly, the same collaborator `review.py`'s own conversation
+        reads use. `getattr` rather than a bare call: a test double built
+        without `get_conversation` (this screen's own tests may build one
+        with a bare `MemoryStore` fake, not a real `AuditStore`) must not
+        crash the sweep -- it answers "not hidden" instead, which is the
+        side that loses nothing rather than the side that deletes it.
+        """
+        getter = getattr(ctx.audit, "get_conversation", None)
+        if getter is None:
+            return False
+        owner = Owner.anonymous() if owner_id == ANONYMOUS_OWNER else Owner.profile(owner_id)
+        try:
+            conversation = await getter(conversation_id, owner=owner)
+        except Exception as exc:  # noqa: BLE001 - a lookup failure must not crash the sweep
+            logger.error("memory_reviews_hidden_lookup_failed", error=repr(exc))
+            return False
+        return conversation is None or conversation.hidden_at is not None
+
+    async def _hidden_review_run_ids(store: Any) -> list[str]:
+        """Every review-log run id whose conversation is hidden (contract
+        §8's "Clear runs from removed conversations" control), out of every
+        run the sweep's own ceiling can see -- see `REVIEW_RUNS_SWEEP_LIMIT`.
+
+        Looked up once per distinct (owner, conversation) pair rather than
+        once per run: several runs commonly share one conversation, and the
+        answer for one is the answer for all of them.
+        """
+        records = await store.list_review_runs(limit=REVIEW_RUNS_SWEEP_LIMIT)
+        checked: dict[tuple[str, str], bool] = {}
+        hidden_ids: list[str] = []
+        for record in records:
+            key = (record.owner, record.conversation_id)
+            if key not in checked:
+                checked[key] = await _conversation_is_hidden(record.owner, record.conversation_id)
+            if checked[key]:
+                hidden_ids.append(record.run_id)
+        return hidden_ids
+
+    @router.get(
+        "/memory/reviews/clear/confirm",
+        response_class=HTMLResponse,
+        summary="Confirm clearing the review log (page)",
+    )
+    async def memory_reviews_clear_confirm_page(request: Request) -> HTMLResponse:
+        return templates.TemplateResponse(
+            request=request,
+            name="confirm_page.html",
+            context={
+                **await shell(request, "memory"),
+                "title": CLEAR_LOG_TITLE,
+                "body": CLEAR_LOG_BODY,
+                "confirm_label": CLEAR_LOG_LABEL,
+                "action": "/admin/memory/reviews/clear",
+                "back_href": MEMORY_PATH,
+                "back_label": "← Memory",
+            },
+        )
+
+    @router.get(
+        "/memory/reviews/clear/confirm/fragment",
+        response_class=HTMLResponse,
+        summary="Confirm clearing the review log",
+    )
+    async def memory_reviews_clear_confirm(request: Request) -> HTMLResponse:
+        return templates.TemplateResponse(
+            request=request,
+            name="fragments/confirm.html",
+            context={
+                "title": CLEAR_LOG_TITLE,
+                "body": CLEAR_LOG_BODY,
+                "confirm_label": CLEAR_LOG_LABEL,
+                "action": "/admin/memory/reviews/clear",
+                "target": "body",
+            },
+        )
+
+    @router.post(
+        "/memory/reviews/clear",
+        response_class=HTMLResponse,
+        response_model=None,
+        summary="Clear every review-log run",
+    )
+    async def memory_reviews_clear(request: Request) -> Response:
+        user = require_user(request)
+        store = _store(request)
+        count = await store.clear_review_runs() if store is not None else 0
+        await _record_change(
+            ctx.audit,
+            user,
+            action="memory.reviews.clear",
+            outcome=AuditOutcome.SUCCESS,
+            detail={"count": count},
+        )
+        if _wants_fragment(request):
+            return await _memory_page_response(request)
+        return RedirectResponse(MEMORY_PATH, status_code=status.HTTP_303_SEE_OTHER)
+
+    @router.get(
+        "/memory/reviews/clear-hidden/confirm",
+        response_class=HTMLResponse,
+        summary="Confirm clearing review runs from removed conversations (page)",
+    )
+    async def memory_reviews_clear_hidden_confirm_page(request: Request) -> HTMLResponse:
+        return templates.TemplateResponse(
+            request=request,
+            name="confirm_page.html",
+            context={
+                **await shell(request, "memory"),
+                "title": CLEAR_HIDDEN_TITLE,
+                "body": CLEAR_HIDDEN_BODY,
+                "confirm_label": CLEAR_HIDDEN_LABEL,
+                "action": "/admin/memory/reviews/clear-hidden",
+                "back_href": MEMORY_PATH,
+                "back_label": "← Memory",
+            },
+        )
+
+    @router.get(
+        "/memory/reviews/clear-hidden/confirm/fragment",
+        response_class=HTMLResponse,
+        summary="Confirm clearing review runs from removed conversations",
+    )
+    async def memory_reviews_clear_hidden_confirm(request: Request) -> HTMLResponse:
+        return templates.TemplateResponse(
+            request=request,
+            name="fragments/confirm.html",
+            context={
+                "title": CLEAR_HIDDEN_TITLE,
+                "body": CLEAR_HIDDEN_BODY,
+                "confirm_label": CLEAR_HIDDEN_LABEL,
+                "action": "/admin/memory/reviews/clear-hidden",
+                "target": "body",
+            },
+        )
+
+    @router.post(
+        "/memory/reviews/clear-hidden",
+        response_class=HTMLResponse,
+        response_model=None,
+        summary="Clear review-log runs from removed conversations",
+    )
+    async def memory_reviews_clear_hidden(request: Request) -> Response:
+        user = require_user(request)
+        store = _store(request)
+        count = 0
+        if store is not None:
+            hidden_ids = await _hidden_review_run_ids(store)
+            count = await store.delete_review_runs(hidden_ids)
+        await _record_change(
+            ctx.audit,
+            user,
+            action="memory.reviews.clear_hidden",
+            outcome=AuditOutcome.SUCCESS,
+            detail={"count": count},
+        )
+        if _wants_fragment(request):
+            return await _memory_page_response(request)
+        return RedirectResponse(MEMORY_PATH, status_code=status.HTTP_303_SEE_OTHER)
 
     @router.get(
         "/memory/list", response_class=HTMLResponse, summary="The filtered memory list"
@@ -683,6 +889,12 @@ def register(router: APIRouter, ctx: UIContext) -> None:
 
 __all__ = [
     "ANONYMOUS_LABEL",
+    "CLEAR_HIDDEN_BODY",
+    "CLEAR_HIDDEN_LABEL",
+    "CLEAR_HIDDEN_TITLE",
+    "CLEAR_LOG_BODY",
+    "CLEAR_LOG_LABEL",
+    "CLEAR_LOG_TITLE",
     "HELP_LINE",
     "MEMORIES_SHOWN",
     "MEMORY_NOT_FOUND",
@@ -692,6 +904,7 @@ __all__ = [
     "NOTHING_TO_SHOW",
     "PER_PERSON_NOT_YET",
     "REVIEW_RUNS_SHOWN",
+    "REVIEW_RUNS_SWEEP_LIMIT",
     "TEXT_REQUIRED",
     "TEXT_TOO_LONG",
     "build_groups",

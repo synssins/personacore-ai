@@ -135,6 +135,7 @@ MEMORY_LABELS: dict[str, str] = {
     "half_life_days": "Recency half-life (days)",
     "duplicate_threshold": "Duplicate threshold (0–1)",
     "short_term_days": "Short-term memories expire after (days) unless promoted",
+    "recall_floor": "Minimum match to recall (0–1)",
 }
 """``working/contracts/memory.md`` §9 — the five ``[memory]`` settings, in the
 order the screen shows them. Fixed rather than built from what is on disk,

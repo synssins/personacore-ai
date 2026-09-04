@@ -73,6 +73,7 @@ class SettingsLike(Protocol):
     half_life_days: float
     duplicate_threshold: float
     short_term_days: int
+    recall_floor: float
 
 
 class EmbedderLike(Protocol):
@@ -150,6 +151,7 @@ def _row_to_record(row: sqlite3.Row) -> MemoryRecord:
         promoted_by=row["promoted_by"],
         promoted_at=_parse_iso_opt(row["promoted_at"]),
         truncated=bool(row["truncated"]),
+        last_score=row["last_score"],
     )
 
 
@@ -431,8 +433,9 @@ class MemoryStore:
                 memory_id, text, owner, holder, importance, created_at,
                 last_used_at, use_count, written_by, written_persona,
                 written_model, written_owner, conversation_id, correlation_id,
-                edited_by, edited_at, promoted_by, promoted_at, truncated
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?)
+                edited_by, edited_at, promoted_by, promoted_at, truncated,
+                last_score
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, NULL)
             """,
             (
                 memory_id,
@@ -462,11 +465,22 @@ class MemoryStore:
         return record
 
     def _touch_locked(
-        self, memory_id: str, now: datetime, *, importance: float | None = None
+        self,
+        memory_id: str,
+        now: datetime,
+        *,
+        importance: float | None = None,
+        score: float | None = None,
     ) -> MemoryRecord:
         """`last_used_at = now`, `use_count += 1`, and -- when `importance`
         is given -- the row's importance becomes the max of old and new
         (contract §5.1). Caller holds `self._lock`; the row must exist.
+
+        `score`, when given, is written to `last_score` (schema version 4,
+        contract §6: "recall writes each returned row's similarity there
+        when it touches the row"). Only `_recall` passes one -- the dedupe
+        touch in `_add` never does, so a fact re-said and merged does not
+        masquerade as something just recalled.
         """
         conn = self._require_conn()
         row = conn.execute(
@@ -475,14 +489,25 @@ class MemoryStore:
         new_importance = row["importance"]
         if importance is not None:
             new_importance = max(new_importance, importance)
-        conn.execute(
-            """
-            UPDATE memories
-            SET last_used_at = ?, use_count = use_count + 1, importance = ?
-            WHERE memory_id = ?
-            """,
-            (_iso(now), new_importance, memory_id),
-        )
+        if score is not None:
+            conn.execute(
+                """
+                UPDATE memories
+                SET last_used_at = ?, use_count = use_count + 1, importance = ?,
+                    last_score = ?
+                WHERE memory_id = ?
+                """,
+                (_iso(now), new_importance, score, memory_id),
+            )
+        else:
+            conn.execute(
+                """
+                UPDATE memories
+                SET last_used_at = ?, use_count = use_count + 1, importance = ?
+                WHERE memory_id = ?
+                """,
+                (_iso(now), new_importance, memory_id),
+            )
         conn.commit()
         record = self._get_locked(memory_id)
         if record is None:  # pragma: no cover - row existed one line above, under the same lock
@@ -528,19 +553,35 @@ class MemoryStore:
             )
             candidates = cur.fetchall()
 
-            scored: list[tuple[MemoryRecord, float]] = []
+            # Contract §6, owner 2026-09-04: a candidate whose match to the
+            # query is below the floor is dropped before ranking, not merely
+            # scored low. `0` (`MemorySettings.recall_floor`'s own floor)
+            # disables this -- exactly today's behaviour -- rather than
+            # excluding a candidate whose cosine happens to land at or below
+            # zero, which "no floor at all" must not do.
+            floor = self._settings.recall_floor
+            scored: list[tuple[MemoryRecord, float, float]] = []
             for row in candidates:
                 record = self._get_locked(row["memory_id"])
                 if record is None:
                     continue
                 cosine = _cosine_from_l2(row["distance"])
+                if floor > 0 and cosine < floor:
+                    continue
                 days_since_used = max((now - record.last_used_at).total_seconds() / 86400.0, 0.0)
                 recency = 0.2 + 0.8 * (0.5 ** (days_since_used / self._settings.half_life_days))
-                scored.append((record, cosine * record.importance * recency))
+                scored.append((record, cosine * record.importance * recency, cosine))
 
-            scored.sort(key=lambda pair: pair[1], reverse=True)
+            scored.sort(key=lambda triple: triple[1], reverse=True)
             top = scored[:limit]
-            return [(self._touch_locked(record.memory_id, now), score) for record, score in top]
+            # `last_score` gets the raw cosine, not the ranking score:
+            # contract §6 calls it "similarity", and importance/recency are
+            # already visible on the row of their own accord (§8's meta
+            # line) -- folding them into "match" would double-count them.
+            return [
+                (self._touch_locked(record.memory_id, now, score=cosine), rank_score)
+                for record, rank_score, cosine in top
+            ]
 
     async def get(self, memory_id: str) -> MemoryRecord | None:
         return await asyncio.to_thread(self._get, memory_id)
@@ -832,6 +873,41 @@ class MemoryStore:
                 "SELECT * FROM review_runs ORDER BY finished_at DESC LIMIT ?", (limit,)
             ).fetchall()
         return [_row_to_review_run(row) for row in rows]
+
+    async def delete_review_runs(self, run_ids: Sequence[str]) -> int:
+        """Remove specific review-log rows, by id. Used by the Memory
+        screen's "clear runs from removed conversations" control -- the
+        screen decides *which* ids are hidden (it is the one that knows
+        about conversations), this only removes the rows it is given.
+        """
+        return await asyncio.to_thread(self._delete_review_runs, list(run_ids))
+
+    def _delete_review_runs(self, run_ids: list[str]) -> int:
+        if not run_ids:
+            return 0
+        conn = self._require_conn()
+        with self._lock:
+            placeholders = ",".join("?" for _ in run_ids)
+            cur = conn.execute(
+                f"DELETE FROM review_runs WHERE run_id IN ({placeholders})",  # noqa: S608
+                run_ids,
+            )
+            conn.commit()
+            return cur.rowcount
+
+    async def clear_review_runs(self) -> int:
+        """Remove every review-log row. The Memory screen's "Clear the log"
+        control -- a blunter version of :meth:`delete_review_runs` that does
+        not need a list of ids first.
+        """
+        return await asyncio.to_thread(self._clear_review_runs)
+
+    def _clear_review_runs(self) -> int:
+        conn = self._require_conn()
+        with self._lock:
+            cur = conn.execute("DELETE FROM review_runs")
+            conn.commit()
+            return cur.rowcount
 
 
 __all__ = ["EmbedderLike", "MemoryStore", "SettingsLike", "truncate_text"]

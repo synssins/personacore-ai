@@ -78,6 +78,12 @@
   <div class="hrow" style="gap:8px">
     <h5 class="grow">Review log</h5>
     <span class="meta">{{ review_runs|length }} run{{ 's' if review_runs|length != 1 else '' }}</span>
+    <a class="btn btn-ghost" href="/admin/memory/reviews/clear-hidden/confirm"
+       hx-get="/admin/memory/reviews/clear-hidden/confirm/fragment"
+       hx-target="#modal" hx-swap="innerHTML">{{ icon('shield') }} Clear runs from removed conversations</a>
+    <a class="btn btn-danger" href="/admin/memory/reviews/clear/confirm"
+       hx-get="/admin/memory/reviews/clear/confirm/fragment"
+       hx-target="#modal" hx-swap="innerHTML">{{ icon('trash') }} Clear the log</a>
   </div>
   {% if not review_runs %}
   <div class="empty">

@@ -1304,6 +1304,22 @@ class AgentLoop:
             return None
         if not items:
             return None
+        # The turn's own trace: which memories answered this recall and how
+        # well each matched, never the text (contract §6, §10 — "the
+        # recalled ids, never the text"). `item.score` is whatever the
+        # provider's own ranking produced; `None` on a provider that never
+        # set one logs as `None` rather than raising.
+        logger.info(
+            "memory_recalled",
+            memories=[
+                {
+                    "memory_id": item.memory_id,
+                    "holder": item.holder,
+                    "score": None if item.score is None else round(item.score, 4),
+                }
+                for item in items
+            ],
+        )
         body = "\n".join(f"- {item.text}" for item in items)
         return wrap_untrusted(
             body,

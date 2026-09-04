@@ -155,6 +155,18 @@ def _migration_0003_review_runs(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX idx_review_runs_finished ON review_runs (finished_at)")
 
 
+def _migration_0004_last_score(conn: sqlite3.Connection) -> None:
+    """Version 4: `memories.last_score` -- the cosine similarity the row was
+    last matched against on a `recall` (contract §6, owner 2026-09-04: "the
+    score is visible"). Nullable: a row never recalled, or one from a
+    database that ran only earlier migrations, reads back `NULL`, which the
+    screen shows as no "match" line at all rather than a fabricated number.
+    Written only by `MemoryStore._recall`'s own touch -- see
+    `memory/models.py`'s `MemoryRecord.last_score`.
+    """
+    conn.execute("ALTER TABLE memories ADD COLUMN last_score REAL")
+
+
 def build_migrations(dimensions: int) -> list[Migration]:
     """The migration ladder, bound to this embedder's vector width.
 
@@ -168,4 +180,5 @@ def build_migrations(dimensions: int) -> list[Migration]:
         functools.partial(_migration_0001_initial_schema, dimensions=dimensions),
         _migration_0002_written_owner,
         _migration_0003_review_runs,
+        _migration_0004_last_score,
     ]
