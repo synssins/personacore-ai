@@ -612,7 +612,7 @@ class AgentLoopConfig(BaseModel):
     hitting the cap ends the turn with a sentence, not a spin."""
 
     max_untrusted_chars: int = Field(default=DEFAULT_MAX_CONTENT_CHARS, ge=256)
-    memory_recall_limit: int = Field(default=8, ge=1)
+    memory_recall_limit: int = Field(default=8, ge=1, le=50)
     safety_block: str = DEFAULT_SAFETY_BLOCK
     """ADR-0005's instruction block. Overridable so the admin UI can tune the
     wording without a code change; it is always placed ahead of the persona."""

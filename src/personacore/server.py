@@ -48,6 +48,7 @@ from personacore import CONTRACT_VERSION, __version__
 from personacore.admin.authn import AuthContext, LiveAuth
 from personacore.agent.loop import (
     AgentLoop,
+    AgentLoopConfig,
 )
 from personacore.agent.personas import PersonaStore, ensure_default_persona
 from personacore.attachments import purge_orphaned as purge_orphaned_attachments
@@ -614,6 +615,10 @@ def create_app(appdata: Path | str | None = None) -> FastAPI:
         personas=personas,
         audit=audit,
         tools=tools_provider,
+        # `[memory] recall_limit` reaches the loop's own recall here; like the
+        # other loop tunables it is read at boot, and the Core settings screen
+        # says so beside the box.
+        config=AgentLoopConfig(memory_recall_limit=settings.memory.recall_limit),
         persona_llm=PersonaLLMRouter(roster, interactive_llm),
         memory=memory_provider,
     )

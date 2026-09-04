@@ -131,7 +131,7 @@ def retention_rows(
 
 MEMORY_LABELS: dict[str, str] = {
     "quiet_minutes": "Quiet minutes before a conversation is reviewed",
-    "recall_limit": "Memories recalled per turn",
+    "recall_limit": "Memories recalled per turn (applies after a restart)",
     "half_life_days": "Recency half-life (days)",
     "duplicate_threshold": "Duplicate threshold (0–1)",
     "short_term_days": "Short-term memories expire after (days) unless promoted",
