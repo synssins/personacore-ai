@@ -13,9 +13,10 @@ import shutil
 from collections.abc import Mapping, Sequence
 from functools import partial
 from typing import Any
+from urllib.parse import quote
 
-from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi import APIRouter, HTTPException, Request, status
+from fastapi.responses import HTMLResponse, RedirectResponse
 
 from personacore.agent.errors import PersonaError
 from personacore.agent.personas import (
@@ -147,6 +148,44 @@ def register(router: APIRouter, ctx: UIContext) -> None:
             "successor_slug": remaining[0] if remaining else None,
         }
 
+    async def _delete_confirm_context(request: Request, slug: str) -> dict[str, Any]:
+        """The three things both the dialog and the page say — computed once
+        so they cannot drift apart (see :func:`persona_delete_body`)."""
+        facts = await _delete_facts(request, slug)
+        return {
+            "title": PERSONA_DELETE_TITLE.format(name=facts["display_name"]),
+            "body": persona_delete_body(
+                display_name=facts["display_name"],
+                is_default=facts["is_default"],
+                keys=facts["keys"],
+                successor=facts["successor"],
+            ),
+            "confirm_label": PERSONA_DELETE_LABEL.format(name=facts["display_name"]),
+        }
+
+    @router.get(
+        "/personas/{slug}/delete/confirm",
+        response_class=HTMLResponse,
+        summary="Confirm deleting one persona (page)",
+    )
+    async def persona_delete_confirm_page(request: Request, slug: str) -> HTMLResponse:
+        """The no-script fallback (ADR-0020) for :func:`persona_delete_confirm`
+        below — the same three facts, as a real page with a real form, reached
+        by the same link the dialog's own `hx-get` decorates.
+        """
+        _persona_dir(slug)
+        return templates.TemplateResponse(
+            request=request,
+            name="confirm_page.html",
+            context={
+                **await ctx.shell(request, "personas"),
+                **await _delete_confirm_context(request, slug),
+                "action": f"/admin/personas/{slug}/delete",
+                "back_href": "/admin/personas",
+                "back_label": "← Personas",
+            },
+        )
+
     @router.get(
         "/personas/{slug}/delete/confirm/fragment",
         response_class=HTMLResponse,
@@ -156,19 +195,11 @@ def register(router: APIRouter, ctx: UIContext) -> None:
         """The confirmation that names what it breaks — see
         :func:`persona_delete_body`."""
         _persona_dir(slug)
-        facts = await _delete_facts(request, slug)
         return templates.TemplateResponse(
             request=request,
             name="fragments/confirm.html",
             context={
-                "title": PERSONA_DELETE_TITLE.format(name=facts["display_name"]),
-                "body": persona_delete_body(
-                    display_name=facts["display_name"],
-                    is_default=facts["is_default"],
-                    keys=facts["keys"],
-                    successor=facts["successor"],
-                ),
-                "confirm_label": PERSONA_DELETE_LABEL.format(name=facts["display_name"]),
+                **await _delete_confirm_context(request, slug),
                 "action": f"/admin/personas/{slug}/delete",
                 "target": "body",
             },
@@ -177,9 +208,10 @@ def register(router: APIRouter, ctx: UIContext) -> None:
     @router.post(
         "/personas/{slug}/delete",
         response_class=HTMLResponse,
+        response_model=None,
         summary="Delete one persona",
     )
-    async def persona_delete(request: Request, slug: str) -> HTMLResponse:
+    async def persona_delete(request: Request, slug: str) -> HTMLResponse | RedirectResponse:
         """Remove the folder, and repoint the default if that is what went.
 
         The repointing is the part that is not tidying. ``default_persona`` in
@@ -222,7 +254,21 @@ def register(router: APIRouter, ctx: UIContext) -> None:
             message += f" {named} now answer as the default persona."
         if facts["is_default"]:
             message += " " + await _repoint_default(request, facts)
-        return await _personas_page_with(request, {"kind": "saved", "message": message})
+
+        if request.headers.get("HX-Request"):
+            # Exactly as before this fix: the dialog's own form (target="body")
+            # expects the whole page back to swap in, so it still gets one.
+            return await _personas_page_with(request, {"kind": "saved", "message": message})
+
+        # No script ran this POST — a real browser follows a real redirect
+        # (spec §9's click-first). The address carries a slug and a flag,
+        # never the sentence above: `personas_page` rebuilds it from current
+        # state (`persona_delete_redirect_notice`), the same discipline
+        # chat's own bulk-delete redirect keeps for the same reason.
+        target = f"/admin/personas?deleted={quote(slug)}"
+        if facts["is_default"]:
+            target += "&was_default=1"
+        return RedirectResponse(target, status_code=status.HTTP_303_SEE_OTHER)
 
     async def _repoint_default(request: Request, facts: Mapping[str, Any]) -> str:
         """Move ``default_persona`` off a persona that no longer exists.

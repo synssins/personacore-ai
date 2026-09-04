@@ -1,12 +1,19 @@
 {# confirm.html — destructive confirmation, swapped into #modal (admin.js opens
    it on swap). Destructive actions look destructive and NAME what they break.
-   Context: title, body, confirm_label, action (hx-post URL), target (hx-target
-   for the result, e.g. "#plugin-list" or "body") #}
+   Context: title, body, confirm_label, action (POST URL), target (hx-target
+   for the result, e.g. "#plugin-list" or "body")
+
+   The confirm control is a `<form>`, not a bare button carrying `hx-post` —
+   the same control this dialog's page sibling (confirm_page.html, reached by
+   the `<a href>` this fragment's own opener now also carries) uses, so a
+   plain submit reaches the same POST route even here: a `<dialog>` this
+   fragment was swapped into can render with htmx half-loaded or a listener
+   that never attached, and a bare `hx-post` button does nothing when that
+   happens. `hx-post` still sits on the form for when htmx *is* running, so
+   the working case — an in-place swap with no navigation — is unchanged. #}
 {% from "_controls.html" import icon %}
 <div class="dialog" role="alertdialog" aria-labelledby="confirm-title" aria-describedby="confirm-body">
-  <h4 class="dialog-title danger" id="confirm-title">{{ title }}</h4>
-  {# e.g. "Uninstall homelink?" / "Revoke 'Kitchen display'?" / "Delete Vex?" #}
-  <p id="confirm-body" style="margin:0; font-size:14px; opacity:0.9">{{ body }}</p>
+  {% include "fragments/confirm_body.html" %}
   {# The body names consequences:
      · uninstall: "This removes the plugin and deletes its settings. If you
        only want it to stop, switch it off instead — that keeps everything."
@@ -17,10 +24,10 @@
        character the moment it is deleted." #}
   <div class="dialog-actions">
     <button type="button" class="btn btn-secondary" data-modal-close autofocus>Keep it</button>
-    <button type="button" class="btn btn-danger outlined"
-            hx-post="{{ action }}" hx-target="{{ target }}" hx-swap="outerHTML"
-            data-modal-close-after>
-      {{ confirm_label }}
-    </button>
+    <form method="post" action="{{ action }}"
+          hx-post="{{ action }}" hx-target="{{ target }}" hx-swap="outerHTML"
+          data-modal-close-after style="margin:0">
+      <button type="submit" class="btn btn-danger outlined">{{ confirm_label }}</button>
+    </form>
   </div>
 </div>

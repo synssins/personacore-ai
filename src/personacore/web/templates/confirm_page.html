@@ -1,0 +1,38 @@
+{# confirm_page.html — the no-script fallback for a destructive confirmation
+   that also opens as a dialog (fragments/confirm.html, opened by admin.js's
+   `showModal` on swap). ADR-0020: click-first, works with the script off.
+
+   Reached by the exact `<a href>` the dialog's own `hx-get` decorates on the
+   list — with the script not running (or a listener that never attached, or
+   the dialog failing to open for any other reason) the anchor just navigates
+   here instead of doing nothing, which is the failure this exists to close:
+   a tablet, one browser mode, and a delete button that did not work at all.
+
+   NO SCRIPT IS INVOLVED IN REACHING THIS PAGE OR IN WHAT IT DOES. The form
+   below carries no `hx-` attribute and turns `hx-boost` off explicitly — the
+   app shell sets `hx-boost="true"` on `<body>`, which would otherwise turn a
+   plain submit into an ajax request this page has no need to make. Submitting
+   it is always a real POST to `action`, the same route the dialog's own form
+   now also posts to (fragments/confirm.html) — one route, reached either way.
+
+   Context: title, body, confirm_label, action (the form's POST target),
+   back_href, back_label (Cancel link, e.g. "← Personas"), keep_label?
+   ("Keep it" unless given) #}
+{% extends "base.html" %}
+{% from "_controls.html" import icon %}
+{% block title %}{{ title }} — PersonaCore admin{% endblock %}
+{% block content %}
+<p style="margin:0"><a href="{{ back_href }}">{{ back_label }}</a></p>
+
+<section class="card elev-sm" role="alertdialog" aria-labelledby="confirm-title"
+         aria-describedby="confirm-body" style="max-width:60ch; gap:var(--space-3)">
+  {% include "fragments/confirm_body.html" %}
+
+  <form method="post" action="{{ action }}" hx-boost="false" class="hrow" style="gap:var(--space-3)">
+    {# The safe way out is a link, first in the tab order, so a stray Enter
+       does not delete or revoke something somebody only meant to look at. #}
+    <a class="btn btn-secondary" href="{{ back_href }}">{{ keep_label or "Keep it" }}</a>
+    <button type="submit" class="btn btn-danger outlined">{{ icon('trash') }} {{ confirm_label }}</button>
+  </form>
+</section>
+{% endblock %}

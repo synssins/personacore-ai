@@ -361,6 +361,44 @@ async def personas_page_with(
     )
 
 
+async def persona_delete_redirect_notice(
+    ctx: UIContext, request: Request, *, slug: str, was_default: bool
+) -> dict[str, str]:
+    """Rebuilds the sentence a no-script delete's redirect asked this page
+    load to show, from a slug and a flag its ``?deleted=``/``?was_default=``
+    carried — never from message text sitting in the address itself, the same
+    discipline ``chat._bulk_delete_note`` keeps for the same reason (browser
+    history, a proxy's access log, a screenshot of the address bar).
+
+    The slug is not new exposure — every persona control on this screen
+    already puts it in a URL (``/admin/personas/{slug}/edit`` and the like) —
+    so it travels as the marker, and the keys it once bound and the persona
+    that now stands in for it (if it was the default) are read back off
+    current state, exactly what :func:`screens.persona_delete.persona_delete`
+    itself just wrote.
+    """
+    default = default_persona(ctx)
+    keys, _note = await key_views(request)
+    explicit, _following = persona_bindings(keys, default)
+    bound = explicit.get(slug, [])
+    message = f"Deleted “{slug}”."
+    if bound:
+        named = ", ".join(f"“{key}”" for key in bound)
+        verb = "answers" if len(bound) == 1 else "answer"
+        message += f" {named} now {verb} as the default persona."
+    if was_default:
+        try:
+            successor_name = ctx.personas.load(default).display_name
+        except PersonaError:
+            successor_name = default
+        message += (
+            f" That was the default persona — “{successor_name}” is the default "
+            f"now, so every client pinned to “{GENERIC_MODEL_ID}” has changed "
+            "character."
+        )
+    return {"kind": "saved", "message": message}
+
+
 def register(router: APIRouter, ctx: UIContext) -> None:
     """Register the personas list and the change-the-default post."""
     templates = ctx.templates
@@ -371,18 +409,30 @@ def register(router: APIRouter, ctx: UIContext) -> None:
 
 
     @router.get("/personas", response_class=HTMLResponse, summary="Installed personas")
-    async def personas_page(request: Request) -> HTMLResponse:
+    async def personas_page(
+        request: Request, deleted: str | None = None, was_default: str | None = None
+    ) -> HTMLResponse:
         """Spec §5.5's personas, and ADR-0017's answer to "how does a client pick
         one?".
 
         The identifier is the part that had to be right: a persona is selected by
         name, so a screen that shows characters without showing their names shows
         an operator nothing they can act on.
+
+        ``?deleted=`` is where a no-script delete's redirect lands (spec §9's
+        click-first — :func:`screens.persona_delete.persona_delete`, see
+        :func:`persona_delete_redirect_notice`). Absent, this is an ordinary
+        visit and no notice is shown.
         """
+        save_result = None
+        if deleted:
+            save_result = await persona_delete_redirect_notice(
+                ctx, request, slug=deleted, was_default=was_default == "1"
+            )
         return templates.TemplateResponse(
             request=request,
             name="personas.html",
-            context=await _personas_context(request),
+            context=await _personas_context(request, save_result=save_result),
         )
 
     @router.post(

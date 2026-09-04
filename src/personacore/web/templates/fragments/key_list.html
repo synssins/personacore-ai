@@ -39,9 +39,9 @@
       {# readable profile summary — never raw JSON #}
       <p style="margin:3px 0 0; font-size:13px; color:var(--color-neutral-300)">{{ k.summary }}</p>
     </div>
-    <button type="button" class="btn btn-danger"
-            hx-get="/admin/keys/{{ k.id }}/revoke/confirm/fragment"
-            hx-target="#modal" hx-swap="innerHTML">revoke</button>
+    <a class="btn btn-danger" href="/admin/keys/{{ k.id }}/revoke/confirm"
+       hx-get="/admin/keys/{{ k.id }}/revoke/confirm/fragment"
+       hx-target="#modal" hx-swap="innerHTML">revoke</a>
   </div>
   {% endfor %}
 </div>

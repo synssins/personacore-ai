@@ -1,0 +1,10 @@
+{# confirm_body.html — the title and the sentence that names what a destructive
+   action breaks, shared by fragments/confirm.html (the dialog, swapped into
+   #modal) and confirm_page.html (the same confirmation as a page, for when
+   the script never ran). One include, so the wording cannot drift between the
+   two — the failure mode this exists to prevent is a page and a dialog that
+   quietly say different things.
+
+   Context: title, body #}
+<h4 class="dialog-title danger" id="confirm-title" style="margin:0">{{ title }}</h4>
+<p id="confirm-body" style="margin:0; font-size:14px; opacity:0.9">{{ body }}</p>

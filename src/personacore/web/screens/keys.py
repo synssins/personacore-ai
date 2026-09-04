@@ -15,7 +15,7 @@ from functools import partial
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, status
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 
 from personacore.admin.authn import require_admin
 from personacore.admin.models import (
@@ -510,6 +510,38 @@ def register(router: APIRouter, ctx: UIContext) -> None:
                 return row
         raise HTTPException(status.HTTP_404_NOT_FOUND, "There is no key with that id.")
 
+    def _key_confirm_context(row: Mapping[str, Any]) -> dict[str, Any]:
+        """The two lines both the dialog and the page say — see
+        :func:`key_revoke_body`."""
+        return {
+            "title": KEY_REVOKE_TITLE.format(note=f"“{row['note']}”"),
+            "body": key_revoke_body(note=row["note"], summary=row["summary"]),
+            "confirm_label": KEY_REVOKE_LABEL,
+        }
+
+    @router.get(
+        "/keys/{key_id}/revoke/confirm",
+        response_class=HTMLResponse,
+        summary="Confirm revoking one key (page)",
+    )
+    async def key_revoke_confirm_page(request: Request, key_id: str) -> HTMLResponse:
+        """The no-script fallback (ADR-0020) for :func:`key_revoke_confirm`
+        below — the same two facts, as a real page with a real form, reached
+        by the same link the dialog's own `hx-get` decorates.
+        """
+        row = await _key_or_404(request, key_id)
+        return templates.TemplateResponse(
+            request=request,
+            name="confirm_page.html",
+            context={
+                **await _shell(request, "keys"),
+                **_key_confirm_context(row),
+                "action": f"/admin/keys/{key_id}/revoke",
+                "back_href": "/admin/keys",
+                "back_label": "← Access keys",
+            },
+        )
+
     @router.get(
         "/keys/{key_id}/revoke/confirm/fragment",
         response_class=HTMLResponse,
@@ -522,9 +554,7 @@ def register(router: APIRouter, ctx: UIContext) -> None:
             request=request,
             name="fragments/confirm.html",
             context={
-                "title": KEY_REVOKE_TITLE.format(note=f"“{row['note']}”"),
-                "body": key_revoke_body(note=row["note"], summary=row["summary"]),
-                "confirm_label": KEY_REVOKE_LABEL,
+                **_key_confirm_context(row),
                 "action": f"/admin/keys/{key_id}/revoke",
                 "target": "#key-list",
             },
@@ -533,24 +563,41 @@ def register(router: APIRouter, ctx: UIContext) -> None:
     @router.post(
         "/keys/{key_id}/revoke",
         response_class=HTMLResponse,
+        response_model=None,
         summary="Revoke one access key",
     )
-    async def key_revoke(request: Request, key_id: str) -> HTMLResponse:
+    async def key_revoke(request: Request, key_id: str) -> HTMLResponse | RedirectResponse:
         """Revoke through the JSON API's own handler, then re-render the list.
 
         That handler answers 204 whether or not the key existed, on purpose (a
         404 would be an oracle for "does this id exist?"), so this screen has
         nothing to distinguish either — it shows the list as it now is, which is
         the state ``DELETE`` promised.
+
+        A plain form post — no script, spec §9's click-first — gets a real
+        redirect back to the list instead of the bare ``#key-list`` fragment
+        the dialog's own swap expects: a browser that submitted a form has
+        nowhere to put a fragment. A refusal is shown in place rather than
+        redirected to, the same as the dialog path shows it today.
         """
         _key_id_or_404(key_id)
         handler = api_handler(request.app, "revoke_key")
         if handler is None:
             raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, NO_KEY_OPERATIONS)
+        hx_request = bool(request.headers.get("HX-Request"))
         try:
             await handler(key_id=key_id, request=request)
         except HTTPException as exc:
-            context = await _key_list_context(request)
-            context["revoke_error"] = f"Not revoked: {_refusal(exc)}"
-            return _key_list_fragment(request, context)
-        return _key_list_fragment(request, await _key_list_context(request))
+            error = f"Not revoked: {_refusal(exc)}"
+            if hx_request:
+                context = await _key_list_context(request)
+                context["revoke_error"] = error
+                return _key_list_fragment(request, context)
+            page_context = await _keys_context(request)
+            page_context["revoke_error"] = error
+            return templates.TemplateResponse(
+                request=request, name="keys.html", context=page_context
+            )
+        if hx_request:
+            return _key_list_fragment(request, await _key_list_context(request))
+        return RedirectResponse("/admin/keys", status_code=status.HTTP_303_SEE_OTHER)

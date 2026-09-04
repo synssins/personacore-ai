@@ -11,9 +11,11 @@
    * **The identifier is on every card, copyable.** A persona is selected by
      name (ADR-0017), so a card that shows the character and not the string
      that selects it shows an operator nothing they can act on.
-   * **Deleting names what it breaks.** The `delete` button opens
-     fragments/confirm.html, whose body is written by
-     `routes.persona_delete_body` and names the keys affected — and, for the
+   * **Deleting names what it breaks.** The `delete` link opens
+     fragments/confirm.html as a dialog (`hx-get`, when the script is
+     running) and falls back to a real page at the same `href` when it is
+     not (confirm_page.html) — either way the body is written by
+     `routes.persona_delete_body` and names the keys affected, and, for the
      default, the silent identity swap.
 
    One control has no backend and is drawn disabled and marked `later`:
@@ -70,9 +72,9 @@
       <button class="btn btn-ghost" hx-post="/admin/personas/{{ p.slug }}/default" hx-target="body">set as default</button>
       {% endif %}
       <a class="btn btn-ghost" href="/admin/personas/{{ p.slug }}/edit">edit prompt</a>
-      <button type="button" class="btn btn-danger"
-              hx-get="/admin/personas/{{ p.slug }}/delete/confirm/fragment"
-              hx-target="#modal" hx-swap="innerHTML">delete</button>
+      <a class="btn btn-danger" href="/admin/personas/{{ p.slug }}/delete/confirm"
+         hx-get="/admin/personas/{{ p.slug }}/delete/confirm/fragment"
+         hx-target="#modal" hx-swap="innerHTML">delete</a>
     </div>
   </div>
 
