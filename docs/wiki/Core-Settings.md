@@ -162,6 +162,20 @@ The image generator: a service that takes a prompt and hands back a picture, ans
 | `read_timeout_seconds` | float | `600.0` | **Wait for the picture.** A generator sends nothing until the render is finished, so this one read has to outlast the whole render. |
 | `total_timeout_seconds` | float | `900.0` | **Ceiling.** The limit on the entire request, and the clock that does not reset. It catches a generator that has stopped, which the wait cannot. |
 
+## `[memory]`
+
+Household-wide defaults for [memory](Memory) — recall ranking, review timing, and how long an unpromoted memory survives. Whether a given persona uses memory at all is a separate switch, on the persona itself (`persona.toml`'s `memory` key); this section only shapes how memory behaves where it's on.
+
+| Key | Type | Default | Range | Notes |
+|---|---|---|---|---|
+| `quiet_minutes` | int | `10` | 1–1440 | How long a conversation sits with no new messages before the review pass reads it and asks the triage model what's worth keeping. |
+| `recall_limit` | int | `8` | 1–50 | How many memories come back on a single recall — the persona's own plus the household's long-term ones, combined. |
+| `half_life_days` | float | `30.0` | > 0 | Recency half-life for recall ranking: a memory unused for this many days scores half of one used today. |
+| `duplicate_threshold` | float | `0.92` | 0–1 | How close a new memory has to be, by meaning, to an existing one before it's treated as the same fact and updates that row instead of adding a new one. |
+| `short_term_days` | int | `60` | ≥ 1 | A short-term memory with no activity for this many days is purged. A promoted, long-term memory never expires and ignores this. |
+
+A value outside its range is a validation error naming the key, not a clamp, matching every other section here.
+
 ## The starter file
 
 On first run the core writes a commented `core.toml` containing `default_persona`, an `[llm.interactive]` section with timeouts, a `[bus]` section, `[retention] default_days = 30`, and `[auth] method = "builtin"`. It exists so an operator has a file to find and read; without it the settings would exist only as defaults buried in code. It is never rewritten over an existing file.

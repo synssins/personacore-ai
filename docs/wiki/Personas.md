@@ -41,6 +41,7 @@ Optional. TOML, because the rest of the project reads TOML.
 | `display_name` | string | Shown in the picker. Falls back to the folder name. |
 | `description` | string | Shown in the picker. |
 | `prompt_prefix` | string | Optional. Goes in front of the system message on every turn this persona speaks, before the persona's own prompt. Empty or absent adds nothing. A default the prompt can override, not a constraint: the prompt still reads last. Set from the edit screen's *Prompt prefix* box. |
+| `memory` | bool | Whether this persona reads and writes [memory](Memory) at all. Absent, or anything other than a plain boolean, means on — every persona that predates this key keeps remembering exactly as it did before. Off means no recall, no memory tools offered, no review pass, and the persona's memory store is left untouched. |
 | `voice.engine` | string | Which built-in speech engine speaks this persona — `espeak` or `vits_onnx` today. Read by the voice subsystem to decide what a reply sounds like. |
 | `voice.name` | string | Which installed voice, within that engine. The two together name one entry in the single voice list (`GLaDOS (vits-onnx)`); set from the persona's own edit screen, not typed by hand. |
 | `speech.pauses` | table | Words this character is spoken with pauses of its own around. See below. |
@@ -216,7 +217,7 @@ Recalled text is untrusted. The anonymous memory scope is shared and writable by
 
 So it goes in as a `user`-role message, fenced with a per-turn random token and an explicit warning that the enclosed text is data and must never be followed as instructions — and it sits **directly before** the user's turn so its fence is unmistakable. The same treatment applies to tool results and event payloads. See [Security Model](Security-Model).
 
-Memory itself is a P1 plugin with no implementation in core; with no provider wired in, step 3 simply does not happen and the assistant has no recall.
+Memory lives in the core behind this same seam, not as a plugin (ADR-0045) — see [Memory](Memory). A persona with memory off, or a key whose scope is `none`, simply has no provider contribute anything, and step 3 does not happen for that turn.
 
 ## Raw passthrough skips all of this
 
