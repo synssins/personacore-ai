@@ -1,0 +1,66 @@
+{# memory.html — the Memory screen (contract memory.md §8).
+   Context: help_line (str), filters {person: [str], persona: str, q: str},
+     filters_qs (str), people_choices ([{id, label, checked}]),
+     people_selected_count (int), persona_choices ([str]),
+     unavailable, unavailable_message, long_term, groups, total_people,
+     total_personas, total_shown, nothing_to_show — everything
+     fragments/memory_list.html needs, since this page renders it inline too.
+
+   The filter form is a plain GET (works with scripts off) that also carries
+   `hx-get`/`hx-trigger="change"` so a tick or a pick re-renders #memory-list
+   without a full page reload when scripts are on (contract §8: "ticking a
+   box re-renders the list ... with scripts off, the dropdown is a plain
+   <details> list of checkboxes and an Apply button submits the same GET"). #}
+{% extends "base.html" %}
+{% from "_controls.html" import icon %}
+{% block title %}Memory — PersonaCore admin{% endblock %}
+{% block content %}
+<header style="display:flex; flex-direction:column; gap:6px">
+  <h3 style="margin:0">Memory</h3>
+  <p class="text-muted" style="margin:0; font-size:13px; max-width:70ch">{{ help_line }}</p>
+</header>
+
+<section class="card elev-sm" style="gap:8.4px; overflow:visible">
+  <form class="hrow" style="gap:8.4px; align-items:flex-end; flex-wrap:wrap" method="get" action="/admin/memory"
+        hx-get="/admin/memory/list" hx-trigger="change" hx-include="closest form"
+        hx-target="#memory-list" hx-swap="outerHTML">
+    <div class="field dd" style="flex:0 0 260px">
+      <label>People</label>
+      <details>
+        <summary class="input hrow" style="justify-content:space-between; cursor:pointer; list-style:none">
+          <span>{{ people_selected_count }} selected{% if people_selected_count == 0 %} (everyone){% endif %}</span>
+          {{ icon('down') }}
+        </summary>
+        <div class="dd-menu">
+          {% for choice in people_choices %}
+          <label>
+            <input type="checkbox" name="person" value="{{ choice.id }}" {% if choice.checked %}checked{% endif %}>
+            <span class="chk">{{ icon('check') }}</span>{{ choice.label }}
+          </label>
+          {% else %}
+          <p class="field-help" style="margin:0">Nobody has an account on this core yet.</p>
+          {% endfor %}
+          <p class="meta" style="margin:4px 0 0">Ticking updates the list. With scripts off, press Apply.</p>
+        </div>
+      </details>
+    </div>
+    <div class="field" style="flex:0 0 220px">
+      <label for="memory-persona">Persona</label>
+      <select class="input" id="memory-persona" name="persona">
+        <option value="" {% if not filters.persona %}selected{% endif %}>All personas</option>
+        {% for name in persona_choices %}
+        <option value="{{ name }}" {% if filters.persona == name %}selected{% endif %}>{{ name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="field grow" style="min-width:220px">
+      <label for="memory-q">Search</label>
+      <input class="input" type="text" id="memory-q" name="q" value="{{ filters.q }}"
+             placeholder="Words in a memory, or a meaning close to one">
+    </div>
+    <button type="submit" class="btn btn-primary">{{ icon('search') }} Apply</button>
+  </form>
+</section>
+
+{% include "fragments/memory_list.html" %}
+{% endblock %}

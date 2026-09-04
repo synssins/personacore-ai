@@ -346,3 +346,29 @@ details.log-entry > summary::-webkit-details-marker { display: none; }
 @media (hover: none) {
   .attach-image-frame .attach-download { opacity: 1; }
 }
+
+/* ── memory screen (memory.py, memory.html, fragments/memory_*.html) ──
+   Two one-tap controls not used anywhere else — colour is never the only
+   signal, each carries a title and an aria-label in the markup — and the
+   people-filter dropdown, a native <details>/<summary> so it opens and
+   closes with no script (ADR-0020). Values lifted verbatim from the
+   approved design canvas (design-memory/Main.dc.html).
+   The `:checked` rules below are not in that canvas — the canvas is a
+   static mockup with one checkbox hard-coded "on" to show the state; a real
+   <input type="checkbox"> has to render that state itself, so it is kept
+   visually present but transparent, stacked on its `.chk` sibling, and the
+   sibling combinator draws `.chk.on`'s exact appearance when it is ticked. */
+.mem-ok { color: var(--color-ok); border: 1px solid color-mix(in srgb, var(--color-ok) 45%, transparent); border-radius: 50%; }
+.mem-ok:hover { background: color-mix(in srgb, var(--color-ok) 12%, transparent); }
+.mem-x { color: var(--color-danger); border: 1px solid color-mix(in srgb, var(--color-danger) 45%, transparent); border-radius: 50%; }
+.mem-x:hover { background: color-mix(in srgb, var(--color-danger) 12%, transparent); }
+.dd { position: relative; }
+.dd summary { list-style: none; }
+.dd summary::-webkit-details-marker { display: none; }
+.dd-menu { position: absolute; top: 40px; left: 0; z-index: 2; min-width: 240px; padding: var(--space-3); border-radius: var(--radius-md); background: var(--color-surface); box-shadow: 0 0 0 1px var(--color-neutral-700), 0 6px 18px rgba(0,0,0,0.55); display: flex; flex-direction: column; gap: 6px; }
+.dd-menu label { position: relative; display: flex; align-items: center; gap: 10px; font-size: 14px; min-height: 32px; cursor: pointer; }
+.dd-menu input[type="checkbox"] { position: absolute; left: 0; width: 16px; height: 16px; margin: 0; opacity: 0; cursor: pointer; }
+.chk { width: 16px; height: 16px; border-radius: 4px; border: 1px solid var(--color-neutral-500); display: inline-flex; align-items: center; justify-content: center; flex: none; }
+.chk.on, .dd-menu input[type="checkbox"]:checked + .chk { border-color: var(--color-accent); background: color-mix(in srgb, var(--color-accent) 25%, transparent); color: var(--color-accent-100); }
+.chk svg { opacity: 0; }
+.chk.on svg, .dd-menu input[type="checkbox"]:checked + .chk svg { opacity: 1; }

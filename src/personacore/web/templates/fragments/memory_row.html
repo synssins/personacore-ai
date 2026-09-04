@@ -1,0 +1,44 @@
+{# memory_row.html — one memory (contract memory.md §8's row table).
+   Context (from the enclosing loop): row {id, text, created, last_used,
+     used, source, model, edited, truncated, promoted, review_url},
+     show_promote (bool), filters_qs (str, no leading '?').
+
+   Both taps below are real <form>s, deliberately, not scripted buttons: with
+   scripts off a bare button does nothing, and this screen has to work that
+   way (ADR-0020). `hx-post` is the enhancement — htmx intercepts the submit
+   and swaps `#memory-list` in place; without it the form's own `method` and
+   `action` do the same POST and the route answers with a 303 back to the
+   page instead (see `memory.py`'s `_after_change`). #}
+{% from "_controls.html" import icon %}
+<div class="row hrow" style="gap:12px; align-items:flex-start">
+  <div class="grow" style="display:flex; flex-direction:column; gap:3px">
+    <span style="font-size:14.5px">{{ row.text }}</span>
+    <span class="meta">Kept {{ row.created }}
+      {%- if row.last_used %} · last used {{ row.last_used }} · used {{ row.used }} time{{ 's' if row.used != 1 else '' }}
+      {%- else %} · never used{% endif -%}
+      {{ ' · ' }}{{ row.source }}{% if row.model %} · {{ row.model }}{% endif -%}
+      {%- if row.promoted %} · promoted {{ row.promoted }}{% endif -%}
+      {%- if row.edited %} · <span class="tag tag-neutral" style="vertical-align:middle" title="edited by {{ row.edited }}">edited</span>{% endif -%}
+      {%- if row.truncated %} · <span class="tag tag-neutral" style="vertical-align:middle">truncated</span>{% endif -%}
+      {%- if row.review_url %} · <a href="{{ row.review_url }}">conversation</a>
+      {%- else %} · <span class="text-muted">conversation not viewable here</span>{% endif -%}
+    </span>
+  </div>
+  <div class="hrow" style="gap:6px; flex:none">
+    <a class="btn btn-ghost" href="/admin/memory/{{ row.id }}/edit{% if filters_qs %}?{{ filters_qs }}{% endif %}" style="font-size:13px">edit</a>
+    {% if show_promote %}
+    <form method="post" action="/admin/memory/{{ row.id }}/promote{% if filters_qs %}?{{ filters_qs }}{% endif %}" style="display:contents">
+      <button type="submit" class="btn btn-icon mem-ok"
+              hx-post="/admin/memory/{{ row.id }}/promote{% if filters_qs %}?{{ filters_qs }}{% endif %}"
+              hx-target="#memory-list" hx-swap="outerHTML"
+              title="Promote to long term" aria-label="Promote {{ row.text }} to long term">{{ icon('check') }}</button>
+    </form>
+    {% endif %}
+    <form method="post" action="/admin/memory/{{ row.id }}/delete{% if filters_qs %}?{{ filters_qs }}{% endif %}" style="display:contents">
+      <button type="submit" class="btn btn-icon mem-x"
+              hx-post="/admin/memory/{{ row.id }}/delete{% if filters_qs %}?{{ filters_qs }}{% endif %}"
+              hx-target="#memory-list" hx-swap="outerHTML"
+              title="Delete" aria-label="Delete {{ row.text }}">{{ icon('x') }}</button>
+    </form>
+  </div>
+</div>

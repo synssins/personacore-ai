@@ -22,7 +22,8 @@ lives elsewhere and is reached over the network.
 
 **P0 complete and published.** The container runs, holds a conversation, calls
 tools from installed plugins, and is deployable from
-`ghcr.io/synssins/personacore-ai`. P1 — voice, memory, mood — has not started.
+`ghcr.io/synssins/personacore-ai`. P1 — voice, mood — has not started; memory has
+landed (see table).
 
 | Piece | State |
 |---|---|
@@ -38,7 +39,9 @@ tools from installed plugins, and is deployable from
 | Admin UI — access keys and personas screens | not started (API-only) |
 | Plugin install from a zip, per-plugin settings form | done |
 | Dockerfile, Compose, CI, GHCR release | done |
-| Voice, memory, mood (P1) | not started |
+| Voice, mood (P1) | not started |
+| Memory (P1) — store, embeddings, recall, review pass, per-persona switch | done |
+| Admin UI — Memory screen | done |
 
 ### Known gaps
 

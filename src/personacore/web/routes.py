@@ -95,6 +95,7 @@ from personacore.web.screens import health as health_screen
 from personacore.web.screens import hearing as hearing_screen
 from personacore.web.screens import keys as keys_screen
 from personacore.web.screens import logs as logs_screen
+from personacore.web.screens import memory as memory_screen
 from personacore.web.screens import models as models_screen
 from personacore.web.screens import persona_delete as persona_delete_screen
 from personacore.web.screens import persona_edit as persona_edit_screen
@@ -629,6 +630,11 @@ def create_admin_ui_router(
     personas_screen.register(router, ctx)
     persona_edit_screen.register(router, ctx)
     persona_delete_screen.register(router, ctx)
+    # What each character has kept about each person, and the household's
+    # long-term store (working/contracts/memory.md §8). Deliberately absent
+    # from `MEMBER_PATHS`/`MEMBER_PREFIXES`, the same reason `review_screen`
+    # is: the router's default-deny above is the whole of its authorisation.
+    memory_screen.register(router, ctx)
     keys_screen.register(router, ctx)
     logs_screen.register(router, ctx)
     # Per-user conversation review (the chat-room contract, section 7.2).
