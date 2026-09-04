@@ -35,6 +35,7 @@ from personacore.audit.models import Surface
 from personacore.config.appdata import AppdataLayout
 from personacore.config.hearing import HearingSettings
 from personacore.config.image import ImageSettings
+from personacore.config.memory import MemorySettings
 from personacore.config.voice import VoiceSettings
 from personacore.config.wyoming import WyomingSettings
 from personacore.contracts.manifest import RiskLevel
@@ -596,6 +597,12 @@ class CoreSettings(BaseModel):
     address to guess for a service most cores will never run. An image
     conversation asked to answer with nothing configured says so in the
     thread; it never falls back to anything and never crashes.
+    """
+
+    memory: MemorySettings = Field(default_factory=MemorySettings)
+    """``working/contracts/memory.md`` §9 — the quiet interval, recall shape
+    and retention window memory uses household-wide. Per-persona on/off is
+    not here: it is ``persona.toml``'s own ``memory`` key.
     """
 
     def llm_for(self, role: LLMRole | str) -> LLMSettings:

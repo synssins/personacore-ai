@@ -15,7 +15,8 @@
      bus {host, port, client_id, username, password_set,
        password_secret, password_secret_broken},
      retention: [{surface, label, value, error?}], purge {ok, schedule,
-     last_success, last_error, consecutive_failures, can_retry}}, save_result?
+     last_success, last_error, consecutive_failures, can_retry},
+     memory: [{key, label, value}]}, save_result?
 
    Fields whose setting does not exist in CoreSettings — instance name, log
    level, and both security toggles — are disabled and marked `later` rather
@@ -293,6 +294,23 @@
       {% if not core.purge.can_retry %}<span class="later">later</span>{% endif %}
       <span class="htmx-indicator meta" id="purging">{{ icon('spinner') }} purging…</span>
       {% endif %}
+    </div>
+  </section>
+
+  {# Memory — [memory] (memory contract §9). Household-wide shape only; the
+     per-persona on/off switch is its own checkbox on that persona's edit
+     screen, not here. #}
+  <section class="stack" style="gap:var(--space-4)">
+    <h6 class="text-muted" style="margin:0">Memory</h6>
+    <p class="text-muted" style="margin:0; font-size:13px; max-width:56ch">How much a persona remembers, and for how long. Turning memory off for one persona is on that persona's own edit screen.</p>
+    <div style="display:grid; grid-template-columns:repeat(3, 1fr); gap:var(--space-3); max-width:640px">
+      {% for r in core.memory %}
+      <div class="field">
+        <label for="mem-{{ r.key }}">{{ r.label }}</label>
+        <input class="input" type="text" inputmode="decimal"
+               id="mem-{{ r.key }}" name="memory_{{ r.key }}" value="{{ r.value }}">
+      </div>
+      {% endfor %}
     </div>
   </section>
 

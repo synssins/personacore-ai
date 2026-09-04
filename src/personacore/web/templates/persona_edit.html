@@ -2,9 +2,10 @@
    GET /admin/personas/new (persona=None) and GET /admin/personas/{slug}/edit.
 
    Context: persona? {slug, name, prompt, voice, voice_value, pauses, prefix,
-     connection_mode, connection_address, connection_model,
+     memory, connection_mode, connection_address, connection_model,
      connection_key_secret, problem?},
      identifier_note, model_field_note, max_prompt_chars, max_prefix_chars, save_result?,
+     memory_label, memory_help,
      connection_label, connection_help, connection_default_label,
      connection_custom_label, connection_key, connection_mode_default,
      connection_mode_custom, max_connection_address_chars,
@@ -74,6 +75,20 @@
               maxlength="{{ max_prefix_chars }}" aria-describedby="p-prefix-help"
               placeholder="Answer in a warm, unhurried tone.">{{ persona.prefix if persona else '' }}</textarea>
     <p class="field-help" id="p-prefix-help">Goes in front of everything this character is told, on every turn. Leave it empty and nothing is added.</p>
+  </div>
+
+  {# MEMORY (memory contract §9). On by default. Always on the form, so a
+     save always knows the intended state — there is no third "said nothing"
+     state to preserve here, unlike the checkbox switches on Core settings. #}
+  <div class="hrow" style="align-items:flex-start; gap:12px">
+    <input type="checkbox" id="p-memory" name="memory" value="1"
+           style="margin-top:3px"
+           {% if not persona or persona.memory %}checked{% endif %}
+           aria-describedby="p-memory-help">
+    <div>
+      <label for="p-memory" style="font-size:14px">{{ memory_label }}</label>
+      <p class="field-help" id="p-memory-help" style="margin:2px 0 0">{{ memory_help }}</p>
+    </div>
   </div>
 
   {# THIS PERSONA'S MODEL (ADR-0036). Two radios: the system's connection, or

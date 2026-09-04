@@ -129,6 +129,65 @@ def retention_rows(
     return rows
 
 
+MEMORY_LABELS: dict[str, str] = {
+    "quiet_minutes": "Quiet minutes before a conversation is reviewed",
+    "recall_limit": "Memories recalled per turn",
+    "half_life_days": "Recency half-life (days)",
+    "duplicate_threshold": "Duplicate threshold (0–1)",
+    "short_term_days": "Short-term memories expire after (days) unless promoted",
+}
+"""``working/contracts/memory.md`` §9 — the five ``[memory]`` settings, in the
+order the screen shows them. Fixed rather than built from what is on disk,
+unlike :data:`RETENTION_LABELS`'s per-surface table: there is no open-ended
+key here, so the row list can never grow one nobody typed."""
+
+MEMORY_FIELD_PREFIX = "memory_"
+
+
+def memory_rows(
+    memory: Any, *, typed: Mapping[str, str] | None = None
+) -> list[dict[str, Any]]:
+    """One input per ``[memory]`` setting, with the operator's input preserved.
+
+    Same shape and the same reason as :func:`retention_rows`: ``typed``
+    outranks what is on disk so a refused save re-renders exactly what was
+    submitted rather than silently reverting it.
+    """
+    section = memory if isinstance(memory, dict) else {}
+    typed = typed or {}
+    rows: list[dict[str, Any]] = []
+    for key, field_label in MEMORY_LABELS.items():
+        value: Any = typed[key] if key in typed else section.get(key, "")
+        rows.append({"key": key, "label": field_label, "value": "" if value is None else value})
+    return rows
+
+
+def memory_payload_and_typed(
+    settings: Mapping[str, Any], form: Mapping[str, Any] | Any
+) -> tuple[dict[str, Any] | None, dict[str, str]]:
+    """The submitted ``[memory]`` fields as a section to merge into the save
+    payload, plus what was typed for a refused save to re-render.
+
+    Kept beside this screen rather than in ``core_form.py``'s own
+    ``core_payload`` — this task's file list does not touch that module —
+    but the behaviour matches retention's exactly: an empty box means
+    "unset", so the field is left out of the section and the settings
+    model's own default takes over. Passed through as **text**, unparsed,
+    for the same reason retention and the Wyoming port are: the settings
+    model already bounds each of these and says so in plain English, and a
+    second opinion here would be a second place for that sentence to come
+    from and to drift.
+    """
+    memory: dict[str, Any] = {}
+    typed: dict[str, str] = {}
+    for key in MEMORY_LABELS:
+        raw = str(form.get(f"{MEMORY_FIELD_PREFIX}{key}") or "").strip()
+        typed[key] = raw
+        if raw:
+            memory[key] = raw
+    return (memory or None), typed
+
+
 def _and_list(parts: list[str]) -> str:
     """``a``, ``a and b``, ``a, b and c`` — a sentence, not a comma-joined list."""
     if len(parts) == 1:
@@ -305,6 +364,7 @@ def register(router: APIRouter, ctx: UIContext) -> None:
         *,
         typed: Mapping[str, str] | None = None,
         retention_typed: Mapping[str, str] | None = None,
+        memory_typed: Mapping[str, str] | None = None,
         errors: Mapping[str, str] | None = None,
     ) -> dict[str, Any]:
         """The design's ``core`` object, built from the settings that exist.
@@ -446,6 +506,7 @@ def register(router: APIRouter, ctx: UIContext) -> None:
             "retention": retention_rows(
                 settings.get("retention"), typed=retention_typed, errors=errors
             ),
+            "memory": memory_rows(settings.get("memory"), typed=memory_typed),
             "purge": {
                 "ok": failures == 0,
                 "schedule": purge_schedule(),
@@ -527,6 +588,11 @@ def register(router: APIRouter, ctx: UIContext) -> None:
 
         form = await request.form()
         payload, typed, retention_typed = core_payload(current, form)
+        memory_section, memory_typed = memory_payload_and_typed(current.settings, form)
+        if memory_section is not None:
+            payload["memory"] = memory_section
+        else:
+            payload.pop("memory", None)
         try:
             # The request, not just the payload: `[auth] method` is on this
             # form, and the API's save path asks the door named there whether
@@ -542,6 +608,7 @@ def register(router: APIRouter, ctx: UIContext) -> None:
                 current,
                 typed=typed,
                 retention_typed=retention_typed,
+                memory_typed=memory_typed,
                 errors=errors,
                 save_result={"kind": "invalid", "message": message},
             )
@@ -572,7 +639,7 @@ def register(router: APIRouter, ctx: UIContext) -> None:
                     request.app,
                     enabled=bool(_section(saved.settings, "wyoming").get("enabled")),
                 )
-            applied = ["The event bus", "the retention windows"]
+            applied = ["The event bus", "the retention windows", "the memory settings"]
             if wyoming_changed:
                 applied.append("the Wyoming server")
             if method_changed:

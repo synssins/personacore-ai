@@ -105,6 +105,18 @@ PERSONA_PREFIX_TOO_LONG = (
     "than a tone adjustment should ever be. Nothing was written."
 )
 
+PERSONA_MEMORY_LABEL = "Memory"
+
+PERSONA_MEMORY_HELP = (
+    "This character remembers what people tell it, and what the review pass "
+    "finds worth keeping. Off means no memory is read or written for it; "
+    "anything already kept is left alone."
+)
+"""Memory contract §9 — the persona switch. The checkbox is always on the
+form, checked by default, so a save always knows the intended state: ticked
+removes the ``memory`` key (which already means on), unticked writes
+``memory = false``."""
+
 MAX_PAUSES_CHARS = 8_000
 """Ceiling on the speech-pauses box. A hundred rules of ``word = 120, 180`` is
 a couple of thousand characters; this is roomy against that and still a bound
@@ -388,6 +400,8 @@ def register(router: APIRouter, ctx: UIContext) -> None:
             "max_connection_model_chars": MAX_CONNECTION_MODEL_CHARS,
             "max_prompt_chars": MAX_PROMPT_CHARS,
             "max_prefix_chars": MAX_PREFIX_CHARS,
+            "memory_label": PERSONA_MEMORY_LABEL,
+            "memory_help": PERSONA_MEMORY_HELP,
             "pauses_label": PERSONA_PAUSES_LABEL,
             "pauses_help": PERSONA_PAUSES_HELP,
             "max_pauses_chars": MAX_PAUSES_CHARS,
@@ -439,6 +453,7 @@ def register(router: APIRouter, ctx: UIContext) -> None:
         prompt: str | None = None,
         pauses: str | None = None,
         prefix: str | None = None,
+        memory: bool | None = None,
     ) -> dict[str, Any]:
         """One persona in the shape the edit form renders.
 
@@ -469,6 +484,11 @@ def register(router: APIRouter, ctx: UIContext) -> None:
                 # A persona that will not load has no readable prefix either,
                 # so the box is empty rather than wrong, for the same reason.
                 "prefix": prefix if prefix is not None else "",
+                # A persona whose metadata will not parse has no readable
+                # switch either. Defaulting to on matches what the switch
+                # itself means when it cannot be read at all (absent or
+                # broken both mean on, per `Persona.memory_enabled`).
+                "memory": memory if memory is not None else True,
                 # Read off the file, not through the store that just refused it:
                 # the broken thing may be this very section, and the form has to
                 # show what is there or the next save would silently drop it.
@@ -483,6 +503,7 @@ def register(router: APIRouter, ctx: UIContext) -> None:
             "voice_value": voice_value(loaded.voice_engine, loaded.voice_name),
             "pauses": pauses if pauses is not None else pause_lines(loaded.speech_pauses),
             "prefix": prefix if prefix is not None else loaded.prompt_prefix,
+            "memory": memory if memory is not None else loaded.memory_enabled,
             **connection_fields(loaded.connection),
             "problem": None,
         }
@@ -495,6 +516,7 @@ def register(router: APIRouter, ctx: UIContext) -> None:
         voice: str | None = None,
         pauses: tuple[SpeechPause, ...] | None = None,
         prefix: str | None = None,
+        memory: bool = True,
         connection: LLMSettings | None = None,
         own_connection: bool = False,
         key_secret: str | None = None,
@@ -562,6 +584,15 @@ def register(router: APIRouter, ctx: UIContext) -> None:
                 existing["prompt_prefix"] = stripped
             else:
                 existing.pop("prompt_prefix", None)
+        # MEMORY (memory contract §9). The checkbox is always on the form, so
+        # every save knows the intended state. Checked writes nothing —
+        # absence already means on, the same as every persona before this box
+        # existed — and unchecked writes `memory = false` explicitly. There is
+        # no "leave alone" state to preserve here.
+        if memory:
+            existing.pop("memory", None)
+        else:
+            existing["memory"] = False
         # The connection, written as the three fields the form has controls for
         # and nothing else; whatever else is in the section survives a save that
         # said nothing about it, because `persona.toml` is the operator's file.
@@ -608,6 +639,7 @@ def register(router: APIRouter, ctx: UIContext) -> None:
         #: — and any traceback or log line that carries it — shows asterisks.
         key: KeySubmission
         typed_prefix: str
+        memory: bool
         refusal: str | None
 
     class _KeyPlan(NamedTuple):
@@ -675,6 +707,11 @@ def register(router: APIRouter, ctx: UIContext) -> None:
         prompt = str(form.get("prompt") or "")
         typed_pauses = str(form.get("pauses") or "")[:MAX_PAUSES_CHARS]
         typed_prefix = str(form.get("prompt_prefix") or "")
+        # A checkbox that is absent from the POST means unchecked — there is
+        # no marker field here, unlike the Core settings switches: this form
+        # always renders the box, so its presence or absence already says
+        # everything a save needs to know.
+        memory_checked = bool(str(form.get("memory") or ""))
         connection = read_connection_form(form)
         key = read_key_form(form)
         raw_voice = str(form.get("voice") or "").strip()
@@ -686,7 +723,7 @@ def register(router: APIRouter, ctx: UIContext) -> None:
             except PackageRejected:
                 return _Submission(
                     display_name, prompt, "", typed_pauses, (), connection, key,
-                    typed_prefix, PERSONA_VOICE_UNKNOWN,
+                    typed_prefix, memory_checked, PERSONA_VOICE_UNKNOWN,
                 )
         # Parsed before the other checks so that a refusal from this box is
         # reported whichever else is also wrong; it says nothing about the
@@ -695,6 +732,7 @@ def register(router: APIRouter, ctx: UIContext) -> None:
         made = partial(
             _Submission,
             display_name, prompt, voice, typed_pauses, pauses, connection, key, typed_prefix,
+            memory_checked,
         )
         if not display_name:
             return made(PERSONA_NAME_REQUIRED)
@@ -746,6 +784,7 @@ def register(router: APIRouter, ctx: UIContext) -> None:
             "voice_value": voice,
             "pauses": sub.typed_pauses,
             "prefix": sub.typed_prefix,
+            "memory": sub.memory,
             "connection_mode": sub.connection.mode,
             "connection_address": sub.connection.typed_address,
             "connection_model": sub.connection.typed_model,
@@ -784,6 +823,7 @@ def register(router: APIRouter, ctx: UIContext) -> None:
             voice=voice,
             pauses=sub.pauses,
             prefix=sub.typed_prefix,
+            memory=sub.memory,
             connection=sub.connection.connection,
             own_connection=sub.connection.mode == CONNECTION_MODE_CUSTOM,
             key_secret=plan.secret_name,
@@ -833,6 +873,7 @@ def register(router: APIRouter, ctx: UIContext) -> None:
                 prompt=sub.prompt,
                 pauses=sub.typed_pauses,
                 prefix=sub.typed_prefix,
+                memory=sub.memory,
             )
             # The boxes keep what was typed; the key state stays whatever
             # `_persona_form` read off the file, because nothing was written.
@@ -856,6 +897,7 @@ def register(router: APIRouter, ctx: UIContext) -> None:
             typed["voice_value"] = sub.voice
             typed["pauses"] = sub.typed_pauses
             typed["prefix"] = sub.typed_prefix
+            typed["memory"] = sub.memory
             return await _edit_page(
                 request, typed, {"kind": "invalid", "message": plan.refusal}
             )
@@ -866,6 +908,7 @@ def register(router: APIRouter, ctx: UIContext) -> None:
             voice=sub.voice,
             pauses=sub.pauses,
             prefix=sub.typed_prefix,
+            memory=sub.memory,
             connection=sub.connection.connection,
             own_connection=sub.connection.mode == CONNECTION_MODE_CUSTOM,
             key_secret=plan.secret_name,

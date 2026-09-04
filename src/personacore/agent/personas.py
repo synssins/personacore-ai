@@ -448,6 +448,13 @@ class Persona(BaseModel):
     override, never a constraint on it: see ``AgentLoop._system_prompt`` for
     where it sits and why. Set by an administrator on a screen, so it is
     configuration and is not fenced."""
+    memory_enabled: bool = True
+    """Whether this persona reads or writes memory at all (memory contract
+    §9). Read from ``persona.toml``'s top-level ``memory`` key. Absent means
+    on, matching every persona that existed before this key did; anything
+    other than a plain boolean also means on and never raises — the same
+    rule ``prompt_prefix`` follows, for the same reason: a broken value
+    costs the switch, not the persona."""
     description: str | None = None
     voice_engine: str | None = None
     voice_name: str | None = None
@@ -630,6 +637,11 @@ class PersonaStore:
         raw_prefix = metadata.get("prompt_prefix")
         # A broken value costs the prefix, not the persona.
         prompt_prefix = raw_prefix.strip() if isinstance(raw_prefix, str) else ""
+        raw_memory = metadata.get("memory")
+        # Absent or broken both mean on — a persona that predates this key,
+        # or whose value is not a plain bool, keeps reading and writing
+        # memory exactly as it always has. Never raises.
+        memory_enabled = raw_memory if isinstance(raw_memory, bool) else True
         # Never raises, whatever is in the file: a persona whose pauses block
         # is broken loads without them and speaks exactly as it does today.
         pauses = read_pauses(metadata)
@@ -643,6 +655,7 @@ class PersonaStore:
             display_name=str(display_name) if isinstance(display_name, str) else name,
             system_prompt=system_prompt,
             prompt_prefix=prompt_prefix,
+            memory_enabled=memory_enabled,
             description=description if isinstance(description, str) else None,
             voice_engine=voice_engine if isinstance(voice_engine, str) else None,
             voice_name=voice_name if isinstance(voice_name, str) else None,
