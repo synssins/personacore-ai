@@ -10,6 +10,27 @@
 # it — the strongest way to keep that promise is for the image to have no copy of
 # it to overwrite.
 
+# ---- embeddings stage -------------------------------------------------------
+# The bundled sentence-embedding model for memory (contract memory.md §4,
+# plan joint J3): sentence-transformers/all-MiniLM-L6-v2, ONNX export,
+# AVX2-quantised, 384 dimensions, about 23 MB — plus its vocab.txt.
+#
+# A SEPARATE STAGE ON PURPOSE, same reasoning as the moonshine stage above:
+# this stage's only inputs are deploy/fetch_embedding_model.py and the
+# pinned constants inside it, so it stays cached — no re-download — no
+# matter how often a Python file under src/ changes. Unlike moonshine, the
+# fetch logic itself is not duplicated here: it lives once, in
+# deploy/fetch_embedding_model.py, which this stage runs unmodified, so a
+# person fetching it by hand for local development runs the exact code this
+# build runs. That script does its own checksum verification and refuses
+# loudly on a mismatch — see its docstring — so nothing here re-implements
+# that check.
+FROM python:3.12-slim AS embeddings
+
+COPY deploy/fetch_embedding_model.py /tmp/fetch_embedding_model.py
+RUN python /tmp/fetch_embedding_model.py /minilm
+
+
 # ---- build stage -----------------------------------------------------------
 FROM python:3.12-slim AS build
 
@@ -148,26 +169,6 @@ for name, (path, want_sha, want_size) in WANTED.items():
 staging.rename(out)
 print(f"moonshine base ready in {out}", flush=True)
 PY
-
-# ---- embeddings stage -------------------------------------------------------
-# The bundled sentence-embedding model for memory (contract memory.md §4,
-# plan joint J3): sentence-transformers/all-MiniLM-L6-v2, ONNX export,
-# AVX2-quantised, 384 dimensions, about 23 MB — plus its vocab.txt.
-#
-# A SEPARATE STAGE ON PURPOSE, same reasoning as the moonshine stage above:
-# this stage's only inputs are deploy/fetch_embedding_model.py and the
-# pinned constants inside it, so it stays cached — no re-download — no
-# matter how often a Python file under src/ changes. Unlike moonshine, the
-# fetch logic itself is not duplicated here: it lives once, in
-# deploy/fetch_embedding_model.py, which this stage runs unmodified, so a
-# person fetching it by hand for local development runs the exact code this
-# build runs. That script does its own checksum verification and refuses
-# loudly on a mismatch — see its docstring — so nothing here re-implements
-# that check.
-FROM python:3.12-slim AS embeddings
-
-COPY deploy/fetch_embedding_model.py /tmp/fetch_embedding_model.py
-RUN python /tmp/fetch_embedding_model.py /minilm
 
 # ---- runtime stage ---------------------------------------------------------
 FROM python:3.12-slim AS runtime
