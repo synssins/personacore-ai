@@ -40,6 +40,11 @@ dependencies = [
     # its own `audioop` replacement so Python 3.13 removing that from the
     # stdlib is already handled.
     "wyoming>=1.10.2,<2",  # MIT. 44 KB wheel, ~200 KB installed.
+    # Memory (ADR-0045): the vector column `memory/store.py` keeps beside the
+    # `memories` table, loaded into the stdlib `sqlite3` connection as an
+    # extension rather than a separate database. CPU only, no GPU build
+    # exists for it to acquire by mistake.
+    "sqlite-vec>=0.1.6,<0.2",  # Apache-2.0 / MIT.
 ]
 
 [project.optional-dependencies]
@@ -60,6 +65,17 @@ personacore = "personacore.__main__:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/personacore"]
+# The bundled embedding model (memory contract §4, plan joint J3) is
+# git-ignored (src/personacore/memory/models/.gitignore: *.onnx, vocab.txt)
+# because it is fetched, not written — deploy/fetch_embedding_model.py puts
+# it there. Hatchling's default file selection follows VCS ignores, so
+# without this it would build a wheel missing the very files Embedder.bundled()
+# looks for. "artifacts" is hatchling's mechanism for including files that
+# are normally ignored; see https://hatch.pypa.io/latest/config/build/#artifacts.
+artifacts = [
+    "src/personacore/memory/models/*.onnx",
+    "src/personacore/memory/models/vocab.txt",
+]
 
 [tool.ruff]
 line-length = 100
