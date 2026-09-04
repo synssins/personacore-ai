@@ -32,7 +32,7 @@ from personacore.agent.loop import (
 )
 from personacore.agent.personas import PersonaStore
 from personacore.audit.models import Surface
-from personacore.contracts.policy import PolicyProfile, ProfileKind, RiskLevel
+from personacore.contracts.policy import MemoryScope, PolicyProfile, ProfileKind, RiskLevel
 from personacore.conversations.addressing import FloorAnswer
 from personacore.voice.reply import ReplySpeaker, ReplySpeech
 
@@ -197,6 +197,13 @@ class _AdminChat:
     vision probe (contract §4.3 forbids a gate on this path) and does not
     decide what counts as an image; the chat screen has already read the
     bytes and built the URIs by the time this is called.
+
+    ``conversation_id`` is the memory contract's own addition
+    (``working/contracts/memory.md`` §3.1), passed straight to
+    ``TurnRequest.conversation_id`` so a ``memory.remember`` call this turn
+    makes can carry it. ``None`` by default, which is every caller before
+    this field existed; the chat screens resolve or mint the conversation
+    before calling this runner and pass its id.
     """
 
     def __init__(
@@ -235,6 +242,16 @@ class _AdminChat:
         exactly the profile the turn would — a persona asked whether it wants
         to speak while wearing a different set of rules than it would answer
         under is being asked about a turn that will not happen.
+
+        ``memory_scope=MemoryScope.USER`` — the memory contract's own
+        addition (``working/contracts/memory.md`` §6, §9): this profile is
+        one named admin account, so its own memories plus the household's
+        long-term ones is the right scope, the same shape a profile-kind key
+        already gets. Before this field existed here, ``PolicyProfile``'s own
+        default (``MemoryScope.NONE``) meant `AgentLoop._memory_block`
+        refused to recall at all for this surface, whatever a persona's own
+        switch said — a gap invisible until a real `MemoryProvider` was
+        wired in for the first time to notice it against.
         """
         return PolicyProfile(
             id=user,
@@ -244,6 +261,7 @@ class _AdminChat:
             allowed_tools=list(available),
             max_tool_risk=RiskLevel.SAFE,
             may_approve_confirm=True,
+            memory_scope=MemoryScope.USER,
         )
 
     def _request(
@@ -257,6 +275,7 @@ class _AdminChat:
         record_user_message: bool = True,
         also_present: Sequence[str] = (),
         image_data_urls: Sequence[str] = (),
+        conversation_id: str | None = None,
     ) -> TurnRequest:
         return TurnRequest(
             user_message=message,
@@ -273,6 +292,10 @@ class _AdminChat:
             # loop's prompt exactly as it always has — see
             # ``TurnRequest.image_data_urls``.
             image_data_urls=list(image_data_urls),
+            # The memory contract's own field (§3.1, plan joint J5). ``None``
+            # by default, which is every caller before this existed — see
+            # ``TurnRequest.conversation_id``'s own docstring.
+            conversation_id=conversation_id,
         )
 
     async def ask(
@@ -331,6 +354,7 @@ class _AdminChat:
         record_user_message: bool = True,
         also_present: Sequence[str] = (),
         image_data_urls: Sequence[str] = (),
+        conversation_id: str | None = None,
     ) -> AsyncIterator[_AdminChatEvent]:
         """The turn as it happens, ending with the finished result.
 
@@ -358,6 +382,7 @@ class _AdminChat:
             record_user_message=record_user_message,
             also_present=also_present,
             image_data_urls=image_data_urls,
+            conversation_id=conversation_id,
         )
 
         parts: list[str] = []
@@ -458,6 +483,7 @@ class _AdminChat:
         record_user_message: bool = True,
         also_present: Sequence[str] = (),
         image_data_urls: Sequence[str] = (),
+        conversation_id: str | None = None,
     ) -> _AdminChatResult:
         """The same turn, collected. Non-streaming callers are unchanged.
 
@@ -475,6 +501,7 @@ class _AdminChat:
             record_user_message=record_user_message,
             also_present=also_present,
             image_data_urls=image_data_urls,
+            conversation_id=conversation_id,
         ):
             if event.kind == "done" and event.result is not None:
                 result = event.result

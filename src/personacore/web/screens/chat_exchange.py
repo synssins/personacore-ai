@@ -408,6 +408,14 @@ def register(router: APIRouter, view: ChatView) -> ChatExchange:
     #: model, which is this feature's own starting state.
     _carries_images = _takes(chat, "image_data_urls")
 
+    #: Whether this runner can be told which conversation this turn belongs
+    #: to (the memory contract, ``working/contracts/memory.md`` §3.1). Same
+    #: discovery, same reason: a runner from before this existed raises on
+    #: the keyword, and a turn it cannot be told about still runs — a
+    #: ``memory.remember`` call that turn makes simply carries no
+    #: conversation id, which is this field's own honest default.
+    _carries_conversation = _takes(chat, "conversation_id")
+
     async def _open_the_floor(
         user: AdminUser,
         exchange: voices.Exchange,
@@ -670,6 +678,20 @@ def register(router: APIRouter, view: ChatView) -> ChatExchange:
                     # call in this exchange — see the comment where
                     # `image_urls` is computed, above.
                     **({"image_data_urls": image_urls} if image_urls and _carries_images else {}),
+                    # Memory contract §3.1: every persona's call in this
+                    # exchange carries the conversation it is answering
+                    # into, the same reasoning as the room and image kwargs
+                    # just above. `conversation` is `None` for a stale
+                    # marker naming a hidden conversation (`conversations.
+                    # at`'s own docstring: "The turn still happens ... they
+                    # simply stay unattached") — a real state, not a gap to
+                    # guard against as a bug, so this carries no id at all
+                    # rather than raising on it.
+                    **(
+                        {"conversation_id": conversation.conversation_id}
+                        if _carries_conversation and conversation is not None
+                        else {}
+                    ),
                 )
             except Exception as exc:  # noqa: BLE001 - see docstring
                 # Claimed even though the turn failed: the loop may well have

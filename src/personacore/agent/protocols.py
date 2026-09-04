@@ -200,13 +200,26 @@ class ConfirmationProvider(Protocol):
 
 
 class MemoryItem(BaseModel):
-    """One recalled memory. ``text`` is untrusted — see ADR-0003."""
+    """One recalled memory. ``text`` is untrusted — see ADR-0003.
+
+    ``holder`` and ``memory_id`` are the memory contract's own additions
+    (``working/contracts/memory.md`` §6, plan joint J5): which persona (or
+    ``"global"``) the row belongs to, and the row's id — carried so a caller
+    that recalls deliberately (``memory.recall``, contract §5.3) or a screen
+    reading the trace can say which memory this was, without this seam
+    knowing anything about SQLite or embeddings. ``holder`` defaults to
+    ``"global"`` and ``memory_id`` to ``None`` so a provider written before
+    either field existed — there is none in this codebase, but a future one
+    is not required to know about them — still constructs a valid item.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     text: str
     source: str = "memory"
     score: float | None = None
+    holder: str = "global"
+    memory_id: str | None = None
 
 
 class MemoryRecallRequest(BaseModel):
@@ -221,6 +234,11 @@ class MemoryRecallRequest(BaseModel):
     scope: MemoryScope
     query: str
     limit: int = Field(default=8, ge=1)
+    persona: str | None = None
+    """Who is asking — a persona name, or ``None`` for a raw-passthrough turn
+    with no persona (contract §6: "``None`` (raw passthrough, no persona)
+    recalls nothing"). The memory contract's provider refuses to recall at
+    all when this is ``None`` rather than guessing a holder."""
 
 
 @runtime_checkable

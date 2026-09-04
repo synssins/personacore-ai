@@ -730,6 +730,11 @@ def register(router: APIRouter, exchange: ChatExchange) -> None:
     #: (attachments contract §4.2) — asked of ``chat.stream`` separately from
     #: the plain runner, for the same reason ``_tells_the_room`` is.
     _carries_images = _takes(getattr(chat, "stream", None), "image_data_urls")
+    #: Whether the *streaming* runner can be told which conversation this
+    #: turn belongs to (the memory contract, ``working/contracts/memory.md``
+    #: §3.1) — asked of ``chat.stream`` separately from the plain runner,
+    #: for the same reason ``_tells_the_room`` is.
+    _carries_conversation = _takes(getattr(chat, "stream", None), "conversation_id")
     _turn = exchange.turn
     _answered_by_kind = exchange.answered_by_kind
     _open_the_floor = exchange.open_the_floor
@@ -1225,6 +1230,16 @@ def register(router: APIRouter, exchange: ChatExchange) -> None:
                     record=first,
                     room=room,
                     image_urls=image_urls if _carries_images else (),
+                    # `conversation` is `None` for a stale marker naming a
+                    # hidden conversation (`conversations.at`'s own
+                    # docstring) — a real state the turn still runs under,
+                    # not a bug to guard against by accident. See the same
+                    # comment in `chat_exchange.py`'s own version of this.
+                    conversation_id=(
+                        conversation.conversation_id
+                        if _carries_conversation and conversation is not None
+                        else None
+                    ),
                     aloud=aloud,
                     streaming=streaming,
                     holding=holding,
@@ -1415,6 +1430,7 @@ def register(router: APIRouter, exchange: ChatExchange) -> None:
         record: bool,
         room: Sequence[str],
         image_urls: Sequence[str] = (),
+        conversation_id: str | None = None,
         aloud: bool,
         streaming: Any,
         holding: _TurnHolding,
@@ -1437,6 +1453,11 @@ def register(router: APIRouter, exchange: ChatExchange) -> None:
         whether ``streaming`` can be told (``_carries_images``); empty means
         either nothing was attached or the runner cannot carry it, and both
         read the same way here: nothing extra is passed to ``streaming``.
+
+        ``conversation_id`` is the memory contract's own field
+        (``working/contracts/memory.md`` §3.1) — passed to ``streaming`` only
+        when ``_carries_conversation`` says it can be, the same discovery as
+        ``image_urls``.
 
         ``stopping`` is §4a's stop, handed straight to `_kept_alive` because
         that is where the turn is actually suspended. When it fires the loop
@@ -1480,6 +1501,8 @@ def register(router: APIRouter, exchange: ChatExchange) -> None:
             # `_turn_frames`'s own comment on why every persona's call in this
             # exchange carries it.
             **({"image_data_urls": list(image_urls)} if image_urls else {}),
+            # Memory contract §3.1 — see the same call in `_turn`.
+            **({"conversation_id": conversation_id} if conversation_id else {}),
         )
         holding.events = events
         try:

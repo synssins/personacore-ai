@@ -510,6 +510,19 @@ class TurnRequest(BaseModel):
     """Shared by every audit record, transcript row and log line this turn
     produces (spec sections 7 and 9). Generated if absent."""
 
+    conversation_id: str | None = None
+    """Which conversation this turn belongs to — the memory contract's own
+    field (``working/contracts/memory.md`` §3.1, plan joint J5), carried onto
+    every memory a ``memory.remember`` call writes this turn so a screen can
+    link a memory back to where it came from.
+
+    ``None`` is every caller that predates this and every turn with nowhere
+    to file it: the OpenAI-compatible API, a raw-passthrough turn, an event
+    waking the agent. Only the admin UI's chat screens know a conversation id
+    (they resolve or mint one before the turn), and only there is it passed —
+    see ``boot/chat.py``'s own ``conversation_id`` parameter.
+    """
+
     image_data_urls: list[str] = Field(default_factory=list)
     """An attached image, as one or more `data:` URIs — attachments contract
     §4.2. Additive, on purpose: this field did not exist before this change,
@@ -676,6 +689,11 @@ class TurnContext:
     Consulted before the catalogue on every dispatch, which is how "the client
     wins a name collision" is enforced in one place rather than by hoping the
     catalogue was filtered correctly."""
+
+    conversation_id: str | None = None
+    """Carried straight from :attr:`TurnRequest.conversation_id` — see that
+    field's own docstring. ``None`` on ``ask_persona``'s turn, which has no
+    request of its own and writes nothing a conversation id would label."""
 
 
 def _usage_detail(prompt_tokens: int | None) -> dict[str, Any]:
@@ -985,6 +1003,7 @@ class AgentLoop:
             profile=profile,
             fence_token=new_fence_token(),
             human=Author(name=profile.display_name or profile.id, kind=AuthorKind.HUMAN),
+            conversation_id=request.conversation_id,
         )
         if request.record_user_message:
             await self._transcript(ctx, MessageRole.USER, request.user_message)
@@ -1249,14 +1268,24 @@ class AgentLoop:
     async def _memory_block(self, request: TurnRequest, ctx: TurnContext) -> str | None:
         """The memory seam, spec section 6.
 
-        Memory is a P1 plugin and there is no implementation in core — with no
-        provider wired in, this returns ``None`` and the assistant simply has
-        no recall, which is honest. The policy check happens here rather than
-        in the plugin: scope is the caller's property (section 8, ADR-0003),
-        so a scope of ``none`` means the memory plugin is never even asked.
+        With no provider wired in, this returns ``None`` and the assistant
+        simply has no recall, which is honest. Two independent checks gate a
+        real one, and either alone is enough to skip the call:
+
+        * **Scope** is the caller's property (section 8, ADR-0003) — a scope
+          of ``none`` means the memory plugin is never even asked.
+        * **The persona's own switch** (``working/contracts/memory.md`` §9,
+          ``persona.toml``'s ``memory`` key) — no persona at all (a
+          raw-passthrough turn) or a persona with memory off means there is
+          no holder to recall for, and the store is never opened on this
+          persona's behalf. "Where a persona switch and a key scope disagree,
+          the narrower wins" (contract §9), which is why both are checked
+          rather than either alone.
         """
         profile = ctx.profile
         if self._memory is None or profile.memory_scope is MemoryScope.NONE:
+            return None
+        if ctx.persona is None or not ctx.persona.memory_enabled:
             return None
         try:
             items = await self._memory.recall(
@@ -1266,6 +1295,7 @@ class AgentLoop:
                     scope=profile.memory_scope,
                     query=request.user_message,
                     limit=self._config.memory_recall_limit,
+                    persona=ctx.persona.name,
                 )
             )
         except Exception as exc:  # noqa: BLE001 - degradation, section 10
@@ -1329,10 +1359,19 @@ class AgentLoop:
             logger.error("tool_listing_failed", error=repr(exc))
             return schemas or None
 
+        # The memory contract's own gate (§9): a persona with memory off, or
+        # no persona at all (raw passthrough), offers neither `memory.remember`
+        # nor `memory.recall` — matching `_memory_block`'s own check, so a
+        # turn that cannot recall cannot be told to remember either. Checked
+        # once per call rather than per spec below.
+        memory_off = ctx.persona is None or not ctx.persona.memory_enabled
+
         allowed = set(profile.allowed_tools)
         ceiling = _rank(self._effective_ceiling(profile))
         for spec in available:
             ctx.catalogue[spec.name] = spec
+            if memory_off and spec.name.startswith("memory."):
+                continue
             rank = _rank(spec.risk)
             if spec.name in ctx.client_tools:
                 continue
@@ -1661,6 +1700,18 @@ class AgentLoop:
         # that also carries the duration — see below.
         caller_detail: dict[str, Any] = {
             "confirmation": decision.confirmation.value if decision.confirmation else None,
+            # The memory contract's own additions (§5.1, plan joint J5): who
+            # is answering, on what model, and which conversation this is —
+            # exactly what `MemoryTools.call` needs to attribute a
+            # `memory.remember` write, and nothing this boundary could see for
+            # itself. `ctx.persona_author.model` rather than a `ctx.model`
+            # that does not exist: the model is learned from the stream that
+            # actually answered (see `_stream_round`), stamped onto
+            # `persona_author` before any tool call in the same round is
+            # handled, so it is already current by the time this is built.
+            "persona": ctx.persona.name if ctx.persona else None,
+            "model": ctx.persona_author.model if ctx.persona_author else None,
+            "conversation_id": ctx.conversation_id,
         }
         started = time.perf_counter()
         tool_result = await self._invoke(

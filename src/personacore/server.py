@@ -124,6 +124,11 @@ from personacore.config.settings import (
 )
 from personacore.hearing.registry import HearingRegistry
 from personacore.hearing.registry import builtin_engines as builtin_recognisers
+from personacore.memory.composite import CompositeToolProvider
+from personacore.memory.embed import Embedder
+from personacore.memory.provider import CoreMemoryProvider
+from personacore.memory.store import MemoryStore
+from personacore.memory.tools import MemoryTools
 from personacore.plugins.bundled import install_bundled_plugins
 from personacore.plugins.discovery import PluginDiscovery
 from personacore.plugins.host import PluginHost
@@ -525,6 +530,29 @@ def create_app(appdata: Path | str | None = None) -> FastAPI:
     )
     app.state.plugin_host = host
 
+    # Memory (``working/contracts/memory.md``, ADR-0045): a bundled ONNX
+    # embedder if this image carries one, else no memory at all rather than a
+    # core that refuses to start over an optional feature. `MemoryTools` is
+    # folded into one `ToolProvider` with the plugin host through
+    # `CompositeToolProvider` (contract §2: "The loop does not learn that
+    # some tools are the core's own") — every consumer of `host` that lists
+    # or calls tools for a real turn takes this composite instead, and only
+    # the plugin-management surfaces below (`app.state.plugin_host`,
+    # `_PluginHealthView`, `_mount_admin`'s own plugin routes, `host.start`/
+    # `.stop`) still take the bare `PluginHost`, which is the only thing that
+    # knows how to install, remove or health-check a plugin.
+    embedder = Embedder.bundled() if Embedder.available() else None
+    memory_store: MemoryStore | None = None
+    memory_provider: CoreMemoryProvider | None = None
+    tools_provider = host
+    if embedder is not None:
+        memory_store = MemoryStore(layout.memory / "memory.db", embedder, settings.memory)
+        memory_provider = CoreMemoryProvider(memory_store, settings.memory)
+        tools_provider = CompositeToolProvider(host, MemoryTools(memory_store, personas))
+    else:
+        log.warning("memory_unavailable", reason="embedding model not bundled")
+    app.state.memory_store = memory_store
+
     # ADR-0036: a persona may carry a connection of its own, and the loop asks
     # the router which client answers for the character it just loaded. The
     # handle passed as `llm` is still what answers for every persona that has
@@ -534,8 +562,9 @@ def create_app(appdata: Path | str | None = None) -> FastAPI:
         llm=interactive_llm,
         personas=personas,
         audit=audit,
-        tools=host,
+        tools=tools_provider,
         persona_llm=PersonaLLMRouter(roster, interactive_llm),
+        memory=memory_provider,
     )
     app.state.agent = agent
 
@@ -685,7 +714,12 @@ def create_app(appdata: Path | str | None = None) -> FastAPI:
     # for the same reason `apply_settings` is: it is worth being able to take a
     # real turn through an assembled core without going through a screen that
     # is being redrawn.
-    chat_runner = _make_chat_runner(agent, personas, host, reply_speech)
+    # `tools_provider`, not the bare `host`: the admin chat screen grants a
+    # turn every safe tool currently listable (`_AdminChat._tools_for`), and
+    # that has to include `memory.remember`/`memory.recall` when a persona
+    # has memory on, or the composite would offer them to the loop while the
+    # admin surface's own policy profile never allowed them.
+    chat_runner = _make_chat_runner(agent, personas, tools_provider, reply_speech)
     app.state.chat_runner = chat_runner
 
     _mount_admin(
@@ -747,6 +781,28 @@ def create_app(appdata: Path | str | None = None) -> FastAPI:
             status["consecutive_failures"] += 1
             log.warning("attachment_purge_failed", error=repr(exc))
             return
+        # Contract §7: a short-term memory unused for `[memory]
+        # short_term_days` is purged; a promoted (long-term) one never is —
+        # `MemoryStore.purge_short_term` enforces that by construction
+        # (`holder != 'global'`), not by anything read here. `None` on a
+        # build with no bundled embedder (see the store's construction
+        # above), and then this counts zero rather than being skipped
+        # silently — the same shape as every other count in this log line.
+        # Read off `app.state.settings` rather than the `settings` this
+        # closure captured at boot, so a value saved on the Core settings
+        # screen takes effect on the very next pass, exactly as the voice
+        # and hearing settings below already do.
+        memories_deleted = 0
+        if memory_store is not None:
+            try:
+                memories_deleted = await memory_store.purge_short_term(
+                    older_than_days=app.state.settings.memory.short_term_days
+                )
+            except Exception as exc:  # noqa: BLE001 - background hygiene, never a request
+                status["last_error"] = repr(exc)
+                status["consecutive_failures"] += 1
+                log.warning("memory_purge_failed", error=repr(exc))
+                return
         status["last_success"] = datetime.now(UTC).isoformat()
         status["last_error"] = None
         status["consecutive_failures"] = 0
@@ -760,6 +816,7 @@ def create_app(appdata: Path | str | None = None) -> FastAPI:
             # thing here nothing will retry, because the sweep finds work by
             # reading the table it has just deleted from.
             attachment_files_left=swept.file_failures,
+            memories_deleted=memories_deleted,
         )
 
     async def _retention_purge_loop() -> None:
@@ -796,6 +853,18 @@ def create_app(appdata: Path | str | None = None) -> FastAPI:
             costs="the assistant has no tools; conversation is unaffected",
         ):
             await host.start()
+        # `memory_store` is `None` on a build with no bundled embedder — see
+        # its construction above — and `open()` is never called on it then,
+        # matching contract §3: "Memory off for every persona means the file
+        # is never opened." A store that fails to open costs memory, not the
+        # listener: the pattern every other optional piece here uses.
+        if memory_store is not None:
+            with optional(
+                pieces,
+                "the memory store",
+                costs="no persona remembers or recalls anything this run",
+            ):
+                await memory_store.open()
         # Same reasoning as the bus above: creating the task returns
         # immediately, so a slow first purge (a large database, a slow disk)
         # never delays the listener coming up.
@@ -891,6 +960,16 @@ def create_app(appdata: Path | str | None = None) -> FastAPI:
                     timeout_seconds=RETENTION_SHUTDOWN_TIMEOUT_SECONDS,
                 )
         app.state.retention_purge = None
+        # Only now: the retention task and its (possibly still-running)
+        # worker-thread pass are both stopped above, and that pass is what
+        # holds the memory store's own sqlite connection open the same way
+        # `AuditStore`'s connection is held — closing any earlier races the
+        # purge exactly as the comment above this block describes.
+        if memory_store is not None:
+            try:
+                await memory_store.close()
+            except Exception as exc:  # noqa: BLE001 - shutdown never fails on memory
+                log.warning("memory_store_close_failed", error=repr(exc))
         voice_task = app.state.voice_task
         if voice_task is not None and not voice_task.done():
             voice_task.cancel()
