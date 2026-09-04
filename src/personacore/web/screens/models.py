@@ -473,9 +473,13 @@ def register(router: APIRouter, ctx: UIContext) -> None:
         user = require_user(request)
         role = _role_or_404(role_id)
         form = await request.form()
-        clearing = str(form.get("action") or "save") == "clear"
         address = str(form.get("address") or "").strip()
         model = str(form.get("model") or "").strip()
+        # Both boxes emptied and Save pressed means the same thing the clear
+        # button means: this role falls back to the conversation model. The
+        # owner emptied the boxes, pressed Save and was refused; a refusal that
+        # tells somebody to do what they just did is the wrong answer.
+        clearing = str(form.get("action") or "save") == "clear" or (not address and not model)
         key = read_key_form(form)
 
         current, config_error = _current_config()
