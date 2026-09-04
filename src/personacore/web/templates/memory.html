@@ -6,6 +6,9 @@
      unavailable, unavailable_message, long_term, groups, total_people,
      total_personas, total_shown, nothing_to_show — everything
      fragments/memory_list.html needs, since this page renders it inline too.
+     Also review_runs ([{when, person_label, persona_label, outcome, written,
+     touched, dropped, model, error, kept, rejected}]) for the Review log
+     card at the bottom — never touched by the filter form above.
 
    The filter form is a plain GET (works with scripts off) that also carries
    `hx-get`/`hx-trigger="change"` so a tick or a pick re-renders #memory-list
@@ -64,4 +67,43 @@
 </section>
 
 {% include "fragments/memory_list.html" %}
+
+{# Review log — what the review pass kept and rejected, newest first. Never
+   filtered by the form above (its own routes and filters do not touch it);
+   context: review_runs ([{when, person_label, persona_label, outcome,
+   written, touched, dropped, model, error, kept: [{text, importance}],
+   rejected: [{raw, reason}]}]). Never logged, never audited — see this
+   screen's module docstring. #}
+<section class="card elev-sm" style="gap:8.4px">
+  <div class="hrow" style="gap:8px">
+    <h5 class="grow">Review log</h5>
+    <span class="meta">{{ review_runs|length }} run{{ 's' if review_runs|length != 1 else '' }}</span>
+  </div>
+  {% if not review_runs %}
+  <div class="empty">
+    <p style="margin:0">No review runs yet.</p>
+  </div>
+  {% else %}
+  <div style="display:flex; flex-direction:column; gap:11.2px">
+    {% for run in review_runs %}
+    <div class="row" style="display:flex; flex-direction:column; gap:4px">
+      <div class="hrow" style="gap:8px; flex-wrap:wrap">
+        <span class="grow" style="font-size:13.5px">{{ run.when }} · {{ run.person_label }} · {{ run.persona_label }}</span>
+        <span class="tag tag-neutral">{{ run.outcome }}</span>
+        <span class="meta">{{ run.written }} written · {{ run.touched }} touched · {{ run.dropped }} dropped{% if run.model %} · {{ run.model }}{% endif %}</span>
+      </div>
+      {% if run.error %}
+      <p class="meta" style="margin:0; color: var(--color-danger-text)">{{ run.error }}</p>
+      {% endif %}
+      {% for item in run.kept %}
+      <p style="margin:0; font-size:13.5px">{{ item.text }}<span class="meta"> · importance {{ item.importance }}</span></p>
+      {% endfor %}
+      {% for item in run.rejected %}
+      <p style="margin:0; font-size:13.5px; color: color-mix(in srgb, var(--color-text) 60%, transparent)">{{ item.raw }}<span class="meta"> · {{ item.reason }}</span></p>
+      {% endfor %}
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+</section>
 {% endblock %}

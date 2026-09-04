@@ -39,14 +39,20 @@ import json
 import secrets
 import sqlite3
 import threading
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 import sqlite_vec
 
-from personacore.memory.models import GLOBAL_HOLDER, HOUSEHOLD_OWNER, MAX_TEXT_CHARS, MemoryRecord
+from personacore.memory.models import (
+    GLOBAL_HOLDER,
+    HOUSEHOLD_OWNER,
+    MAX_TEXT_CHARS,
+    MemoryRecord,
+    ReviewRunRecord,
+)
 from personacore.memory.schema import (
     Migration,  # noqa: F401 - kept importable; mirrors audit/store.py's re-export shape
     SchemaDowngradeError,
@@ -144,6 +150,25 @@ def _row_to_record(row: sqlite3.Row) -> MemoryRecord:
         promoted_by=row["promoted_by"],
         promoted_at=_parse_iso_opt(row["promoted_at"]),
         truncated=bool(row["truncated"]),
+    )
+
+
+def _row_to_review_run(row: sqlite3.Row) -> ReviewRunRecord:
+    return ReviewRunRecord(
+        run_id=row["run_id"],
+        conversation_id=row["conversation_id"],
+        persona=row["persona"],
+        owner=row["owner"],
+        started_at=_parse_iso(row["started_at"]),
+        finished_at=_parse_iso(row["finished_at"]),
+        model=row["model"],
+        outcome=row["outcome"],
+        written=row["written"],
+        touched=row["touched"],
+        dropped=row["dropped"],
+        kept=json.loads(row["kept_json"]),
+        dropped_items=json.loads(row["dropped_json"]),
+        error=row["error"],
     )
 
 
@@ -605,6 +630,12 @@ class MemoryStore:
         `last_used_at` is older than `older_than_days`, row and vector
         together (contract §7). A promoted (long-term) row is never
         touched here -- that is the entire point of `holder != 'global'`.
+
+        The same cutoff also purges `review_runs` (the review log) by
+        `finished_at` -- a run is a record of a review, not a memory, and
+        has no promoted/long-term counterpart to spare. Not counted in the
+        return value: that count is `memories_deleted` (contract §7's log
+        line), a review run is not a memory.
         """
         conn = self._require_conn()
         cutoff_iso = _iso(datetime.now(UTC) - timedelta(days=older_than_days))
@@ -622,6 +653,7 @@ class MemoryStore:
                     f"DELETE FROM memories WHERE memory_id IN ({placeholders})",  # noqa: S608
                     ids,
                 )
+            conn.execute("DELETE FROM review_runs WHERE finished_at < ?", (cutoff_iso,))
             conn.commit()
             return len(ids)
 
@@ -656,6 +688,109 @@ class MemoryStore:
                 (conversation_id, persona, mark, now_iso),
             )
             conn.commit()
+
+    # -- review log -----------------------------------------------------
+
+    async def record_review_run(
+        self,
+        *,
+        run_id: str,
+        conversation_id: str,
+        persona: str,
+        owner: str,
+        started_at: datetime,
+        finished_at: datetime,
+        model: str | None,
+        outcome: str,
+        written: int,
+        touched: int,
+        dropped: int,
+        kept: Sequence[Mapping[str, Any]],
+        dropped_items: Sequence[Mapping[str, Any]],
+        error: str | None,
+    ) -> None:
+        """One row of `review_runs` per `ReviewRunner._review_one`/skip
+        branch, whatever the outcome (the Memory screen's review log).
+
+        `kept`/`dropped_items` are stored as JSON text -- never further
+        parsed by this store, only listed back whole by `list_review_runs`.
+        Never a log line: this is the one place review text is *kept*, on
+        the same admin-only file, under the same rules as `memories`.
+        """
+        await asyncio.to_thread(
+            self._record_review_run,
+            run_id,
+            conversation_id,
+            persona,
+            owner,
+            started_at,
+            finished_at,
+            model,
+            outcome,
+            written,
+            touched,
+            dropped,
+            list(kept),
+            list(dropped_items),
+            error,
+        )
+
+    def _record_review_run(
+        self,
+        run_id: str,
+        conversation_id: str,
+        persona: str,
+        owner: str,
+        started_at: datetime,
+        finished_at: datetime,
+        model: str | None,
+        outcome: str,
+        written: int,
+        touched: int,
+        dropped: int,
+        kept: list[Mapping[str, Any]],
+        dropped_items: list[Mapping[str, Any]],
+        error: str | None,
+    ) -> None:
+        conn = self._require_conn()
+        with self._lock:
+            conn.execute(
+                """
+                INSERT INTO review_runs (
+                    run_id, conversation_id, persona, owner, started_at,
+                    finished_at, model, outcome, written, touched, dropped,
+                    kept_json, dropped_json, error
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    run_id,
+                    conversation_id,
+                    persona,
+                    owner,
+                    _iso(started_at),
+                    _iso(finished_at),
+                    model,
+                    outcome,
+                    written,
+                    touched,
+                    dropped,
+                    json.dumps(list(kept)),
+                    json.dumps(list(dropped_items)),
+                    error,
+                ),
+            )
+            conn.commit()
+
+    async def list_review_runs(self, *, limit: int = 50) -> list[ReviewRunRecord]:
+        return await asyncio.to_thread(self._list_review_runs, limit)
+
+    def _list_review_runs(self, limit: int) -> list[ReviewRunRecord]:
+        conn = self._require_conn()
+        with self._lock:
+            rows = conn.execute(
+                "SELECT * FROM review_runs ORDER BY finished_at DESC LIMIT ?", (limit,)
+            ).fetchall()
+        return [_row_to_review_run(row) for row in rows]
 
 
 __all__ = ["EmbedderLike", "MemoryStore", "SettingsLike", "truncate_text"]

@@ -44,7 +44,15 @@ from personacore.agent.untrusted import UntrustedKind, wrap_untrusted
 from personacore.audit.models import AuthorKind, Owner, Surface, TranscriptRecord
 from personacore.boot.llm import LiveLLM
 from personacore.config.memory import MemorySettings
-from personacore.memory.models import MAX_TEXT_CHARS, WRITTEN_BY_REVIEW
+from personacore.memory.models import (
+    MAX_TEXT_CHARS,
+    REVIEW_OUTCOME_MODEL_FAILED,
+    REVIEW_OUTCOME_NOTHING,
+    REVIEW_OUTCOME_PARSE_FAILED,
+    REVIEW_OUTCOME_SKIPPED,
+    REVIEW_OUTCOME_WRITTEN,
+    WRITTEN_BY_REVIEW,
+)
 from personacore.memory.review_prompt import REVIEW_SYSTEM_PROMPT
 from personacore.memory.store import MemoryStore
 
@@ -71,6 +79,14 @@ TRANSCRIPT_MAX_CHARS = 24_000
 _IMPORTANCE_WORDS: dict[str, float] = {"low": 0.3, "medium": 0.6, "high": 0.9}
 
 _FENCE_RE = re.compile(r"^```(?:json)?\s*(.*?)\s*```$", re.DOTALL)
+
+#: Cap on a "raw" string recorded in `review_runs.dropped_json` (the review
+#: log). For the whole-reply-unusable case this is the model's entire
+#: reply; for one rejected item it is that item alone -- both capped for
+#: the same reason `MAX_TEXT_CHARS` caps a memory: an admin-only log record
+#: is still a record, and an unbounded model reply should not become an
+#: unbounded row.
+RAW_REPLY_CAP = 2000
 
 
 # --------------------------------------------------------------------------
@@ -317,43 +333,102 @@ class _ParsedFact:
     importance: float
 
 
+@dataclass(frozen=True)
+class _RejectedItem:
+    """One item the parser would not keep, and why -- the review log's
+    `dropped_json` entries (contract §5.2, the review log)."""
+
+    raw: str
+    reason: str
+
+
+@dataclass(frozen=True)
+class _ParseOutcome:
+    """What came of parsing one triage reply.
+
+    `reply_unusable` is true only when the reply as a whole was not a JSON
+    list at all (empty, not valid JSON, or valid JSON that is not a list) --
+    the one case the review log records as a single `_RejectedItem` holding
+    the *whole reply*, capped, under reason `"not JSON at all"`. Anything
+    else -- a valid list containing some malformed items alongside good
+    ones -- keeps the good facts and rejects only the bad items, each with
+    its own reason, rather than distrusting the whole batch for one bad
+    item (contract §5.2 amended for the review log: distinguishing *why*
+    an item was dropped is the whole point of the thing the owner asked
+    to see).
+    """
+
+    facts: list[_ParsedFact]
+    rejected: list[_RejectedItem]
+    reply_unusable: bool
+
+
 def _strip_fence(text: str) -> str:
     match = _FENCE_RE.match(text.strip())
     return match.group(1) if match else text.strip()
 
 
-def _parse_facts(text: str | None) -> list[_ParsedFact] | None:
-    """Strict parse of the triage role's reply (contract §5.2).
+def _raw_for(item: Any) -> str:
+    """`item` rendered back as a string for the review log, capped the same
+    way the whole-reply case is -- an item that was rejected for being too
+    long must not make the log row itself unbounded."""
+    try:
+        raw = json.dumps(item)
+    except (TypeError, ValueError):
+        raw = repr(item)
+    return raw[:RAW_REPLY_CAP]
 
-    `None` means the whole reply is unusable and must be dropped and
-    counted, never partially trusted: one malformed item is as much a
-    reason to distrust the batch as no JSON at all, because a model that
-    got the shape wrong on one item has given no reason to believe the
-    others are what they claim to be either.
+
+def _reject_reason(item: Any) -> str | None:
+    """Why one parsed-JSON list item is not a usable fact, or `None` when
+    it is. Order matters only in that each check needs the previous one to
+    have passed to be meaningful (a non-dict has no `"text"` to inspect)."""
+    if not isinstance(item, dict):
+        return "not an object"
+    raw_text = item.get("text")
+    if not isinstance(raw_text, str) or not raw_text.strip():
+        return "missing text"
+    if len(raw_text.strip()) > MAX_TEXT_CHARS:
+        return "text too long"
+    if item.get("importance") not in _IMPORTANCE_WORDS:
+        return "bad importance"
+    return None
+
+
+def _parse_facts(text: str | None) -> _ParseOutcome:
+    """Parse of the triage role's reply (contract §5.2, extended for the
+    review log).
+
+    The reply as a whole is unusable -- `reply_unusable=True`, no facts,
+    nothing to blame on any one item -- when it is empty, not valid JSON,
+    or valid JSON that is not a list at all: there is no batch to look
+    inside. Once it *is* a list, every item is judged on its own: a fact
+    that parses cleanly is kept even when its neighbour in the same reply
+    does not.
     """
     if not text:
-        return None
+        return _ParseOutcome(facts=[], rejected=[], reply_unusable=True)
     try:
         data = json.loads(_strip_fence(text))
     except (json.JSONDecodeError, ValueError):
-        return None
+        return _ParseOutcome(facts=[], rejected=[], reply_unusable=True)
     if not isinstance(data, list):
-        return None
+        return _ParseOutcome(facts=[], rejected=[], reply_unusable=True)
+
     facts: list[_ParsedFact] = []
+    rejected: list[_RejectedItem] = []
     for item in data:
-        if not isinstance(item, dict):
-            return None
-        raw_text = item.get("text")
-        raw_importance = item.get("importance")
-        if not isinstance(raw_text, str):
-            return None
-        cleaned = raw_text.strip()
-        if not cleaned or len(cleaned) > MAX_TEXT_CHARS:
-            return None
-        if raw_importance not in _IMPORTANCE_WORDS:
-            return None
-        facts.append(_ParsedFact(text=cleaned, importance=_IMPORTANCE_WORDS[raw_importance]))
-    return facts
+        reason = _reject_reason(item)
+        if reason is None:
+            facts.append(
+                _ParsedFact(
+                    text=item["text"].strip(),
+                    importance=_IMPORTANCE_WORDS[item["importance"]],
+                )
+            )
+        else:
+            rejected.append(_RejectedItem(raw=_raw_for(item), reason=reason))
+    return _ParseOutcome(facts=facts, rejected=rejected, reply_unusable=False)
 
 
 def _build_transcript(rows: Sequence[TranscriptRecord]) -> str:
@@ -424,6 +499,7 @@ class ReviewRunner:
                 # retry would fix -- and move on without touching the store.
                 await self._store.set_review_mark(item.conversation_id, item.persona, item.mark)
                 stats.skipped += 1
+                await self._record_run(item, moment=moment, outcome=REVIEW_OUTCOME_SKIPPED)
                 continue
 
             if not persona.memory_enabled:
@@ -432,11 +508,53 @@ class ReviewRunner:
                 # life (contract §9: memory off means no review pass).
                 await self._store.set_review_mark(item.conversation_id, item.persona, item.mark)
                 stats.skipped += 1
+                await self._record_run(item, moment=moment, outcome=REVIEW_OUTCOME_SKIPPED)
                 continue
 
             await self._review_one(item, stats)
 
         return stats
+
+    async def _record_run(
+        self,
+        item: DueReview,
+        *,
+        moment: datetime | None = None,
+        started_at: datetime | None = None,
+        finished_at: datetime | None = None,
+        model: str | None = None,
+        outcome: str,
+        written: int = 0,
+        touched: int = 0,
+        dropped: int = 0,
+        kept: list[dict[str, Any]] | None = None,
+        dropped_items: list[dict[str, Any]] | None = None,
+        error: str | None = None,
+    ) -> None:
+        """Write one `review_runs` row for `item`, whatever the outcome.
+
+        `moment` is a shorthand for the skip branches in `tick()`, where
+        there is no model call to time -- both `started_at` and
+        `finished_at` collapse to the same instant. The model-calling path
+        (`_review_one`) passes its own real `started_at`/`finished_at`.
+        """
+        now = datetime.now(UTC)
+        await self._store.record_review_run(
+            run_id=str(uuid4()),
+            conversation_id=item.conversation_id,
+            persona=item.persona,
+            owner=item.owner,
+            started_at=started_at or moment or now,
+            finished_at=finished_at or moment or now,
+            model=model,
+            outcome=outcome,
+            written=written,
+            touched=touched,
+            dropped=dropped,
+            kept=kept or [],
+            dropped_items=dropped_items or [],
+            error=error,
+        )
 
     async def _review_one(self, item: DueReview, stats: ReviewStats) -> None:
         transcript = _build_transcript(item.rows)
@@ -451,6 +569,8 @@ class ReviewRunner:
             {"role": "system", "content": REVIEW_SYSTEM_PROMPT},
             {"role": "user", "content": fenced},
         ]
+        started_at = datetime.now(UTC)
+        model_name = self._triage.current.config.model
 
         try:
             response = await self._triage.chat_completion(messages)
@@ -459,24 +579,45 @@ class ReviewRunner:
             # this due review is retried next tick rather than skipped for
             # good. Never the text -- see the module docstring.
             log.warning("memory_review_failed", error=repr(exc))
+            await self._record_run(
+                item,
+                started_at=started_at,
+                finished_at=datetime.now(UTC),
+                model=model_name,
+                outcome=REVIEW_OUTCOME_MODEL_FAILED,
+                error=repr(exc),
+            )
             return
 
         content = None
         if response.choices:
             content = response.choices[0].message.content
-        facts = _parse_facts(content)
+        parsed = _parse_facts(content)
 
-        if facts is None:
+        if parsed.reply_unusable:
             # The model DID answer, just not usably -- unlike a transport
             # failure, retrying next tick would only see the same quiet
             # conversation and likely get the same answer, so the mark is
             # set and this due review is not retried.
             await self._store.set_review_mark(item.conversation_id, item.persona, item.mark)
             stats.dropped += 1
+            await self._record_run(
+                item,
+                started_at=started_at,
+                finished_at=datetime.now(UTC),
+                model=model_name,
+                outcome=REVIEW_OUTCOME_PARSE_FAILED,
+                dropped=1,
+                dropped_items=[
+                    {"raw": (content or "")[:RAW_REPLY_CAP], "reason": "not JSON at all"}
+                ],
+            )
             return
 
-        model_name = self._triage.current.config.model
-        for fact in facts:
+        written_this_run = 0
+        touched_this_run = 0
+        kept_entries: list[dict[str, Any]] = []
+        for fact in parsed.facts:
             _, created = await self._store.add(
                 text=fact.text,
                 owner=item.owner,
@@ -488,12 +629,36 @@ class ReviewRunner:
                 correlation_id=f"review:{uuid4()}",
                 importance=fact.importance,
             )
+            kept_entries.append({"text": fact.text, "importance": fact.importance})
             if created:
-                stats.written += 1
+                written_this_run += 1
             else:
-                stats.touched += 1
+                touched_this_run += 1
+
+        stats.written += written_this_run
+        stats.touched += touched_this_run
+        stats.dropped += len(parsed.rejected)
 
         await self._store.set_review_mark(item.conversation_id, item.persona, item.mark)
+        outcome = (
+            REVIEW_OUTCOME_WRITTEN
+            if (written_this_run + touched_this_run) > 0
+            else REVIEW_OUTCOME_NOTHING
+        )
+        await self._record_run(
+            item,
+            started_at=started_at,
+            finished_at=datetime.now(UTC),
+            model=model_name,
+            outcome=outcome,
+            written=written_this_run,
+            touched=touched_this_run,
+            dropped=len(parsed.rejected),
+            kept=kept_entries,
+            dropped_items=[
+                {"raw": rejected.raw, "reason": rejected.reason} for rejected in parsed.rejected
+            ],
+        )
 
 
 # --------------------------------------------------------------------------

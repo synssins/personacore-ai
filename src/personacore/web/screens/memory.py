@@ -54,6 +54,7 @@ from personacore.memory.models import (
     HOUSEHOLD_OWNER,
     MAX_TEXT_CHARS,
     MemoryRecord,
+    ReviewRunRecord,
 )
 from personacore.web.shared import UIContext
 
@@ -68,6 +69,11 @@ MEMORIES_SHOWN = 1000
 `CONVERSATIONS_SHOWN`: a bound on the read rather than a page size, because
 this list has no unbounded growth path a person cannot already prune from
 this very screen."""
+
+REVIEW_RUNS_SHOWN = 20
+"""The review log's own fixed count, newest first -- not a filterable page;
+the memory list's person/persona/search filters do not apply to it, per the
+review-log brief."""
 
 ANONYMOUS_LABEL = "Anonymous callers"
 
@@ -305,6 +311,40 @@ def _accounts(ctx: UIContext) -> tuple[dict[str, str], dict[str, bool], list[str
     return labels, minors, order
 
 
+def review_run_row(
+    record: ReviewRunRecord,
+    *,
+    accounts: Mapping[str, str],
+    persona_labels: Mapping[str, str],
+) -> dict[str, Any]:
+    """One review-log entry, in the shape the template renders.
+
+    Reuses `_person_label` and the caller's `persona_labels` -- the same
+    display names the memory list itself shows -- so a run reads with the
+    same names as the rows it produced, not the raw owner/persona strings
+    the store keeps.
+    """
+    return {
+        "when": _when(record.finished_at),
+        "person_label": _person_label(record.owner, accounts),
+        "persona_label": persona_labels.get(record.persona, record.persona),
+        "outcome": record.outcome,
+        "written": record.written,
+        "touched": record.touched,
+        "dropped": record.dropped,
+        "model": record.model,
+        "error": record.error,
+        "kept": [
+            {"text": item.get("text", ""), "importance": item.get("importance")}
+            for item in record.kept
+        ],
+        "rejected": [
+            {"raw": item.get("raw", ""), "reason": item.get("reason", "")}
+            for item in record.dropped_items
+        ],
+    }
+
+
 def register(router: APIRouter, ctx: UIContext) -> None:
     """Register the Memory screen: the page, the filtered list fragment, the
     one-tap promote and delete, the edit form, and the (always-404) stub for
@@ -447,16 +487,39 @@ def register(router: APIRouter, ctx: UIContext) -> None:
             request=request, name="fragments/memory_list.html", context=dict(context)
         )
 
+    async def _review_log_context(request: Request) -> dict[str, Any]:
+        """The review log's own rows -- never gated by the memory list's
+        filters (person/persona/search), always the newest `REVIEW_RUNS_SHOWN`
+        runs, whatever the store holds. `[]` when there is no store, the same
+        tolerance `_list_context` gives the rest of the page."""
+        store = _store(request)
+        if store is None:
+            return {"review_runs": []}
+        records = await store.list_review_runs(limit=REVIEW_RUNS_SHOWN)
+        accounts, _minors, _order = _accounts(ctx)
+        persona_names = ctx.personas.available()
+        persona_labels = _persona_labels(
+            ctx, sorted({*persona_names, *(record.persona for record in records)})
+        )
+        return {
+            "review_runs": [
+                review_run_row(record, accounts=accounts, persona_labels=persona_labels)
+                for record in records
+            ]
+        }
+
     @router.get(MEMORY_ROUTE, response_class=HTMLResponse, summary="The Memory screen")
     async def memory_page(request: Request) -> HTMLResponse:
         person, persona, q = _current_filters(request)
         context = await _list_context(request, person=person, persona=persona, q=q)
+        review_log = await _review_log_context(request)
         return templates.TemplateResponse(
             request=request,
             name="memory.html",
             context={
                 **await shell(request, "memory"),
                 **context,
+                **review_log,
                 "help_line": HELP_LINE,
             },
         )
@@ -628,6 +691,7 @@ __all__ = [
     "MEMORY_UNAVAILABLE",
     "NOTHING_TO_SHOW",
     "PER_PERSON_NOT_YET",
+    "REVIEW_RUNS_SHOWN",
     "TEXT_REQUIRED",
     "TEXT_TOO_LONG",
     "build_groups",
@@ -635,5 +699,6 @@ __all__ = [
     "filters_query_string",
     "memory_row",
     "register",
+    "review_run_row",
     "review_url",
 ]

@@ -118,6 +118,43 @@ def _migration_0002_written_owner(conn: sqlite3.Connection) -> None:
     conn.execute("ALTER TABLE memories ADD COLUMN written_owner TEXT NOT NULL DEFAULT ''")
 
 
+def _migration_0003_review_runs(conn: sqlite3.Connection) -> None:
+    """Version 3: `review_runs` -- the review log the Memory screen reads.
+
+    One row per `DueReview` a tick attempted, whatever the outcome
+    (`written` / `nothing` / `parse_failed` / `model_failed` / `skipped`).
+    `kept_json` and `dropped_json` are JSON text, not further-normalised
+    tables: nothing here is ever queried by their contents, only listed
+    newest-first and purged by age, so a table per item would buy nothing
+    a text column does not already give for free.
+
+    `finished_at` is indexed for the screen's newest-first listing and for
+    `purge_short_term`'s age cutoff -- the same two reasons `memories` gets
+    `(holder, created_at)`.
+    """
+    conn.execute(
+        """
+        CREATE TABLE review_runs (
+            run_id           TEXT PRIMARY KEY,
+            conversation_id  TEXT NOT NULL,
+            persona          TEXT NOT NULL,
+            owner            TEXT NOT NULL,
+            started_at       TEXT NOT NULL,
+            finished_at      TEXT NOT NULL,
+            model            TEXT,
+            outcome          TEXT NOT NULL,
+            written          INTEGER NOT NULL,
+            touched          INTEGER NOT NULL,
+            dropped          INTEGER NOT NULL,
+            kept_json        TEXT NOT NULL,
+            dropped_json     TEXT NOT NULL,
+            error            TEXT
+        )
+        """
+    )
+    conn.execute("CREATE INDEX idx_review_runs_finished ON review_runs (finished_at)")
+
+
 def build_migrations(dimensions: int) -> list[Migration]:
     """The migration ladder, bound to this embedder's vector width.
 
@@ -130,4 +167,5 @@ def build_migrations(dimensions: int) -> list[Migration]:
     return [
         functools.partial(_migration_0001_initial_schema, dimensions=dimensions),
         _migration_0002_written_owner,
+        _migration_0003_review_runs,
     ]
