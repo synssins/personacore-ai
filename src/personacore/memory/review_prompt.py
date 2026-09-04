@@ -34,8 +34,8 @@ fields:
   "text": one sentence stating a single fact, in plain English
   "importance": one of "low", "medium", "high"
 
-Keep at most 12 items, the most important ones if there are more candidates \
-than that. If nothing in the transcript is worth keeping, reply with an \
+Keep every fact genuinely worth keeping; do not pad the list and do not \
+invent anything that was not said. If nothing in the transcript is worth keeping, reply with an \
 empty array: []
 """
 

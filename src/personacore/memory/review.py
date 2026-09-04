@@ -62,7 +62,7 @@ DEFAULT_LOOKBACK_HOURS = 48
 _MAX_ROWS_PER_SCAN = 5000
 
 #: Cap on the fenced transcript handed to the triage role (contract §5.2
-#: names 12 items out but says nothing about the input size; this is one
+#: puts no cap on the items out but says nothing about the input size; this is one
 #: call on a model that is not the conversation slot, so a generous but
 #: finite cap protects it the same way `agent/untrusted.py`'s own default
 #: protects every other fenced block).
@@ -172,6 +172,27 @@ def _is_newer_than_mark(record: TranscriptRecord, mark: str | None) -> bool:
     return True
 
 
+def _spoken_names_to_folders(personas: Any) -> dict[str, str]:
+    """Every name a persona may be recorded under, mapped to its folder name.
+
+    Folder names always map to themselves. A persona that loads also maps its
+    display name; one that will not load is matched by folder name only, so a
+    broken persona.toml never stops a review of a persona that is fine.
+    """
+    mapping: dict[str, str] = {}
+    for folder in personas.available():
+        mapping.setdefault(folder, folder)
+        try:
+            loaded = personas.load(folder)
+        except Exception as exc:  # noqa: BLE001 - a broken persona is matched by folder only
+            log.debug("memory_review_persona_unloadable", persona=folder, error=repr(exc))
+            continue
+        display = getattr(loaded, "display_name", None)
+        if isinstance(display, str) and display:
+            mapping.setdefault(display, folder)
+    return mapping
+
+
 class QuietConversationFinder:
     """Conversations that have gone quiet, with something unreviewed in them.
 
@@ -230,7 +251,12 @@ class QuietConversationFinder:
                 continue
             by_conversation.setdefault(row.conversation_id, []).append(row)
 
-        available_personas = set(self._personas.available())
+        # A persona speaks under its display name (`agent/loop.py` builds the
+        # persona author from `display_name or name`), while the store and the
+        # holder use the folder name. Match either spelling and keep the folder
+        # name, or a persona whose display name differs from its folder is
+        # never reviewed at all -- which is exactly what happened.
+        folder_by_spoken_name = _spoken_names_to_folders(self._personas)
         due: list[DueReview] = []
 
         for conversation_id, convo_rows in by_conversation.items():
@@ -241,11 +267,11 @@ class QuietConversationFinder:
 
             spoken_personas = sorted(
                 {
-                    row.author.name
+                    folder_by_spoken_name[row.author.name]
                     for row in convo_rows
                     if row.author is not None
                     and row.author.kind is AuthorKind.PERSONA
-                    and row.author.name in available_personas
+                    and row.author.name in folder_by_spoken_name
                 }
             )
             if not spoken_personas:
@@ -327,7 +353,7 @@ def _parse_facts(text: str | None) -> list[_ParsedFact] | None:
         if raw_importance not in _IMPORTANCE_WORDS:
             return None
         facts.append(_ParsedFact(text=cleaned, importance=_IMPORTANCE_WORDS[raw_importance]))
-    return facts[:12]
+    return facts
 
 
 def _build_transcript(rows: Sequence[TranscriptRecord]) -> str:
