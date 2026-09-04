@@ -73,6 +73,17 @@ Neither action asks for confirmation first; one tap is the whole interaction. A 
 
 **Filters:** a person picker (tick more than one to see several people at once), a persona picker, and a text search box that matches both by substring and by meaning. The default view is everyone, newest first. The filter selection lives in the page's URL, so a filtered view can be reloaded or linked.
 
+### The review log
+
+At the foot of the Memory screen is a **Review log**: the last twenty runs of
+the review pass, newest first. Each run names the persona, the person, when it
+ran and how it ended, then lists what was kept and what was rejected with the
+reason (not JSON at all, missing text, text too long, a bad importance word).
+A run the model failed shows the error. It exists so an administrator can see
+what the triage model is choosing to keep and tune the prompt or the model
+from evidence rather than from counts. Runs age out on the same schedule as
+short-term memories. The filters above do not narrow it.
+
 ## Privacy rules
 
 - One person's memories with a persona never reach another person. The filter that enforces this is in the database query itself, not layered on afterward.
