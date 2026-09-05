@@ -118,7 +118,7 @@ class _AdminChatEvent:
     seam is structural, so neither side has to import the other's types.
     """
 
-    __slots__ = ("kind", "text", "tool_name", "duration_ms", "result")
+    __slots__ = ("kind", "text", "tool_name", "duration_ms", "result", "detail")
 
     def __init__(
         self,
@@ -128,12 +128,17 @@ class _AdminChatEvent:
         tool_name: str | None = None,
         duration_ms: float | None = None,
         result: Any | None = None,
+        detail: dict[str, Any] | None = None,
     ) -> None:
         self.kind = kind
         self.text = text
         self.tool_name = tool_name
         self.duration_ms = duration_ms
         self.result = result
+        #: The loop's own ``detail`` on a ``tool_result`` — carried whole so
+        #: the chat screen can read ``files`` (workspace contract §7) without
+        #: this class learning each key the loop adds.
+        self.detail = detail
 
 
 class _AdminChat:
@@ -218,7 +223,7 @@ class _AdminChat:
         self._host = host
         self._speech = speech
 
-    async def _tools_for(self, user: str) -> list[str]:
+    async def _tools_for(self, user: str, persona: str | None = None) -> list[str]:
         """The tools this turn may call.
 
         The allowlist is per profile and empty means none (spec section 5.4),
@@ -226,10 +231,24 @@ class _AdminChat:
         assistant would silently get no tools and conclude they are broken.
         Grant exactly the safe tools currently installed — nothing latent, and
         nothing above the ceiling.
+
+        ``workspace.*`` is listed only when the answering persona's workspace
+        switch is on (workspace contract §5): the loop withholds those tools
+        anyway, and this list is also what the screen reports as "N tools
+        offered", so it must not count tools the model never saw.
         """
+        workspace_on = False
+        if persona:
+            try:
+                workspace_on = self._personas.load(persona).workspace_enabled
+            except Exception:  # noqa: BLE001 - an unreadable persona offers no workspace
+                workspace_on = False
         try:
             return [
-                spec.name for spec in await self._host.list_tools() if spec.risk is RiskLevel.SAFE
+                spec.name
+                for spec in await self._host.list_tools()
+                if spec.risk is RiskLevel.SAFE
+                and (workspace_on or not spec.name.startswith("workspace."))
             ]
         except Exception as exc:  # noqa: BLE001 - no tools is a worse answer than no chat
             log.warning("admin_chat_tool_listing_failed", error=repr(exc))
@@ -372,7 +391,7 @@ class _AdminChat:
         # wanted rather than who happens to be configured. Resolution itself
         # stays inside the loop.
         answering = persona or self._personas.default_persona
-        available = await self._tools_for(user)
+        available = await self._tools_for(user, answering)
         request = self._request(
             message,
             user=user,
@@ -422,6 +441,7 @@ class _AdminChat:
                         "tool_result",
                         tool_name=event.tool_name,
                         duration_ms=float(duration) if isinstance(duration, int | float) else None,
+                        detail=dict(event.detail) if isinstance(event.detail, dict) else None,
                     )
                 elif event.type is AgentEventType.NOTICE:
                     notices.append(event.text)

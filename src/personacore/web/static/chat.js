@@ -1154,11 +1154,12 @@
                     workspaceCards.className = 'attach-sent-row';
                     workspaceCards.style.alignSelf = 'flex-start';
                     workspaceCards.setAttribute('data-streaming', '');
-                    if (reply && reply.parentNode === messages()) {
-                      reply.insertAdjacentElement('afterend', workspaceCards);
-                    } else {
-                      messages().appendChild(workspaceCards);
-                    }
+                    // No bare `else` here: the dispatch must stay a chain of
+                    // named frames so an older client can ignore one it does
+                    // not know (test_chat_streaming's older-client check).
+                    var anchored = reply && reply.parentNode === messages();
+                    if (anchored) reply.insertAdjacentElement('afterend', workspaceCards);
+                    if (!anchored) messages().appendChild(workspaceCards);
                   }
                   workspaceCards.insertAdjacentHTML('beforeend', workspaceHtml);
                 });
