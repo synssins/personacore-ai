@@ -1,8 +1,8 @@
 # Runbooks
 
-How to write a runbook, upload it, and read what the core says about it. This is the author's guide for alpha.17: the file format, the two switches, and how validation reads. **There is no runner yet in this alpha** — see [What is not built yet](#what-is-not-built-yet) before you go looking for one.
+How to write a runbook, upload it, run it and read what the core says about it. This is the author's guide through alpha.19: the file format, the two switches, how validation reads, how a run actually behaves in the chat, the **+** picker, gates, and `foreach` iteration.
 
-Source: `src/personacore/web/screens/runbooks.py` (the admin screen), `src/personacore/web/screens/core.py` (the core switch), `src/personacore/web/screens/plugin_detail.py` (the per-plugin switch). The file format and the validator are their own package, `src/personacore/runbooks/`.
+Source: `src/personacore/web/screens/runbooks.py` (the admin screen, including Run… and its step preview), `src/personacore/web/screens/chat_picker.py` (the composer's own "Run a runbook…" list), `src/personacore/web/screens/chat_run.py` (a run's own line in the chat window, gate questions, text-answer mode), `src/personacore/web/screens/chat_exchange.py` / `chat_streaming.py` (where a typed message is routed to a gate's own answer instead of an ordinary turn), `src/personacore/web/screens/core.py` (the core switch), `src/personacore/web/screens/plugin_detail.py` (the per-plugin switch). The file format and the validator are their own package, `src/personacore/runbooks/`; so is the runner (`src/personacore/runbooks/runner.py`, `state.py`, `gates.py`).
 
 ## What a runbook is
 
@@ -161,7 +161,7 @@ Four more fields, all on `model` steps (the `draft`, `review` and `revise` steps
 
 Running a runbook (once a runner exists — see below) needs **both** of these on. Both default off, and neither can be turned on by a plugin's own manifest, a bundled file, or an upload — only a person, from these two screens:
 
-1. **The core switch — Core settings → Runbooks → "Runbook runs".** Off by default. While it is off: uploading, listing, validating and deleting all still work; only running is gated (and there is no runner at all yet in this alpha, so this makes no practical difference today). The Runbooks screen shows *"Runbook runs are off. Turn them on in Core settings."* while it is off.
+1. **The core switch — Core settings → Runbooks → "Runbook runs".** Off by default. While it is off: uploading, listing, validating and deleting all still work; only running is gated — **Run…** is disabled with *"Runbook runs are off. Turn them on in Core settings."*, and a run found mid-step at boot is not offered a Resume either.
 2. **The per-plugin switch — on that plugin's own settings page, "Runbooks enabled".** Shown only for a plugin whose manifest declares `[runbooks] supported = true`. Off by default, and greyed with *"runs are off in Core settings"* while the switch above is off. A runbook belonging to a plugin whose own switch is off is listed but greyed, with *"runbooks are off for this plugin"* beside it.
 
 The core switch overrides everything below it: turning the per-plugin switch on means nothing while the core switch is off.
@@ -196,13 +196,67 @@ Each row is one runbook, on one plugin: its title and id, its own version, a **R
 
 Delete asks first, on a page of its own — naming the runbook and what is being removed — and works with scripting off. Deleting an uploaded runbook removes it for good; deleting a bundled one removes it until the plugin is reinstalled, which restores it from the package again.
 
+## Running a runbook
+
+Once both switches above are on and a runbook's Verdict says **Compatible**, there are two ways in — the Runbooks screen's own **Run…** control, and the composer's **+** menu — and both open the same form, because starting a run is one decision wherever it is made from.
+
+### The + picker
+
+In the chat window, press **+** on the composer bar. When the core switch is on, the sheet carries a **"Run a runbook…"** section: a flat list, one line per runbook whose own plugin has runbooks enabled — *"Chapter clean-up v1.1.0 storybook"* — greyed with the Verdict's own reason for one that is invalid or not compatible. A plugin whose own switch is off does not appear in this list at all (it is not merely greyed — there is nothing to click). Picking a row opens the same form the Runbooks screen's **Run…** opens.
+
+### The form: steps, inputs, persona
+
+1. **The step preview** comes first: one row per step — its id, kind, whether `thinking` is on, and which role it writes — each with a **"run this step"** checkbox, ticked by default. Untick one to skip it. A step a later, still-ticked step depends on cannot be unticked at all: its checkbox is disabled and greyed, with the hint *"needed by p2"* naming the step that needs it. The core still refuses an impossible skip on its own account if one somehow reaches it — the checkbox is a courtesy, not the only guard.
+2. **The inputs** follow: one field per `inputs:` entry, and a persona selector defaulting to the runbook's own `persona:` (or the core default, if it names none).
+   - An `integer` input is a number box; a `string` input is a plain text box; a `boolean` input is a checkbox, pre-checked when its `default` is `true`.
+   - A `range` or `list` input is a text box with the help *"one number, a range like 1-12, or a list like 1,3,5"*.
+3. **Press Start.** A new conversation opens for you, its first un-skipped step already running. If the inputs or the runbook itself are refused, the sentence lands back on this same form — nothing starts, and nothing is lost.
+
+### What you see in the chat
+
+Each step posts a short line as it starts and again as it finishes — *"p2: structure edit — running"*, then *"p2: done, 2 min 40 s, ch.p2.md 18,410 bytes"* — drawn as a quiet notice, off to the side of the conversation rather than in it, exactly like the assistant's own aside. Files a step produced show as cards under that line, the same cards a tool call's own files show as. A `model` step's own turn streams like any reply, so you can watch it write.
+
+A run's own machine-written prompts — the exact words sent to the model for a scripted step — are recorded in the conversation too, but collapsed rather than drawn as a full bubble: *"Pass p2 prompt · 2,113 characters"*, expandable if you want to read the whole thing.
+
+**While a step is actually running**, the message box is disabled with *"A runbook is running here; Stop it to type."* — a person's own message can never land in the middle of a run's turns. A **Stop** control sits right on that running line; pressing it stops the current turn the same way stopping an ordinary reply does, and keeps every file the run has produced so far, and unlocks the box the moment it is pressed.
+
+### Restarting the core mid-run
+
+A run that was still going when the core stopped is found again at the next boot and shown as **"Interrupted at p3. Resume?"** in its own conversation, with a **Resume** control right there. Nothing restarts on its own — pressing Resume restarts the interrupted step from its predecessor's own files; anything the dead attempt had half-written is kept, renamed out of the way, never deleted.
+
+### The watchdog
+
+A `model` step with a `watchdog:` (see above) that runs past its own limit is stopped automatically: the partial reply is kept as `<output>.partial`, the step is marked failed with the reason, and the run parks — showing the same *"p3 failed: `<reason>`. Resume?"* line, with the same Resume control, as any other parked run.
+
+## Gates
+
+A `gate` step (see the file format above) either asks a person a small set of questions, or checks an automatic condition with no person involved at all.
+
+### Questions, in the chat
+
+While a `questions: model` (or `questions: file`) gate has an unanswered question, the run's own status area shows a card in place of the plain status line: the question's own text, one button per option, and an **Other** control that opens a small box with its own **Send** — typing there and pressing Enter sends it (Shift+Enter starts a new line instead), same as the Send button does. A **"1 of 3"** count says how many questions are left. Answering one posts it and the same card re-renders with the next question in its place, or — once every question has an answer — the plain status line resumes, naming the step that is running again.
+
+**The composer stays locked while a gate's questions are showing**, the same *"A runbook is running here; Stop it to type."* lock a running step carries, even if the run's own status is technically parked rather than running — a gate waiting on a person is not a moment to also be typing into the ordinary conversation.
+
+The picks and typed answers become the step's own answer file (`answer:` in the file format), and the next step can pin it like any other role. Nothing reads a typed **Other** answer as an instruction — it is data, the same as every other file a step produces.
+
+### Text-answer mode
+
+A `questions: model` gate asks the persona to write the question JSON itself, and that generation can fail to parse. When it does, the gate parks in **text-answer mode** instead of showing a card: the composer unlocks, with the label *"Your next message answers this gate"* in place of the usual lock hint, and the very next message typed into that conversation is sent to the gate as its answer rather than starting an ordinary turn — it never reaches the language model. Send as normal; the run's own progress lines pick up from there.
+
+### Automatic gates
+
+An `auto:` gate (see `pass_when:`/`else:` in the file format above) asks nobody. It reads the named file, checks the one typed condition, and either continues or loops back to an earlier step — up to `max_loops` times — parking with the reason once that limit is spent. Nothing shows in the chat beyond the ordinary per-step progress lines; there is no card, because there is no question.
+
+## `foreach` — running once per item
+
+An `inputs:` entry of type `range` or `list` can drive a `foreach:` on the runbook itself, or on one `tool` step:
+
+- **A runbook-level `foreach:`** does not loop inside one conversation — the prompt would carry every earlier item's own words along with it. Instead it opens a **parent run**, in the conversation where it was started, and starts one ordinary single-item run per item, each in its own new conversation ("`<runbook> — <item>`"), one after another. The parent's own status area shows one line per item — its value, its status, and a link to its own conversation once it has one — instead of the plain per-step line; the parent finishes when the last item does, and a gate in one item's conversation parks that item alone, not the whole parent.
+- **A step-level `foreach:`** (naming one `tool` step) stays inside the one run: that step's own outputs become a list, one entry per item, under the role it already writes.
+
 ## What is not built yet
 
-This alpha (alpha.17) is upload, list, validate, delete, and the two switches above — nothing more. Explicitly **not** part of it, and not reachable from anywhere in the admin UI yet:
-
-- **There is no runner.** Nothing executes a step. Turning both switches on changes nothing observable beyond what this screen and the per-plugin page show.
-- **No picker.** The **+** control in the chat window that will one day list runbooks by plugin and start one does not exist yet.
-- **No gates actually running**, no resume after a restart, no watchdog, and no progress lines in chat — all of §3–§5 of the design contract are future alphas.
 - **No plugin-specific tools or bundled runbooks beyond the reference ones.** A plugin that adds its own tools, its own bundled runbooks, or its own persistent-memory integration to work with them is that plugin's own work, delivered as a package — not the core's.
 
 ## See also

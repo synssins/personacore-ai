@@ -281,6 +281,35 @@ download; there is no editor or preview.
 **Not present:** generation statistics (tokens in/out, tokens per second,
 time to first token). Designed, not built.
 
+### 3.4 Runbook run
+
+Added alpha.19 (contract `runbook.md` §3, `chat_run.py`). A `system`-role
+transcript row draws as a quiet notice line rather than a bubble — a
+runbook's own progress ("p2: structure edit, 2 min 40 s, ch.p2.md 18,410
+bytes"), with that step's own files as cards, same as a tool call's. Below
+the message list, a small live area reports the run's *current* state and
+polls itself on a short interval while there is anything left to say:
+
+| Control | Type | Notes |
+|---|---|---|
+| Run status line | Quiet notice, live | "Running `<step>`…", "Interrupted at `<step>`. Resume?", or "`<step>` failed: `<reason>`. Resume?" |
+| Stop | Button, on the running line | Stops the current turn; every file produced so far is kept; the composer's own textarea, Send button and lock hint are unlocked in the same response (`fragments/composer_lock.html`, an out-of-band swap) |
+| Resume | Button, on the interrupted/parked line | Restarts the interrupted or failed step from its predecessor's own files |
+| Gate question card | Card, in place of the status line (wave 2) | The current step's own unanswered question: text, one button per option, an **Other** disclosure with its own text box and Send, "N of M". Posts to `/admin/chat/run/{cid}/answer`; the response re-renders the same area with the next question or the resumed status line |
+| Parent run item lines | One line per item, in place of the status line (wave 2) | A runbook-level `foreach:`'s own parent run: each item's value, status, and a link to its own conversation once it has one |
+| Run prompt row | Collapsed detail, in the message list | A run's own machine-written prompt (author kind `runbook`) — "Pass p2 prompt · 2,113 characters", expandable — rather than a full bubble |
+
+**Composer lock.** While the run's own status is `running`, or while the
+current step's gate has an unanswered question, the message box is disabled
+and shows "A runbook is running here; Stop it to type." An interrupted or
+parked run with no pending question does *not* lock the box.
+
+**Text-answer mode (wave 2).** When a `questions: model` gate's own JSON
+failed to parse, the composer unlocks instead, with the label "Your next
+message answers this gate" in place of the lock hint — the very next
+message sent in that conversation goes to the gate's own answer, not to the
+language model.
+
 ---
 
 ## Screen 4 — Speech engines and voices (`/admin/voice`, `/admin/voice/voices`)
@@ -347,6 +376,47 @@ in [Your Profile](Your-Profile).
 
 **States:** editable (no override) / locked on / locked off, the last two each
 with a line naming that an administrator set it and which way.
+
+---
+
+## Screen 6 — Runbooks (`/admin/runbooks`)
+
+Added alpha.17 (upload/list/validate/delete) and extended alpha.19 (Run…,
+`runbooks.py`). Under Plugins in the sidebar. See [Runbooks](Runbooks) for
+the full author's guide.
+
+### 6.1 Upload and list
+
+| Control | Type | Notes |
+|---|---|---|
+| Plugin | Dropdown | Only plugins declaring `[runbooks] supported = true` |
+| Runbook (.yaml or .zip) | File input | 2 MB limit, `.yaml`/`.yml`/`.zip` only |
+| Upload | Button | |
+| Run… | Button/link, per row | Greyed with the compatibility verdict, or disabled with the switch's own sentence, when the runbook cannot run |
+| Delete | Button, per row | Confirmation page; a bundled runbook is restored on the plugin's next install |
+
+### 6.2 Run… form (`/admin/runbooks/{plugin}/{id}/run`)
+
+Reached from this screen's own **Run…** link, or from the composer's **+ →
+"Run a runbook…"** picker (wave 2, `chat_picker.py`) — one form, one set of
+skip semantics, wherever it is opened from.
+
+| Control | Type | Notes |
+|---|---|---|
+| Step preview | Table, one row per step | id, kind, whether `thinking` is on, which role it writes |
+| Run this step | Checkbox, per step | Ticked by default; a step a later, still-ticked step depends on is disabled and forced on, with the hint "needed by `<step>`" |
+| One field per `inputs:` entry | Number / text / checkbox | Type from the runbook's own schema; a `range`/`list` input is a text box with the help "one number, a range like 1-12, or a list like 1,3,5" |
+| Persona | Dropdown | Defaults to the runbook's own `persona:`, or the core default |
+| Start | Button | On success, redirects to the new conversation's chat; a refusal (`RunRefused`, or either switch off) renders its sentence on this same form |
+
+### 6.3 The composer's own picker (chat window, "+" → "Run a runbook…")
+
+Wave 2. Shown only when the core switch (`[runbooks] enabled`) is on.
+
+| Control | Type | Notes |
+|---|---|---|
+| Run a runbook… | Section in the "+" sheet | A flat list, "`<title>` v`<version>` `<plugin>`" — one line per runbook whose own plugin has runbooks enabled; a plugin with its own switch off is left out of the list entirely |
+| A runbook row | Link, or greyed text | Greyed with the Verdict's own reason for an invalid or incompatible runbook; otherwise a plain link to 6.2's form |
 
 ---
 
