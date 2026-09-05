@@ -446,6 +446,23 @@
   .attach-card-title { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .attach-card-sub { font-size: 11px; color: color-mix(in srgb, var(--color-text) 55%, transparent); }
 
+  /* ── the masked Pin/Unpin control on a workspace-file card (contract §14,
+     canvas review) ── same reveal-on-hover mechanism as the download arrow
+     on an image thumbnail (`.attach-image-frame` / `.attach-download`,
+     nocturne.css): hidden at rest, opacity 1 on the card's hover or
+     focus-within so a keyboard user tabbing to the button still reveals it,
+     and forced visible on touch, which has no hover to reveal it with.
+     `.workspace-card` (chat_workspace_card.html) is this control's frame,
+     the same role `.attach-image-frame` plays for the download arrow. The
+     `(pinned)` marker in the card's sublabel is separate markup and is
+     never masked. */
+  .workspace-pin-btn { opacity: 0; transition: opacity 0.15s; }
+  .workspace-card:hover .workspace-pin-btn,
+  .workspace-card:focus-within .workspace-pin-btn { opacity: 1; }
+  @media (hover: none) {
+    .workspace-pin-btn { opacity: 1; }
+  }
+
   /* Narrow windows: the rail becomes a strip above the conversation rather
      than disappearing, because "which conversations do I have" is the question
      the screen was rebuilt to answer. */

@@ -8,6 +8,15 @@
    pinning one file in a turn that kept several must not re-fetch or redraw
    the others.
 
+   The control is masked (contract §14, canvas review): hidden at rest,
+   revealed on hover, focus-within, or tap — the same reveal-on-hover
+   mechanism `.attach-image-frame`/`.attach-download` use for the download
+   arrow on an image thumbnail (chat.html's style block, `.workspace-pin-btn`
+   rule). `.workspace-card` is this control's hover/focus-within frame, the
+   same role `.attach-image-frame` plays there. The `(pinned)` marker in the
+   sublabel is never masked — it stays visible always so a person can tell a
+   file is pinned without touching anything.
+
    Context: chip (WorkspaceChip {name, url, kind_label, pinned, pin_url,
             unpin_url}) #}
 {% from "_controls.html" import icon %}
@@ -24,7 +33,7 @@
      with a 303 back to this conversation. `hx-post` on the button itself
      asks for exactly this one card back instead, so pinning a file that
      shares a turn with several others swaps only its own tile. #}
-  <form method="post" action="{{ chip.unpin_url if chip.pinned else chip.pin_url }}" style="margin:0">
+  <form method="post" action="{{ chip.unpin_url if chip.pinned else chip.pin_url }}" class="workspace-pin-btn" style="margin:0">
     <button type="submit" class="btn btn-ghost"
             hx-post="{{ chip.unpin_url if chip.pinned else chip.pin_url }}"
             hx-target="closest .workspace-card" hx-swap="outerHTML"

@@ -18,10 +18,6 @@ There is no database table for what's inside. The folder is the truth for what f
 
 Off by default — the opposite of [Memory](Memory), which is on by default. A persona gets a workspace only once its `persona.toml` sets `workspace = true`, ticked from the *Workspace* checkbox on the persona edit page. A turn with no persona at all, or a persona with the switch off, offers none of the three tools below and gets no manifest — it composes exactly as it did before workspaces existed.
 
-## Pinned files
-
-`persona.toml`'s `workspace_pins` — filename patterns (globs, comma-separated on the edit screen: `report-*.md`) whose matching files are shown to the persona **whole**, fenced, every turn, rather than only listed in the manifest. Default: none pinned. A pin that matches nothing adds nothing; a pinned file is still capped at the `tool_result_chars` setting below.
-
 ## The three tools
 
 Offered only when the persona's workspace is on. All risk level `safe` — each one touches this one conversation's folder and nothing else.
@@ -48,7 +44,7 @@ notes.md — 2,481 bytes — written by you — 14:02
 article.md — 9,114 bytes — from research.fetch — 14:03
 ```
 
-Any file matching a pin is then added again, this time whole, in its own fenced block. A workspace that exists but is empty this turn adds nothing at all — a persona with an idle workspace prompts exactly as it would with none.
+Every file [pinned](#pins-per-conversation) in this conversation is then added again, this time whole, in its own fenced block, above the user's own message. A workspace that exists but is empty this turn adds nothing at all — a persona with an idle workspace prompts exactly as it would with none.
 
 ## The long-result rule
 
@@ -58,7 +54,7 @@ A tool that hands back an actual file (see [Plugin Tools](Plugin-Tools) — "Ret
 
 ## Pins per conversation
 
-Beside a persona's own pinned-file *patterns* above, one conversation can pin specific files by name — a hidden `.pins.json` beside the workspace's own files, never listed as a file itself. A pinned file is shown to the model whole, above the user's own message, the same way a persona-level pin is; a file a plugin hands back can arrive already pinned. Pin or unpin it from the card under the reply, or with the `workspace.pin`/`workspace.unpin` tools.
+One conversation can pin specific files by name — a hidden `.pins.json` beside the workspace's own files, never listed as a file itself. There is no persona-level pinning by pattern; pinning is a per-conversation, per-file action only. A pinned file is shown to the model whole, above the user's own message; a file a plugin hands back can arrive already pinned. Pin or unpin it from the card under the reply, or with the `workspace.pin`/`workspace.unpin` tools.
 
 ## File cards and download
 

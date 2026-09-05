@@ -61,44 +61,6 @@ _NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 """No slashes, no leading dot, bounded length. Traversal is caught again by
 ``AppdataLayout.require_inside``; this is the cheap first door."""
 
-_MAX_WORKSPACE_PINS = 20
-"""A pins list is a handful of glob patterns typed on a settings page, not a
-document — see :func:`_read_workspace_pins`."""
-
-_MAX_WORKSPACE_PIN_CHARS = 120
-"""One pin's length ceiling, the same order of magnitude as a filename
-(``personacore.workspaces.FILENAME_PATTERN`` allows up to 120 characters)."""
-
-
-def _read_workspace_pins(raw: Any) -> list[str]:
-    """``persona.toml``'s top-level ``workspace_pins`` (workspace contract
-    §6): a list of filename globs, or nothing.
-
-    Never raises, and a broken entry costs only that entry, not the whole
-    list — the same "a broken value costs the field, not the persona" rule
-    :func:`read_pauses` follows. Anything that is not a list at all — the key
-    absent, a single string, a table — reads as no pins. Each surviving entry
-    is stripped; empty strings and anything past :data:`_MAX_WORKSPACE_PIN_CHARS`
-    characters are dropped rather than truncated, because a truncated glob
-    silently matches something the administrator did not type. The list
-    itself is capped at :data:`_MAX_WORKSPACE_PINS` entries, keeping the
-    first ones typed.
-    """
-    if not isinstance(raw, list):
-        return []
-    pins: list[str] = []
-    for item in raw:
-        if not isinstance(item, str):
-            continue
-        pin = item.strip()
-        if not pin or len(pin) > _MAX_WORKSPACE_PIN_CHARS:
-            continue
-        pins.append(pin)
-        if len(pins) >= _MAX_WORKSPACE_PINS:
-            break
-    return pins
-
-
 # ---------------------------------------------------------------------------
 # Speech pauses — a persona's verbal tics, timed rather than rewritten
 # ---------------------------------------------------------------------------
@@ -504,16 +466,6 @@ class Persona(BaseModel):
     decision (contract §0.1) is that a persona gets no workspace until
     somebody turns it on. (``memory_enabled`` shipped with the opposite
     default and was later flipped to match — contract §13, E.)"""
-    workspace_pins: list[str] = Field(default_factory=list)
-    """Filename globs (``fnmatch`` patterns) whose matches are always
-    included whole in the workspace manifest (contract §6), read from
-    ``persona.toml``'s top-level ``workspace_pins`` — a list of strings.
-    Anything else in the file for this key, or any entry that is not a
-    plain string, costs the switch and never the persona: absent, the wrong
-    shape, or too long a list all mean "no pins" rather than raising. Capped
-    at 20 entries of at most 120 characters each — a pins list is a handful
-    of glob patterns an administrator typed on a settings page, not a
-    document."""
     thinking_enabled: bool = True
     """Whether this persona reasons before it answers (workspace contract
     §13, D). Read from ``persona.toml``'s top-level ``thinking`` key.
@@ -724,7 +676,6 @@ class PersonaStore:
         # Absent or broken both mean off (contract §0.1) — a persona gets no
         # workspace until somebody turns it on. Never raises.
         workspace_enabled = raw_workspace if isinstance(raw_workspace, bool) else False
-        workspace_pins = _read_workspace_pins(metadata.get("workspace_pins"))
         raw_thinking = metadata.get("thinking")
         # Absent or broken both mean on (contract §13, D) — a persona that
         # predates this key keeps thinking exactly as it always did. Never
@@ -745,7 +696,6 @@ class PersonaStore:
             prompt_prefix=prompt_prefix,
             memory_enabled=memory_enabled,
             workspace_enabled=workspace_enabled,
-            workspace_pins=workspace_pins,
             thinking_enabled=thinking_enabled,
             description=description if isinstance(description, str) else None,
             voice_engine=voice_engine if isinstance(voice_engine, str) else None,

@@ -153,28 +153,6 @@ to another twenty seconds of speech is not stopping. Partial replies already on
 screen stay: they were said.
 """
 
-SPEECH_ON_HERE = "Replies read themselves aloud in this conversation."
-SPEECH_OFF_HERE = "Replies stay quiet in this conversation."
-"""§6.2's switch, in the two states it can be in.
-
-The owner asked for it in the same breath as the audio queue, as a way to
-silence a conversation that has become distracting to have read aloud. It
-silences **this conversation** and touches nothing else
-— not the person's own autoplay setting (ADR-0030) and not any other thread.
-The audio is still there to press and still there to download; it simply does
-not start on its own.
-
-Where the two disagree the narrower one wins: autoplay off for the person means
-silence everywhere, whatever a conversation says, which is why nothing here can
-turn speech back *on*.
-"""
-
-SPEECH_NOT_KEPT = (
-    "This core cannot remember settings, so the voice cannot be switched off "
-    "for one conversation."
-)
-"""No preference store — the same core that cannot remember autoplay either."""
-
 CONVERSATION_DELETED = "Conversation deleted."
 """The whole of what the owner is told, and it is deliberately not the whole
 truth (the chat-room contract, §6).
@@ -799,9 +777,17 @@ def register(router: APIRouter, view: ChatView) -> None:
         streaming.stop_turn(request, str(form.get("conversation") or "") or None, user.id)
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
-    @router.post("/chat/speech", summary="Silence this conversation, or let it speak")
-    async def chat_speech(request: Request) -> RedirectResponse:
-        """§6.2 — stop replies reading themselves aloud in **this** thread.
+    _speech_template = templates.get_template("fragments/chat_speech_switch.html")
+
+    @router.post(
+        "/chat/speech",
+        response_class=HTMLResponse,
+        summary="Whether this conversation's replies read themselves aloud",
+    )
+    async def chat_speech(request: Request) -> Response:
+        """§6.2, rendered as a checkbox (canvas review, contract §14) — stop
+        replies reading themselves aloud in **this** thread, or let them
+        again.
 
         The owner asked for it in the same breath as the audio queue, as a way
         to silence a conversation that has become distracting to have read
@@ -810,13 +796,30 @@ def register(router: APIRouter, view: ChatView) -> None:
         and the audio is still there to press and still there to download. It
         simply does not start on its own.
 
-        Where the two disagree the narrower wins, so this can only ever
-        silence: with autoplay off for the person there is nothing here to turn
-        back on.
+        Where the two disagree the narrower wins: autoplay off for the person
+        means silence everywhere, whatever this conversation's own checkbox
+        says.
 
-        An ordinary form that saves a preference and redirects back to the
-        conversation, exactly like the rail's fold, and not audited for the
-        same reason: it changes nothing about the household.
+        Modelled on :func:`chat_thinking` below: an ordinary form that saves a
+        preference and comes back to the conversation, differing in the one
+        way that route does — htmx's own request gets back just the
+        refreshed switch (the same ``#chat-speech`` id its ``hx-target``
+        names), not the whole page.
+
+        **THE STORED PREFERENCE DID NOT CHANGE — ONLY HOW THE POST IS READ
+        DID.** The toggle button this replaced always posted an explicit
+        ``muted`` value, one way or the other, because that was the only way
+        an ordinary submit button could say "the opposite of what is showing"
+        reliably. A native checkbox cannot do that: it submits nothing at all
+        when it is unticked. Reading ``muted`` the old way against this
+        markup would have silently broken un-silencing — nothing sent,
+        ``wants_collapsed(None)`` is ``False``, "not muted" stands, replies
+        keep talking with the box drawn unticked — exactly the bug a plain
+        markup swap would have reintroduced. So this reads the checkbox's own
+        sense instead (``voice``, present and truthy means checked, i.e.
+        speaking) and negates it before writing to the same preference key
+        (:func:`personacore.web.screens.chat_voices.muted_preference` plus the
+        person's own preference table) the old handler always wrote.
         """
         user = require_user(request)
         form = await request.form()
@@ -826,13 +829,25 @@ def register(router: APIRouter, view: ChatView) -> None:
         key = voices.muted_preference(
             str(getattr(found, "conversation_id", "") or "")
         )
+        speaking = wants_collapsed(form.get("voice"))
         if key is not None:
             await asyncio.to_thread(
                 ctx.preferences.set_bool,
                 user.door,
                 user.id,
                 key,
-                wants_collapsed(form.get("muted")),
+                not speaking,
+            )
+        if request.headers.get("hx-request", "").lower() == "true":
+            return HTMLResponse(
+                _speech_template.render(
+                    conversation=marker or "",
+                    speech_switchable=found is not None,
+                    # A conversation that does not exist has nothing switched
+                    # off — the same answer `_muted` gives it — whatever the
+                    # checkbox that posted this said.
+                    speech_here=speaking if key is not None else True,
+                )
             )
         return RedirectResponse(
             _back_to(request, marker), status_code=status.HTTP_303_SEE_OTHER

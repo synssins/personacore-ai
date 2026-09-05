@@ -44,7 +44,6 @@ block* and the tool-risk clamp, which are core policy, are implemented).
 
 from __future__ import annotations
 
-import fnmatch
 import json
 import re
 import time
@@ -1394,7 +1393,7 @@ class AgentLoop:
 
     def _workspace_blocks(self, ctx: TurnContext) -> list[str]:
         """Workspace contract §6: the manifest, then one fenced block per
-        file matching one of the persona's pins.
+        file pinned in this conversation's own pin sidecar.
 
         Empty whenever :meth:`_workspace_ready` is false, or the folder does
         not exist yet, or (contract §6) exists but is empty — "a room of one
@@ -1431,15 +1430,13 @@ class AgentLoop:
 
         # Pinned files are read whole and fenced individually, but the total
         # is not: past `tool_result_chars` (the same cap one tool result is
-        # held to) no more pinned content is added, however many files or
-        # patterns still match. A file skipped for that reason is named in
-        # the manifest instead of silently vanishing — the model can still
-        # `workspace.read_file` it itself. Contract §13, C: the universe of
-        # pinned files is the conversation's own pin sidecar
-        # (`entry.pinned`, checked first, in listing order) *plus* every
-        # file matching one of the persona's `workspace_pins` globs, as
-        # before — one running total and one cap across both sources, so a
-        # file pinned both ways is never counted, or shown, twice.
+        # held to) no more pinned content is added, however many files are
+        # pinned. A file skipped for that reason is named in the manifest
+        # instead of silently vanishing — the model can still
+        # `workspace.read_file` it itself. The universe of pinned files is
+        # the conversation's own pin sidecar (`entry.pinned`, checked in
+        # listing order) — persona-level pinning by glob was removed
+        # (contract §14).
         cap = workspace_tools.settings.tool_result_chars
         pinned_already: set[str] = set()
         pinned_total = 0
@@ -1474,10 +1471,6 @@ class AgentLoop:
         for entry in entries:
             if entry.pinned:
                 _include_pin(entry)
-        for pattern in persona.workspace_pins:
-            for entry in entries:
-                if fnmatch.fnmatch(entry.name, pattern):
-                    _include_pin(entry)
 
         manifest_body = (
             "Files in this conversation's workspace (read them with workspace.read_file):\n"
@@ -1762,16 +1755,21 @@ class AgentLoop:
         """Workspace contract §13, D: what ``chat_template_kwargs`` this
         round's streaming call should carry, or nothing at all.
 
-        Silent — an empty ``dict``, so nothing is added to the request — when
-        neither the persona nor the conversation's own override says anything
-        about thinking (a raw-passthrough turn, above all: it has no persona
-        and, ordinarily, no override either). Otherwise the effective setting
-        is :attr:`TurnContext.thinking_override` when it is not ``None``, else
-        :attr:`~personacore.agent.personas.Persona.thinking_enabled` — and
-        **off on every round after a tool result, regardless of either**, the
-        owner's rule (contract §13, D): a model reasoning about a tool result
-        it never actually sees is exactly the failure the workspace exists to
-        remove, and this is the other half of it.
+        Sent only when the effective thinking setting is **off**: persona
+        ``thinking = false``, a conversation override of ``False``, or any
+        round after a tool result within a turn (regardless of either) — the
+        owner's rule (contract §13, D) that a model reasoning about a tool
+        result it never actually sees is exactly the failure the workspace
+        exists to remove. When the effective value is ``True`` the request is
+        left untouched — no ``chat_template_kwargs`` at all — because a host
+        started with thinking on needs no reminder that it is on; the only
+        thing worth telling it is "stop". Raw-passthrough turns (no persona,
+        no override) are always untouched too.
+
+        The effective setting: :attr:`TurnContext.thinking_override` when it
+        is not ``None``, else
+        :attr:`~personacore.agent.personas.Persona.thinking_enabled`, else
+        (no persona, no override) there is nothing to say at all.
         """
         persona = ctx.persona
         override = ctx.thinking_override
@@ -1783,7 +1781,9 @@ class AgentLoop:
             enabled = override
         else:
             enabled = persona.thinking_enabled if persona is not None else True
-        return {"chat_template_kwargs": {"enable_thinking": enabled}}
+        if enabled:
+            return {}
+        return {"chat_template_kwargs": {"enable_thinking": False}}
 
     async def _consume_stream(
         self,
