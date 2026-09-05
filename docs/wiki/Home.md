@@ -63,6 +63,8 @@ scenario closest to what you are trying to do.
 [Appdata-Layout](Appdata-Layout) ·
 [LLM-Roles](LLM-Roles) ·
 [Personas](Personas) ·
+[Memory](Memory) ·
+[Workspace](Workspace) ·
 [Event-Bus](Event-Bus) ·
 [Health-And-Diagnostics](Health-And-Diagnostics)
 

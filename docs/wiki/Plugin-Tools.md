@@ -83,6 +83,39 @@ class ForecastResult(BaseModel):
 
 Then the agent loop truncates again, to 8,000 characters by default (`DEFAULT_MAX_CONTENT_CHARS`), with a visible `[... truncated, N more characters ...]` note. Context is finite. Return the answer, not the source data.
 
+## Returning a file
+
+A tool that has a whole document to hand back — not a sentence, a file — returns it as an **MCP resource** instead of stuffing it into the text result. This is how a workspace file gets its start; see [Workspace](Workspace) for the conversation-side half of this feature.
+
+Return a list of content blocks: an ordinary `TextContent` summary, plus one `EmbeddedResource` per file, each wrapping a `TextResourceContents(uri, mimeType, text)`:
+
+```python
+from mcp import types
+
+async def fetch_report() -> list[types.ContentBlock]:
+    body = "# Report\n\n...the whole document...\n"
+    summary = f"Report ready: {len(body):,} chars, {len(body.split()):,} words."
+    return [
+        types.TextContent(type="text", text=summary),
+        types.EmbeddedResource(
+            type="resource",
+            resource=types.TextResourceContents(
+                uri="resource://report.md",
+                mimeType="text/markdown",
+                text=body,
+            ),
+        ),
+    ]
+```
+
+**The filename is the uri's last path segment**, and it must pass the same bare-filename rule every workspace file is checked against: `^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$` — letters, numbers, `.`, `_` or `-`, up to 120 characters, no leading dot, no slash. `resource://report.md` above yields `report.md`. A uri whose last segment fails that pattern is refused: the core logs it and the resource falls back to the ordinary `[resource content omitted]` placeholder, exactly as if it had never carried a file at all.
+
+**What the model sees** depends on whether the calling persona's workspace is on. With it on, the file is saved and the tool's text result gets one line appended per file: `Saved to workspace: report.md (9,114 chars, 1,402 words)`. With it off, the model is told the file could not be kept — `File report.md was not kept: this persona has no workspace.` — and never sees the body either way. The model is never handed a file's contents it cannot also keep.
+
+**Blob resources are not kept.** Only a resource carrying `text` becomes a workspace file; a `BlobResourceContents` (or a resource with no text at all) falls through to the `[resource content omitted]` placeholder, the same as an image or audio block.
+
+**The 64 KiB cap on a rendered result does not apply here** — that cap (`MAX_RESULT_CHARS`) only bounds the plain-text parts of a result, which a resource never joins. What does apply is the workspace's own `max_file_bytes` ceiling (see [Core Settings](Core-Settings)'s `[workspace]` section): a file over that limit is refused at the write, with a plain message naming the limit, and the tool's other text still reaches the model.
+
 ## Returning an error
 
 **Failure is an outcome, not a crash.** A dependency being unreachable should produce a sentence the persona can say aloud, not a traceback. A crashed plugin is restarted with backoff and shown as unhealthy in the admin UI — but the user still heard nothing, which is the one outcome spec §5.1 forbids.
