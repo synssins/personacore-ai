@@ -31,7 +31,7 @@ from personacore.agent.loop import (
     TurnRequest,
 )
 from personacore.agent.personas import PersonaStore
-from personacore.audit.models import Surface
+from personacore.audit.models import AuthorKind, Surface
 from personacore.contracts.policy import MemoryScope, PolicyProfile, ProfileKind, RiskLevel
 from personacore.conversations.addressing import FloorAnswer
 from personacore.voice.reply import ReplySpeaker, ReplySpeech
@@ -216,6 +216,28 @@ class _AdminChat:
     the chat screen reads the conversation's own override (if the store
     remembers one) and passes it here so the header's Thinking checkbox
     means something.
+
+    ``temperature`` and ``pins_by_role`` are the runbook contract's own
+    additions (§2 and §1.5), passed straight to ``TurnRequest.temperature``
+    and ``TurnRequest.pins_by_role``. **Both are ``None`` by default and only
+    a runbook's model step sets either**, so every turn a person typed is
+    composed and sent byte for byte the way it always was. A run's step names
+    its own sampling temperature, and names the files it wants pinned by
+    *role*, because a runbook's prompt file may never name a file — the
+    labelled header (``pinned as [text] (B1_Ch1.md)``) is how the model is
+    told which block is which. **An empty ``pins_by_role`` is passed on as an
+    empty mapping, not as ``None``**: a step whose ``pins:`` was an empty list
+    pins nothing, and only a caller that says ``None`` gets the sidecar's set.
+
+    ``author_kind`` is the runbook contract's §3 addition, passed straight to
+    ``TurnRequest.author_kind``: it stamps this turn's transcript rows as a
+    run's rather than a person's, so ``conversation_history`` can leave them
+    out of the next person's prompt. ``None`` by default and for every turn a
+    person typed.
+
+    Nothing here reads a runbook, resolves a role or knows a run exists: the
+    runner has already resolved both by the time this is called, the same way
+    the chat screen has already resolved the conversation and the attachment.
     """
 
     def __init__(
@@ -303,6 +325,9 @@ class _AdminChat:
         image_data_urls: Sequence[str] = (),
         conversation_id: str | None = None,
         thinking: bool | None = None,
+        temperature: float | None = None,
+        pins_by_role: Mapping[str, str] | None = None,
+        author_kind: AuthorKind | None = None,
     ) -> TurnRequest:
         return TurnRequest(
             user_message=message,
@@ -328,6 +353,21 @@ class _AdminChat:
             # never touched the chat header's Thinking checkbox — see
             # ``TurnRequest.thinking``'s own docstring.
             thinking=thinking,
+            # Runbook contract §2 and §1.5. Both `None` for every turn a
+            # person typed, which builds the request exactly as it always
+            # was — see `TurnRequest.temperature` and
+            # `TurnRequest.pins_by_role`.
+            #
+            # `is not None`, not truthiness: an empty mapping is a step whose
+            # `pins:` was an empty list, and it means "pin nothing", which is
+            # a different instruction from "I have no opinion about pins".
+            # Collapsing the two here is what would make `pins: []` silently
+            # pin the sidecar's set.
+            temperature=temperature,
+            pins_by_role=dict(pins_by_role) if pins_by_role is not None else None,
+            # Runbook contract §3. `None` for every turn a person typed, and
+            # then the loop attributes the rows exactly as it always has.
+            author_kind=author_kind,
         )
 
     async def ask(
@@ -388,6 +428,9 @@ class _AdminChat:
         image_data_urls: Sequence[str] = (),
         conversation_id: str | None = None,
         thinking: bool | None = None,
+        temperature: float | None = None,
+        pins_by_role: Mapping[str, str] | None = None,
+        author_kind: AuthorKind | None = None,
     ) -> AsyncIterator[_AdminChatEvent]:
         """The turn as it happens, ending with the finished result.
 
@@ -417,6 +460,9 @@ class _AdminChat:
             image_data_urls=image_data_urls,
             conversation_id=conversation_id,
             thinking=thinking,
+            temperature=temperature,
+            pins_by_role=pins_by_role,
+            author_kind=author_kind,
         )
 
         parts: list[str] = []
@@ -520,6 +566,9 @@ class _AdminChat:
         image_data_urls: Sequence[str] = (),
         conversation_id: str | None = None,
         thinking: bool | None = None,
+        temperature: float | None = None,
+        pins_by_role: Mapping[str, str] | None = None,
+        author_kind: AuthorKind | None = None,
     ) -> _AdminChatResult:
         """The same turn, collected. Non-streaming callers are unchanged.
 
@@ -539,6 +588,9 @@ class _AdminChat:
             image_data_urls=image_data_urls,
             conversation_id=conversation_id,
             thinking=thinking,
+            temperature=temperature,
+            pins_by_role=pins_by_role,
+            author_kind=author_kind,
         ):
             if event.kind == "done" and event.result is not None:
                 result = event.result

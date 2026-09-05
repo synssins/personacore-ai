@@ -56,7 +56,7 @@ from personacore.audit.logging import (
     LoggingConfig,
     configure_logging,
 )
-from personacore.audit.models import AuditStoreConfig
+from personacore.audit.models import AuditStoreConfig, Surface
 from personacore.audit.store import AuditStore
 from personacore.auth.accounts import UserStore
 from personacore.auth.method import resolve_auth
@@ -123,6 +123,7 @@ from personacore.config.settings import (
     LLMRole,
     ensure_core_config,
 )
+from personacore.conversations.service import ConversationService
 from personacore.hearing.registry import HearingRegistry
 from personacore.hearing.registry import builtin_engines as builtin_recognisers
 from personacore.llm import LLMResponseError
@@ -143,6 +144,7 @@ from personacore.plugins.packages import read_disabled_plugins
 from personacore.preferences import PREFERENCES_FILENAME, PreferenceStore
 from personacore.runbooks import RunbookStore
 from personacore.runbooks.compat import PluginFacts
+from personacore.runbooks.runner import Runner
 from personacore.voice.library import VoiceLibrary, voice_health
 from personacore.voice.registry import VoiceRegistry, builtin_engines
 from personacore.voice.reply import SPEAKER_ATTRIBUTE, ReplySpeaker
@@ -961,6 +963,32 @@ def create_app(appdata: Path | str | None = None) -> FastAPI:
     chat_runner = _make_chat_runner(agent, personas, tools_provider, reply_speech)
     app.state.chat_runner = chat_runner
 
+    # The runbook runner (``working/contracts/runbook.md`` §3). Built here and
+    # not in the web layer because a run outlives every request that touches
+    # it: `start` returns as soon as the state is written, and the steps go on
+    # in a task this application owns — the same posture ADR-0043 established
+    # for a streamed turn. The web reads `app.state.runner`.
+    #
+    # `tools_provider` rather than the bare `host`, for the reason the chat
+    # runner above takes it: a runbook's tool step goes through the same
+    # composite the loop calls, so the core's own tool families are reachable
+    # to a run exactly as they are to a turn.
+    #
+    # Both switches are read through callables so a save on the Core settings
+    # screen or a plugin page is in force on the very next start, with no
+    # restart -- the same shape `RunbookStore` itself already takes.
+    app.state.runner = Runner(
+        layout,
+        app.state.runbooks,
+        chat_runner,
+        tools_provider,
+        ConversationService(audit, surface=Surface.ADMIN_UI, layout=layout),
+        lambda: app.state.settings.runbooks.enabled,
+        app.state.runbooks.plugin_enabled,
+        audit=audit,
+        workspaces=workspace_tools,
+    )
+
     _mount_admin(
         app,
         layout,
@@ -1140,6 +1168,15 @@ def create_app(appdata: Path | str | None = None) -> FastAPI:
             app.state.retention_task = asyncio.create_task(
                 _retention_purge_loop(), name="retention-purge"
             )
+        # Runbook contract §5: find the runs this core was in the middle of
+        # when it stopped. Placed after the purge loop is started, which is
+        # what runs the workspace sweep — a stray workspace is removed by the
+        # sweep and a live one is what this reads. Nothing restarts on its
+        # own: a run found mid-step is marked `interrupted` and waits for a
+        # person to press Resume. `scan_at_boot` never raises, so this needs
+        # no `optional` wrapper of its own; a run must not be able to hold up
+        # the listener.
+        app.state.runbook_runs_interrupted = await app.state.runner.scan_at_boot()
         # Speech comes up last and on its own task, so loading a model never
         # delays the listener -- and an engine that cannot start costs speech
         # and nothing else (ADR-0029 §6). Not awaited here on purpose: the

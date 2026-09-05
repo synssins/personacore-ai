@@ -25,7 +25,7 @@ from datetime import datetime
 from typing import Any, Protocol
 
 from personacore.api.keys import ApiKeyRecord, IssuedKey
-from personacore.audit import AuditRecord, Owner, Surface, TranscriptRecord
+from personacore.audit import AuditRecord, AuthorKind, Owner, Surface, TranscriptRecord
 from personacore.config.settings import CoreSettings
 from personacore.contracts.policy import PolicyProfile
 from personacore.conversations.addressing import FloorAnswer
@@ -556,6 +556,34 @@ class ChatRunner(Protocol):
     ``inspect.signature`` before it is offered, exactly like
     ``image_data_urls`` — so an older runner is asked for nothing it cannot
     do.
+
+    ``temperature`` and ``pins_by_role`` are the runbook contract's own
+    additions (§2 and §1.5) and follow exactly the rule ``also_present``,
+    ``image_data_urls`` and ``thinking`` follow: **``None`` is the default and
+    composes the request exactly as it always has**, and both are discovered
+    on the concrete runner with ``inspect.signature`` before they are offered,
+    so a runner that predates them is asked for nothing it cannot do.
+
+    ``temperature`` is one scripted step's own sampling temperature, sent as
+    the request's own OpenAI field. ``pins_by_role`` is that step's pinned set
+    as role -> filename: the runner has already resolved every role to a real
+    file, and the only thing the runner asks of the turn is that each pinned
+    block's header say which role it is (``pinned as [text] (B1_Ch1.md)``),
+    because a runbook's prompt file refers to its inputs by role and may never
+    name a file. **An empty mapping is not ``None``**: it is a step whose
+    ``pins:`` was an empty list, and it pins nothing at all, where ``None``
+    leaves the conversation's own pin sidecar to decide. Neither is reachable
+    from a screen: a person typing in the chat box sets neither, and a run
+    sets both.
+
+    ``author_kind`` is the runbook contract's §3 addition and follows the same
+    rule again: ``None`` is the default and every turn a person typed, and it
+    is discovered with ``inspect.signature`` before it is offered. A run passes
+    :attr:`~personacore.audit.models.AuthorKind.RUNBOOK`, which is written to
+    the ``author_kind`` column of the rows the turn produces. The rows are
+    still kept and the chat page still draws them; what the marking buys is
+    that :func:`~personacore.web.routes.conversation_history` can leave a
+    run's scripted turns out of the prompt the next typed message composes.
     """
 
     async def __call__(
@@ -569,6 +597,9 @@ class ChatRunner(Protocol):
         also_present: Sequence[str] = (),
         image_data_urls: Sequence[str] = (),
         thinking: bool | None = None,
+        temperature: float | None = None,
+        pins_by_role: Mapping[str, str] | None = None,
+        author_kind: AuthorKind | None = None,
     ) -> ChatTurnResult: ...
 
 
@@ -651,6 +682,9 @@ class ChatStreamRunner(Protocol):
         also_present: Sequence[str] = (),
         image_data_urls: Sequence[str] = (),
         thinking: bool | None = None,
+        temperature: float | None = None,
+        pins_by_role: Mapping[str, str] | None = None,
+        author_kind: AuthorKind | None = None,
     ) -> AsyncIterator[ChatStreamEvent]: ...
 
 

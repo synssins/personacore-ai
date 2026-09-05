@@ -32,6 +32,7 @@ from pydantic import ValidationError as PydanticValidationError
 
 from personacore.runbooks.schema import (
     BUDGET_REFUSAL,
+    ITERABLE_INPUT_TYPES,
     RESERVED_BUDGET_KEYS,
     GateStep,
     ModelStep,
@@ -48,6 +49,13 @@ change here, never a setting."""
 
 TEMPLATE_PREFIX = "files."
 
+ITEM_NAME = "item"
+"""``{{ item }}`` — the one template name that is not an input and not a file
+role (contract §1.12). It stands for the value an iterating step is on, so it
+resolves only inside a step that declares ``foreach:``; anywhere else it is
+refused like any other unknown name, which is what stops a copied step from
+silently substituting nothing."""
+
 
 def validate_runbook(text: str, prompts: Mapping[str, str]) -> Runbook:
     """Parse and validate one runbook file. Raises :class:`ValidationError`.
@@ -63,6 +71,9 @@ def validate_runbook(text: str, prompts: Mapping[str, str]) -> Runbook:
     raw = _parse_yaml(text)
     if _has_reserved_key(raw):
         raise ValidationError([BUDGET_REFUSAL])
+    sentences = _sentence_conditions(raw)
+    if sentences:
+        raise ValidationError(sentences)
 
     try:
         runbook = Runbook.model_validate(raw)
@@ -113,6 +124,42 @@ def _has_reserved_key(node: Any) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Pass 2b — an auto gate's condition is not written as a sentence any more
+# ---------------------------------------------------------------------------
+
+CONDITION_WAS_A_SENTENCE = (
+    "an auto gate's 'pass_when' used to be written as a sentence; it is now "
+    'one condition and its value, for example "pass_when: {no_line_contains: '
+    "'| high |'}\"."
+)
+"""Contract §2's own example wrote ``pass_when: "no line contains '| high |'"``
+and this build no longer reads it — see
+:class:`personacore.runbooks.schema.AutoGate`. Caught here, over the raw
+document, rather than left to the schema, because pydantic's own answer to a
+string where a mapping belongs is "Input should be a valid dictionary", which
+tells a person who wrote a runbook against the older shape nothing at all
+about what to write instead."""
+
+
+def _sentence_conditions(raw: Any) -> list[str]:
+    """Every ``pass_when:`` in the file that is still a sentence."""
+    problems: list[str] = []
+    steps = raw.get("steps")
+    if not isinstance(steps, list):
+        return problems
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        auto = step.get("auto")
+        if not isinstance(auto, dict) or not isinstance(auto.get("pass_when"), str):
+            continue
+        where = step.get("id")
+        named = f"step {where}: " if isinstance(where, str) and where else ""
+        problems.append(f"{named}{CONDITION_WAS_A_SENTENCE}")
+    return problems
+
+
+# ---------------------------------------------------------------------------
 # Pass 3 — schema, translated to plain English
 # ---------------------------------------------------------------------------
 
@@ -157,11 +204,18 @@ def _check_structure(runbook: Runbook, prompts: Mapping[str, str]) -> list[str]:
     # single output).
     produced: set[str] = {"canon"} | {item.name for item in runbook.inputs}
     input_names = {item.name for item in runbook.inputs}
+    iterable_names = {item.name for item in runbook.inputs if item.type in ITERABLE_INPUT_TYPES}
+
+    problems.extend(_check_foreach(runbook, input_names, iterable_names))
 
     for step in runbook.steps:
         if isinstance(step, ToolStep):
-            _check_templates(step.id, step.args, input_names, produced, problems)
-            _check_templates(step.id, step.files, input_names, produced, problems)
+            # Contract §1.12: `{{ item }}` is a name only an iterating step
+            # has, so it is added to *that step's* allowed names and to no
+            # other's.
+            step_inputs = input_names | {ITEM_NAME} if step.foreach else input_names
+            _check_templates(step.id, step.args, step_inputs, produced, problems)
+            _check_templates(step.id, step.files, step_inputs, produced, problems)
             # A tool step's `pin` names roles to carry forward, and — unlike
             # a model step's `pins` — that is allowed to include roles this
             # SAME step's own `files:` just produced (contract §2's own
@@ -206,6 +260,15 @@ def _check_structure(runbook: Runbook, prompts: Mapping[str, str]) -> list[str]:
                     f"step {step.id}'s 'goto' names step "
                     f"{step.auto.else_.goto!r}, which does not exist."
                 )
+            if step.auto is not None:
+                # `file_exists: <role>` is the one condition that names
+                # something outside its own gate, so it is the one that can be
+                # written against a role nothing produces — checked here, with
+                # every other role read, rather than discovered at run time as
+                # a condition that is simply always false.
+                role = step.auto.pass_when.get("file_exists")
+                if isinstance(role, str):
+                    _check_reads(step.id, role, produced, problems)
             produced.add(step.id)
 
     if runbook.format > SUPPORTED_FORMAT:
@@ -214,6 +277,34 @@ def _check_structure(runbook: Runbook, prompts: Mapping[str, str]) -> list[str]:
             f"core supports up to format {SUPPORTED_FORMAT}."
         )
 
+    return problems
+
+
+def _check_foreach(runbook: Runbook, input_names: set[str], iterable_names: set[str]) -> list[str]:
+    """Contract §1.12: every ``foreach:`` names an input of type ``range`` or
+    ``list`` — the runbook's own, and each tool step's.
+
+    Both refusals are the same two sentences because they are the same two
+    mistakes: naming something that is not an input at all, and naming an
+    input that holds one value rather than several. A ``foreach`` over a
+    single value is not a smaller loop; it is an author who meant a different
+    input, and running it once would hide that.
+    """
+    problems: list[str] = []
+    wanted: list[tuple[str, str]] = []
+    if runbook.foreach is not None:
+        wanted.append(("this runbook's 'foreach'", runbook.foreach))
+    for step in runbook.steps:
+        if isinstance(step, ToolStep) and step.foreach is not None:
+            wanted.append((f"step {step.id}'s 'foreach'", step.foreach))
+    for where, name in wanted:
+        if name not in input_names:
+            problems.append(f"{where} names input {name}, which this runbook does not declare.")
+        elif name not in iterable_names:
+            problems.append(
+                f"{where} names input {name}, which is one value — a foreach "
+                "needs an input of type range or list."
+            )
     return problems
 
 
@@ -257,6 +348,26 @@ def _check_templates(
                 )
 
 
+def template_roles(*values: Any) -> set[str]:
+    """Every file role named by a ``{{ files.role }}`` in these strings.
+
+    Public because the runner needs the same reading of a template when it
+    works out what one step needs of another (contract §1.11's skip check),
+    and two readings of "what does this template refer to" that could drift
+    apart is exactly the kind of pair that eventually disagrees about a real
+    runbook. Non-strings are ignored, so a step's ``args`` mapping can be
+    passed straight in.
+    """
+    found: set[str] = set()
+    for value in values:
+        if not isinstance(value, str):
+            continue
+        for name in _template_names(value):
+            if name.startswith(TEMPLATE_PREFIX):
+                found.add(name[len(TEMPLATE_PREFIX) :])
+    return found
+
+
 def _template_names(value: str) -> list[str]:
     """Every ``{{ name }}`` in ``value``, contract §2: "Templates are
     ``{{ input }}`` and ``{{ files.role }}`` only. No expressions." — so this
@@ -265,4 +376,4 @@ def _template_names(value: str) -> list[str]:
     return re.findall(r"\{\{\s*([A-Za-z0-9_.]+)\s*\}\}", value)
 
 
-__all__ = ["SUPPORTED_FORMAT", "validate_runbook"]
+__all__ = ["ITEM_NAME", "SUPPORTED_FORMAT", "template_roles", "validate_runbook"]

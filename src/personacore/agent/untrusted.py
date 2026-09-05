@@ -161,6 +161,28 @@ def defang(content: str) -> str:
     return _MARKER_PATTERN.sub(lambda m: "_".join(m.group(0)), content)
 
 
+def pinned_source(name: str, role: str | None = None) -> str:
+    """The ``source=`` a pinned workspace file's fence header carries.
+
+    Two spellings, and which one is used is the *turn's* property rather than
+    the file's. An ordinary turn pins by the conversation's own sidecar and
+    the header names the file: ``pinned notes.md``. A runbook turn pins a
+    named set (runbook contract §1.5 — "a prompt file never names a file"),
+    and the header has to say which **role** each block is, because the
+    prompt refers to the file only by role: ``pinned as [text] (notes.md)``.
+
+    Here rather than in the loop because it is the *source text* of an
+    untrusted block, and that vocabulary lives in this module — the header is
+    part of what the model reads about where content came from. It is not a
+    new :class:`UntrustedKind`: the content is still a workspace file, with
+    exactly the same warning in front of it, and inventing a kind would
+    change the fence for a difference that is only a label.
+    """
+    if role is None:
+        return f"pinned {name}"
+    return f"pinned as [{role}] ({name})"
+
+
 def wrap_untrusted(
     content: str,
     *,
@@ -194,5 +216,6 @@ __all__ = [
     "UntrustedKind",
     "defang",
     "new_fence_token",
+    "pinned_source",
     "wrap_untrusted",
 ]

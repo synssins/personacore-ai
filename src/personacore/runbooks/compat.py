@@ -5,7 +5,7 @@ Separate from :mod:`personacore.runbooks.validate` on purpose: a runbook can
 be perfectly well-formed and still unusable because a plugin it needs is not
 installed, is switched off, is too old, or has its own runbooks switch off.
 Those are facts about *this household's* plugins, not about the file, so a
-runbook uploaded for plugin ``vesmark`` before ``vesmark`` is even installed
+runbook uploaded for plugin ``weather`` before ``weather`` is even installed
 still stores and validates — it is simply greyed until the plugin shows up
 (contract §6: "uploads for it still validate and store").
 

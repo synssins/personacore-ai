@@ -66,6 +66,7 @@ from personacore.agent.protocols import (
     MemoryProvider,
     MemoryRecallRequest,
     PersonaLLMSource,
+    ToolFile,
     ToolProvider,
     ToolResult,
     ToolSpec,
@@ -76,6 +77,7 @@ from personacore.agent.untrusted import (
     UntrustedKind,
     defang,
     new_fence_token,
+    pinned_source,
     wrap_untrusted,
 )
 from personacore.audit import (
@@ -610,6 +612,63 @@ class TurnRequest(BaseModel):
     simply never sets it, and the persona's own switch answers exactly as it
     always did."""
 
+    temperature: float | None = None
+    """The sampling temperature for this turn's requests, or ``None`` to send
+    none at all (runbook contract §2, a model step's ``temperature:``).
+
+    ``None`` is the default and every caller before this field existed: the
+    request payload is then byte-identical to the one it has always carried,
+    and the model host applies whatever default it was started with. A number
+    is sent as the request's own top-level ``temperature`` — an OpenAI request
+    field, not a vendor extension — and it survives the
+    retry-without-thinking-fields path in :meth:`AgentLoop._stream_round`,
+    because a host that does not know ``chat_template_kwargs`` has no opinion
+    about ``temperature``.
+
+    Per turn rather than per persona on purpose: a runbook's structure pass and
+    its voice pass are the same character asked to be differently inventive,
+    and neither is a setting anybody wants to move on the persona."""
+
+    pins_by_role: dict[str, str] | None = None
+    """The exact pinned set for this one turn, as role -> filename (runbook
+    contract §1.5), or ``None`` for "pin what the conversation's own sidecar
+    pins".
+
+    **An empty mapping is not the same as ``None``.** ``{}`` is a scripted turn
+    that named no pins at all (``pins: []``), and it pins *nothing* — the step
+    said what it wanted in front of the model and the answer was "none of it",
+    which the sidecar has no standing to overrule. ``None`` is "this caller has
+    no opinion", and only then does the sidecar decide. The distinction is kept
+    all the way down: nothing on this path may test the mapping for
+    truthiness.
+
+    ``None`` is the default and every turn there has ever been:
+    :meth:`AgentLoop._workspace_blocks` reads ``entry.pinned`` and each block's
+    header reads ``pinned <filename>``, unchanged. A mapping replaces that
+    choice for this turn only — exactly these files are pinned, whatever the
+    sidecar says — and each block's header reads ``pinned as [role]
+    (filename)``, because a runbook's prompt file refers to its inputs by role
+    and never by name. Nothing is written to the sidecar either way; this
+    changes one request's prompt and no state at all.
+
+    A role naming a file that is not in the workspace is left out of the prompt
+    rather than raising: the step that was supposed to produce it has already
+    failed the run by then, and a turn is not the place to discover it."""
+
+    author_kind: AuthorKind | None = None
+    """Who this turn's transcript rows are attributed to, or ``None`` for the
+    ordinary answer — ``HUMAN`` on the user row, ``PERSONA`` on the reply.
+
+    Set to :attr:`~personacore.audit.models.AuthorKind.RUNBOOK` by a runbook's
+    model step and by nothing else. The *names* on those rows do not change: a
+    run still belongs to the operator who started it and the reply is still
+    the persona's own words, so both keep the name they would have had. Only
+    the kind moves, and it moves because the kind is what
+    ``conversation_history`` reads to keep a run's scripted turns out of the
+    prompt the *next* person's message composes. Without it every step of
+    every finished run would be replayed to the model as though somebody had
+    typed it."""
+
     def owner(self) -> Owner:
         """Who this turn belongs to, spec section 8."""
         if self.profile is None:
@@ -719,6 +778,18 @@ class TurnContext:
     whose conversation has never chosen otherwise; see
     :meth:`AgentLoop._thinking_fields` for how this and the persona's own
     switch combine."""
+
+    temperature: float | None = None
+    """Carried straight from :attr:`TurnRequest.temperature` — see that
+    field's own docstring. ``None`` on ``ask_persona``'s turn and on every
+    turn that named no temperature, which sends no ``temperature`` at all."""
+
+    pins_by_role: dict[str, str] | None = None
+    """Carried straight from :attr:`TurnRequest.pins_by_role` — see that
+    field's own docstring. ``None`` everywhere except a runbook's model step,
+    and ``None`` is what makes :meth:`AgentLoop._workspace_blocks` compose a
+    normal turn's pins exactly as it always has. ``{}`` is a step that asked
+    for no pins and is emphatically not ``None``."""
 
 
 def _usage_detail(prompt_tokens: int | None) -> dict[str, Any]:
@@ -1052,9 +1123,23 @@ class AgentLoop:
             owner=request.owner(),
             profile=profile,
             fence_token=new_fence_token(),
-            human=Author(name=profile.display_name or profile.id, kind=AuthorKind.HUMAN),
+            human=Author(
+                name=profile.display_name or profile.id,
+                # Runbook contract §3: a scripted turn's rows say a run said
+                # them. `None` — every turn a person typed — is `HUMAN`, which
+                # is what this line has always written.
+                kind=request.author_kind or AuthorKind.HUMAN,
+            ),
             conversation_id=request.conversation_id,
             thinking_override=request.thinking,
+            # Runbook contract §2 and §1.5: one step's own sampling
+            # temperature, and the role-labelled pin set for a scripted turn.
+            # Both `None` for every other caller, which composes and sends
+            # exactly what it always did. Copied on `is not None` rather than
+            # on truthiness: `{}` is a step that asked for no pins at all and
+            # must not fall back to the sidecar's.
+            temperature=request.temperature,
+            pins_by_role=(dict(request.pins_by_role) if request.pins_by_role is not None else None),
         )
         if request.record_user_message:
             await self._transcript(ctx, MessageRole.USER, request.user_message)
@@ -1124,7 +1209,10 @@ class AgentLoop:
         # that is not what finally loads. The model is filled in by
         # _stream_round from the response itself.
         ctx.persona_author = Author(
-            name=persona.display_name or persona.name, kind=AuthorKind.PERSONA
+            name=persona.display_name or persona.name,
+            # As on the user row above: the name is still whoever answered,
+            # and only the kind says a run asked the question.
+            kind=request.author_kind or AuthorKind.PERSONA,
         )
         ctx.persona = persona
         messages: list[dict[str, Any]] = [
@@ -1406,7 +1494,15 @@ class AgentLoop:
 
     def _workspace_blocks(self, ctx: TurnContext) -> list[str]:
         """Workspace contract §6: the manifest, then one fenced block per
-        file pinned in this conversation's own pin sidecar.
+        pinned file.
+
+        What "pinned" means depends on who asked. On an ordinary turn it is
+        this conversation's own pin sidecar (``entry.pinned``), which is every
+        turn there has ever been. On a runbook's model step
+        (:attr:`TurnContext.pins_by_role`, runbook contract §1.5) the step's
+        own roles are the **entire** pinned set and the sidecar is not
+        consulted at all — including when the step named none, which pins
+        nothing.
 
         Empty whenever :meth:`_workspace_ready` is false, or the folder does
         not exist yet, or (contract §6) exists but is empty — "a room of one
@@ -1433,11 +1529,24 @@ class AgentLoop:
         if not entries:
             return []
 
+        # Runbook contract §1.5: a scripted turn names its own pinned set by
+        # role, and that set — not the conversation's sidecar — is what this
+        # turn pins. `None` is every other turn, and then `entry.pinned` is
+        # the only thing consulted, exactly as before.
+        #
+        # Tested for `is not None`, never for truthiness: an empty mapping is
+        # a step that named no pins, and it has to pin nothing rather than
+        # fall through to whatever the sidecar happens to hold.
+        roles = ctx.pins_by_role
+        scripted = roles is not None
+        role_for = {name: role for role, name in roles.items()} if roles else {}
+        pinned_now = set(role_for) if scripted else {e.name for e in entries if e.pinned}
+
         lines = [
             f"{entry.name} — {entry.size_bytes:,} bytes — "
             + (f"from {entry.source}" if entry.source else "written by you")
             + f" — {entry.modified.strftime('%H:%M')}"
-            + (" (pinned)" if entry.pinned else "")
+            + (" (pinned)" if entry.name in pinned_now else "")
             for entry in entries
         ]
 
@@ -1447,8 +1556,9 @@ class AgentLoop:
         # pinned. A file skipped for that reason is named in the manifest
         # instead of silently vanishing — the model can still
         # `workspace.read_file` it itself. The universe of pinned files is
-        # the conversation's own pin sidecar (`entry.pinned`, checked in
-        # listing order) — persona-level pinning by glob was removed
+        # `pinned_now` above, checked in listing order — the conversation's
+        # own pin sidecar on an ordinary turn, the step's own roles on a
+        # scripted one. Persona-level pinning by glob was removed
         # (contract §14).
         cap = workspace_tools.settings.tool_result_chars
         pinned_already: set[str] = set()
@@ -1474,7 +1584,10 @@ class AgentLoop:
             block = wrap_untrusted(
                 text,
                 kind=UntrustedKind.WORKSPACE,
-                source=f"pinned {entry.name}",
+                # `pinned <name>` on an ordinary turn; `pinned as [role]
+                # (<name>)` on a runbook's, because its prompt file refers to
+                # this block by role and by nothing else.
+                source=pinned_source(entry.name, role_for.get(entry.name)),
                 token=ctx.fence_token,
                 max_content_chars=remaining,
             )
@@ -1482,7 +1595,7 @@ class AgentLoop:
             pinned_blocks.append(block)
 
         for entry in entries:
-            if entry.pinned:
+            if entry.name in pinned_now:
                 _include_pin(entry)
 
         manifest_body = (
@@ -1882,6 +1995,10 @@ class AgentLoop:
         error is left to fall through to the ordinary ``LLMClientError``
         handling below instead.
 
+        Runbook contract §2: a model step's ``temperature:`` rides on the same
+        call as an ordinary OpenAI request field, and is *kept* by the retry
+        below — see the comment beside ``tuning``.
+
         Workspace contract §13, D also names the boot probe's trigger: "the
         switch was just used". That is `fields` being non-empty here — but
         the probe itself is not fired at that point. It is handed to
@@ -1904,8 +2021,17 @@ class AgentLoop:
         accumulator = ToolCallAccumulator()
         parts: list[str] = []
         seen = [0]
-        fields = self._thinking_fields(ctx, after_tool_result=after_tool_result)
-        probe = self._thinking_probe if fields and self._thinking_probe is not None else None
+        hinted = self._thinking_fields(ctx, after_tool_result=after_tool_result)
+        # Runbook contract §2: one step's own `temperature:`, sent as the
+        # request's own top-level field. Kept apart from `hinted` because the
+        # retry below is specifically "ask again without the thinking hint" —
+        # a host that has never heard of `chat_template_kwargs` has certainly
+        # heard of `temperature`, and dropping the step's sampling setting to
+        # work around an unrelated rejection would silently change what the
+        # runbook asked for.
+        tuning = {} if ctx.temperature is None else {"temperature": ctx.temperature}
+        fields = {**hinted, **tuning}
+        probe = self._thinking_probe if hinted and self._thinking_probe is not None else None
         try:
             try:
                 stream = self._streamer_for(ctx).stream_chat_completion(
@@ -1917,11 +2043,11 @@ class AgentLoop:
                     yield event
             except LLMResponseError as exc:
                 rejected = exc.status_code is not None and 400 <= exc.status_code < 500
-                if not fields or not rejected or seen[0]:
+                if not hinted or not rejected or seen[0]:
                     raise
                 logger.info("turn_thinking_fields_retried_plain")
                 stream = self._streamer_for(ctx).stream_chat_completion(
-                    messages, tools=tool_schemas
+                    messages, tools=tool_schemas, **tuning
                 )
                 async for event in self._consume_stream(
                     stream, accumulator, parts, result, seen, probe=probe
@@ -2145,30 +2271,7 @@ class AgentLoop:
         extra_lines: list[str] = []
 
         if tool_result.files:
-            for tool_file in tool_result.files:
-                if workspace is None:
-                    extra_lines.append(
-                        f"File {tool_file.name} was not kept: this persona has no workspace."
-                    )
-                    continue
-                try:
-                    final_name = workspace.write(tool_file.name, tool_file.text, source=name)
-                except WorkspaceError as exc:
-                    extra_lines.append(str(exc))
-                    continue
-                files_written.append(final_name)
-                pinned = False
-                if tool_file.pin:
-                    # Contract §13, C: pin only once the file actually landed
-                    # under its final (possibly versioned) name — pinning the
-                    # name the tool asked for would silently miss a name that
-                    # collided and was versioned instead.
-                    try:
-                        workspace.pin(final_name)
-                        pinned = True
-                    except WorkspaceError as exc:
-                        extra_lines.append(str(exc))
-                extra_lines.append(_saved_line(final_name, tool_file.text, pinned=pinned))
+            files_written, extra_lines = save_tool_files(workspace, name, tool_result.files)
             if extra_lines:
                 lines = "\n".join(extra_lines)
                 payload = f"{payload}\n{lines}" if payload else lines
@@ -2503,6 +2606,57 @@ def _user_content(text: str, image_urls: Sequence[str]) -> str | list[dict[str, 
     return content
 
 
+def save_tool_files(
+    workspace: Workspace | None,
+    source: str,
+    files: Sequence[ToolFile],
+) -> tuple[list[str], list[str]]:
+    """Workspace contract §3/§13, C: put a tool's own files in the workspace.
+
+    Returns the names actually written — versioned, so not necessarily the
+    names asked for — and the lines to tell the reader about them, in the
+    order the files came.
+
+    A module-level function rather than a method because a *runbook*'s tool
+    step (runbook contract §2) has to do exactly this and must not do it
+    differently: the roles a later step pins are matched against the names
+    this returns, so "what a tool's file is called after it lands" has to have
+    one answer for a model's tool call and a runbook's alike. It was inlined
+    in :meth:`AgentLoop._apply_workspace`, which now calls this; a second copy
+    would be a second set of rules about versioning, pinning and refusals.
+
+    ``workspace`` is ``None`` for a turn that has none, and each file then gets
+    the sentence saying it was not kept rather than vanishing quietly. Nothing
+    here raises: a :class:`WorkspaceError` — a ceiling, a name the workspace
+    refuses — becomes the line the workspace itself would have refused with.
+    """
+    written: list[str] = []
+    lines: list[str] = []
+    for tool_file in files:
+        if workspace is None:
+            lines.append(f"File {tool_file.name} was not kept: this persona has no workspace.")
+            continue
+        try:
+            final_name = workspace.write(tool_file.name, tool_file.text, source=source)
+        except WorkspaceError as exc:
+            lines.append(str(exc))
+            continue
+        written.append(final_name)
+        pinned = False
+        if tool_file.pin:
+            # Contract §13, C: pin only once the file actually landed under
+            # its final (possibly versioned) name — pinning the name the tool
+            # asked for would silently miss a name that collided and was
+            # versioned instead.
+            try:
+                workspace.pin(final_name)
+                pinned = True
+            except WorkspaceError as exc:
+                lines.append(str(exc))
+        lines.append(_saved_line(final_name, tool_file.text, pinned=pinned))
+    return written, lines
+
+
 def _saved_line(name: str, text: str, *, pinned: bool = False) -> str:
     """Workspace contract §3/§4's own sentence, told to the model whenever a
     file actually landed in the workspace: ``Saved to workspace: NAME (N
@@ -2578,4 +2732,5 @@ __all__ = [
     "ConversationMessage",
     "ToolGateDecision",
     "TurnRequest",
+    "save_tool_files",
 ]

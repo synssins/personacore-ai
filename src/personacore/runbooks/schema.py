@@ -25,6 +25,8 @@ from typing import Annotated, Any, Literal
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from personacore.runbooks.gates import GateError, check_pass_when
+
 # The runbook's own id, and the file name it is stored under (contract §2).
 RUNBOOK_ID_RE = re.compile(r"^[a-z0-9-]{1,40}$")
 
@@ -90,7 +92,7 @@ class RunbookRequires(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     plugins: dict[str, str] = Field(default_factory=dict)
-    """Plugin name -> minimum-version specifier, e.g. ``{"vesmark": ">=1.4.3"}``.
+    """Plugin name -> minimum-version specifier, e.g. ``{"weather": ">=1.4.3"}``.
 
     The specifier is parsed with :class:`packaging.specifiers.SpecifierSet` at
     validation time — here, so a runbook with an unparseable specifier is
@@ -124,7 +126,7 @@ class RunbookRequires(BaseModel):
             if not _PLUGIN_TOOL_RE.fullmatch(name):
                 raise ValueError(
                     f"'requires.tools' names {name!r}, which is not written as "
-                    "'<plugin>.<tool>' (for example 'vesmark.lint')."
+                    "'<plugin>.<tool>' (for example 'weather.forecast')."
                 )
         return value
 
@@ -133,12 +135,22 @@ class RunbookRequires(BaseModel):
 # inputs:
 # ---------------------------------------------------------------------------
 
-InputType = Literal["integer", "string", "boolean"]
+InputType = Literal["integer", "string", "boolean", "range", "list"]
+
+ITERABLE_INPUT_TYPES = frozenset({"range", "list"})
+"""Contract §1.12: the two input types that stand for *several* values, and
+so the only two a ``foreach:`` may name. Both are written as text in the
+picker ("1-12", "1,3,5") and turned into items by
+:func:`personacore.runbooks.roles.parse_items` when the run starts — which is
+why both are ``str`` below: what a person types is text, and what it means is
+not this module's question."""
 
 _PYTHON_TYPE_FOR: dict[str, type] = {
     "integer": int,
     "string": str,
     "boolean": bool,
+    "range": str,
+    "list": str,
 }
 
 
@@ -216,6 +228,17 @@ class ToolStep(BaseModel):
     *next* step needs pinned. Named ``pin`` — singular — for a tool step,
     ``pins`` for a model step; both are contract §2's own spelling."""
 
+    foreach: str | None = None
+    """Contract §1.12: run *this step* once per item of the named ``range``/
+    ``list`` input (stamp every chapter of a book), with ``{{ item }}``
+    available in ``args`` and ``files``. The step's roles then hold one
+    filename per item. Only a tool step may iterate: a model step repeated
+    per item is a different conversation each time, which is the *runbook*-
+    level ``foreach`` below, and a gate repeated per item is the same gate
+    asked again. That the named input exists and is one of those two types is
+    checked in :mod:`personacore.runbooks.validate`, which can see the whole
+    file at once."""
+
     @field_validator("id")
     @classmethod
     def _check_id(cls, value: str) -> str:
@@ -229,7 +252,7 @@ class ToolStep(BaseModel):
         if not _PLUGIN_TOOL_RE.fullmatch(value):
             raise ValueError(
                 f"step tool {value!r} is not written as '<plugin>.<tool>' "
-                "(for example 'vesmark.fetch')."
+                "(for example 'weather.forecast')."
             )
         return value
 
@@ -321,12 +344,32 @@ class AutoElse(BaseModel):
 
 
 class AutoGate(BaseModel):
-    """``gate.auto`` — no person: pass or loop on a parsed condition."""
+    """``gate.auto`` — no person: pass or loop on a **typed** condition.
+
+    ``pass_when:`` is a mapping with exactly one key, naming one of the five
+    conditions :data:`personacore.runbooks.gates.PASS_WHEN_CONDITIONS` holds.
+    Contract §2's example wrote it as an English sentence (``"no line
+    contains '| high |'"``); that would need a parser for English on the one
+    step whose whole job is deciding whether a run carries on, and a parser
+    for English is wrong occasionally and silently. The sentence form is
+    refused by name in :mod:`personacore.runbooks.validate`, so a runbook
+    written against the older shape is told what to write instead rather than
+    told its file is not a mapping.
+    """
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
-    pass_when: str
+    pass_when: dict[str, Any]
     else_: AutoElse = Field(alias="else")
+
+    @field_validator("pass_when")
+    @classmethod
+    def _one_known_condition(cls, value: dict[str, Any]) -> dict[str, Any]:
+        try:
+            check_pass_when(value)
+        except GateError as exc:
+            raise ValueError(exc.message) from exc
+        return value
 
 
 class GateStep(BaseModel):
@@ -403,6 +446,13 @@ class Runbook(BaseModel):
     description: str
     requires: RunbookRequires = Field(default_factory=RunbookRequires)
     persona: str | None = None
+    foreach: str | None = None
+    """Contract §1.12: run the **whole runbook** once per item of the named
+    ``range``/``list`` input. One conversation per item (never one
+    conversation holding every item's turns), driven by a parent run that
+    holds the item list — see
+    :meth:`personacore.runbooks.runner.Runner.start`."""
+
     inputs: list[RunbookInput] = Field(default_factory=list)
     steps: list[Step]
 
@@ -442,6 +492,7 @@ class Runbook(BaseModel):
 
 __all__ = [
     "BUDGET_REFUSAL",
+    "ITERABLE_INPUT_TYPES",
     "RESERVED_BUDGET_KEYS",
     "RUNBOOK_ID_RE",
     "STEP_ID_RE",

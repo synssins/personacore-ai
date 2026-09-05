@@ -115,6 +115,19 @@ class AuthorKind(StrEnum):
     HUMAN = "human"
     PERSONA = "persona"
 
+    RUNBOOK = "runbook"
+    """A row a runbook run wrote — the scripted prompt, the reply to it, and
+    the run's own progress lines (runbook contract section 3).
+
+    A third kind rather than a flag beside the other two because the question
+    it answers is the same one: *who spoke*. Nobody typed a step's prompt and
+    nobody was talked to; a run said it, and the row is kept because the run
+    is a record of what happened (ADR-0004). What it buys is the one thing
+    that could not be had otherwise — ``conversation_history`` can leave a
+    run's rows out of the next turn's prompt while the chat page still draws
+    them, so a person opening a finished run's conversation and typing into it
+    is not answered out of a script they never saw."""
+
 
 class Author(BaseModel):
     """Who said one message.

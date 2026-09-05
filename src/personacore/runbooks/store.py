@@ -95,7 +95,7 @@ class RunbookRecord:
     verdict: Verdict
     requires: dict[str, str]
     """``requires.plugins`` from the file itself: plugin name -> version
-    specifier (e.g. ``{"vesmark": ">=1.4.3"}``). Empty for a file that did
+    specifier (e.g. ``{"weather": ">=1.4.3"}``). Empty for a file that did
     not even validate — there is no trustworthy ``requires:`` to read off an
     invalid file the same way :func:`_peek_metadata` reads a best-effort
     version/title/description, since a malformed document may not parse as a
