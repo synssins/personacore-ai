@@ -1398,14 +1398,52 @@ class AgentLoop:
             return []
 
         lines = [
-            f"{entry.name} — {entry.chars:,} chars — "
+            f"{entry.name} — {entry.size_bytes:,} bytes — "
             + (f"from {entry.source}" if entry.source else "written by you")
             + f" — {entry.modified.strftime('%H:%M')}"
             for entry in entries
         ]
+
+        # Pinned files are read whole and fenced individually, but the total
+        # is not: past `tool_result_chars` (the same cap one tool result is
+        # held to) no more pinned content is added, however many patterns
+        # still match. A file skipped for that reason is named in the
+        # manifest instead of silently vanishing — the model can still
+        # `workspace.read_file` it itself.
+        cap = workspace_tools.settings.tool_result_chars
+        pinned_already: set[str] = set()
+        pinned_total = 0
+        pinned_blocks: list[str] = []
+        skipped_lines: list[str] = []
+        for pattern in persona.workspace_pins:
+            for entry in entries:
+                if entry.name in pinned_already or not fnmatch.fnmatch(entry.name, pattern):
+                    continue
+                pinned_already.add(entry.name)
+                if pinned_total >= cap:
+                    skipped_lines.append(
+                        f"{entry.name} — pinned, not shown: the pinned files "
+                        "already fill the limit."
+                    )
+                    continue
+                try:
+                    text = workspace.read(entry.name)
+                except WorkspaceError:
+                    continue
+                pinned_total += len(text)
+                pinned_blocks.append(
+                    wrap_untrusted(
+                        text,
+                        kind=UntrustedKind.WORKSPACE,
+                        source=f"pinned {entry.name}",
+                        token=ctx.fence_token,
+                        max_content_chars=cap,
+                    )
+                )
+
         manifest_body = (
             "Files in this conversation's workspace (read them with workspace.read_file):\n"
-            + "\n".join(lines)
+            + "\n".join([*lines, *skipped_lines])
         )
         blocks = [
             wrap_untrusted(
@@ -1416,27 +1454,7 @@ class AgentLoop:
                 max_content_chars=self._config.max_untrusted_chars,
             )
         ]
-
-        cap = workspace_tools.settings.tool_result_chars
-        pinned_already: set[str] = set()
-        for pattern in persona.workspace_pins:
-            for entry in entries:
-                if entry.name in pinned_already or not fnmatch.fnmatch(entry.name, pattern):
-                    continue
-                try:
-                    text = workspace.read(entry.name)
-                except WorkspaceError:
-                    continue
-                pinned_already.add(entry.name)
-                blocks.append(
-                    wrap_untrusted(
-                        text,
-                        kind=UntrustedKind.WORKSPACE,
-                        source=f"pinned {entry.name}",
-                        token=ctx.fence_token,
-                        max_content_chars=cap,
-                    )
-                )
+        blocks.extend(pinned_blocks)
         return blocks
 
     async def _tool_schemas(

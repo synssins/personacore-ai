@@ -159,7 +159,7 @@ def register(router: APIRouter, ctx: UIContext) -> None:
                 max_workspace_bytes=max_total,
             )
             text = workspace.read(name)
-        except workspaces_module.WorkspaceError as exc:
+        except (workspaces_module.WorkspaceError, OSError, UnicodeDecodeError) as exc:
             raise HTTPException(status.HTTP_404_NOT_FOUND, NOT_FOUND) from exc
         return Response(
             content=text,

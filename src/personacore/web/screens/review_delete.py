@@ -259,36 +259,50 @@ def register(router: APIRouter, ctx: UIContext) -> None:
         Order: the conversation row and its messages go first
         (``ConversationService.delete``), then its attachments — now, not
         left for the retention sweep to find as orphans later — then its
-        workspace folder. One audit record either way, with the counts of
-        what actually went.
+        workspace folder.
+
+        **The audit record is written before any of that runs**, naming what
+        is about to be destroyed — not after, which would leave a crash
+        partway through destruction with no record at all that an admin
+        delete was even attempted. If destruction raises, a second record
+        with ``outcome=FAILURE`` is written and the exception re-raised
+        unchanged, into whatever handles an unhandled exception here today.
         """
         owner, conversation = await _conversation_or_404(request, user, conversation_id)
         attachment_ids = await _attachment_ids(owner, conversation.conversation_id)
         files = _file_count(request, conversation.conversation_id)
 
-        messages_removed = await conversations.delete(owner, conversation.conversation_id)
-
-        attachments_removed = 0
-        for attachment_id in attachment_ids:
-            removed = await attachments_module.delete(layout, audit, attachment_id, owner=owner)
-            if removed:
-                attachments_removed += 1
-
-        workspaces_module.remove(layout, conversation.conversation_id)
-
         admin_user = require_user(request)
+        detail = {
+            "conversation_id": conversation.conversation_id,
+            "messages": conversation.message_count,
+            "attachments": len(attachment_ids),
+            "files": files,
+        }
         await _record_change(
             audit,
             admin_user,
             action="conversation.deleted",
             outcome=AuditOutcome.SUCCESS,
-            detail={
-                "conversation_id": conversation.conversation_id,
-                "messages": messages_removed,
-                "attachments": attachments_removed,
-                "files": files,
-            },
+            detail=detail,
         )
+
+        try:
+            await conversations.delete(owner, conversation.conversation_id)
+
+            for attachment_id in attachment_ids:
+                await attachments_module.delete(layout, audit, attachment_id, owner=owner)
+
+            workspaces_module.remove(layout, conversation.conversation_id)
+        except Exception:
+            await _record_change(
+                audit,
+                admin_user,
+                action="conversation.deleted",
+                outcome=AuditOutcome.FAILURE,
+                detail=detail,
+            )
+            raise
 
         if request.headers.get("HX-Request"):
             return await _list_fragment(request, user)

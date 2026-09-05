@@ -81,6 +81,25 @@ _MAX_VERSION_ATTEMPTS = 10_000
 """A generous ceiling on ``write``'s versioning loop, so a directory nobody
 could plausibly fill this way still terminates rather than looping forever."""
 
+MAX_FILES = 200
+"""The most files one conversation's workspace may hold. Checked only when a
+write is about to add a new directory entry — an append to a file that
+already exists changes no count and is never refused for this reason."""
+
+_RESERVED_DEVICE_NAMES = frozenset(
+    {
+        "CON",
+        "PRN",
+        "AUX",
+        "NUL",
+        *(f"COM{i}" for i in range(1, 10)),
+        *(f"LPT{i}" for i in range(1, 10)),
+    }
+)
+"""Windows reserved device names (case-insensitive), refused as a filename
+stem whether or not an extension follows — ``NUL.txt`` is exactly as
+unusable on that filesystem as ``NUL`` itself."""
+
 
 class WorkspaceError(Exception):
     """Something about this workspace operation is refused.
@@ -96,7 +115,6 @@ class FileEntry:
 
     name: str
     size_bytes: int
-    chars: int
     modified: datetime
     source: str | None
     """The tool that produced this file, or ``None`` when the persona wrote
@@ -112,6 +130,9 @@ def _require_filename(name: str) -> str:
             "name is letters, numbers, '.', '_' or '-', up to 120 characters, "
             "and cannot start with a dot."
         )
+    stem = value.split(".", 1)[0]
+    if stem.upper() in _RESERVED_DEVICE_NAMES:
+        raise WorkspaceError(f"{value} is a name Windows reserves; pick another.")
     return value
 
 
@@ -200,6 +221,12 @@ class Workspace:
         are never listed: the model must not be able to address, or even see
         the name of, the one file that records which of its siblings it is
         not allowed to touch.
+
+        Reads no file's content — only ``stat()`` — so a listing costs the
+        same whether the workspace holds a kilobyte or the whole ceiling,
+        and a file that is not valid UTF-8 still appears (it may still fail
+        to *read* later; that is :meth:`read`'s refusal to make, not this
+        one's).
         """
         if not self.path.is_dir():
             return []
@@ -211,15 +238,13 @@ class Workspace:
             if child.is_symlink() or not child.is_file():
                 continue
             try:
-                text = child.read_text(encoding="utf-8")
-            except (OSError, UnicodeDecodeError):
+                stat = child.stat()
+            except OSError:
                 continue
-            stat = child.stat()
             entries.append(
                 FileEntry(
                     name=child.name,
                     size_bytes=stat.st_size,
-                    chars=len(text),
                     modified=datetime.fromtimestamp(stat.st_mtime, tz=UTC),
                     source=sources.get(child.name),
                 )
@@ -267,7 +292,14 @@ class Workspace:
             f"Could not find a free name for {name}: too many versions already exist."
         )
 
-    def _check_ceilings(self, name: str, resulting_file_size: int, *, added_to_total: int) -> None:
+    def _check_ceilings(
+        self,
+        name: str,
+        resulting_file_size: int,
+        *,
+        added_to_total: int,
+        is_new_file: bool,
+    ) -> None:
         if resulting_file_size > self._max_file_bytes:
             raise WorkspaceError(
                 f"{name} would be {_human_bytes(resulting_file_size)}, over the "
@@ -280,6 +312,16 @@ class Workspace:
                 f"Writing {name} would put this conversation's workspace over its "
                 f"{_human_bytes(self._max_workspace_bytes)} limit. Nothing was written."
             )
+        if is_new_file:
+            existing_files = sum(
+                1
+                for child in self.path.iterdir()
+                if not child.name.startswith(".") and not child.is_symlink() and child.is_file()
+            )
+            if existing_files >= MAX_FILES:
+                raise WorkspaceError(
+                    f"This workspace already holds {MAX_FILES} files, which is the limit."
+                )
 
     def write(
         self, name: str, text: str, *, append: bool = False, source: str | None = None
@@ -312,7 +354,9 @@ class Workspace:
             target = self._resolve(checked)
             added = len(text.encode("utf-8"))
             current_size = target.stat().st_size if existing else 0
-            self._check_ceilings(checked, current_size + added, added_to_total=added)
+            self._check_ceilings(
+                checked, current_size + added, added_to_total=added, is_new_file=not existing
+            )
             with target.open("a", encoding="utf-8") as handle:
                 handle.write(text)
             final_name = checked
@@ -322,7 +366,12 @@ class Workspace:
                 final_name = self._next_versioned_name(checked)
             target = self._resolve(final_name)
             content_bytes = text.encode("utf-8")
-            self._check_ceilings(final_name, len(content_bytes), added_to_total=len(content_bytes))
+            self._check_ceilings(
+                final_name,
+                len(content_bytes),
+                added_to_total=len(content_bytes),
+                is_new_file=True,
+            )
             target.write_text(text, encoding="utf-8")
 
         if source is not None:
@@ -364,6 +413,13 @@ def remove(layout: AppdataLayout, conversation_id: str) -> bool:
     except WorkspaceError:
         return False
     candidate = layout.workspaces / checked
+    if candidate.is_symlink():
+        # A symlink named for a conversation is never something this wrote —
+        # `Workspace` never creates one. Resolving it (as `require_inside`
+        # below would) and removing the resolved target would delete
+        # whatever the link points at instead of the link itself, so this is
+        # refused before any resolution happens.
+        return False
     try:
         target = layout.require_inside(candidate, what="The workspaces folder")
     except AppdataError:
@@ -414,6 +470,7 @@ def sweep(layout: AppdataLayout, keep_ids: Iterable[str]) -> int:
 __all__ = [
     "CONVERSATION_ID_PATTERN",
     "FILENAME_PATTERN",
+    "MAX_FILES",
     "WORKSPACES_DIRNAME",
     "FileEntry",
     "Workspace",

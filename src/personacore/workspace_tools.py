@@ -41,7 +41,7 @@ WRITE_FILE_TOOL = "workspace.write_file"
 
 _LIST_FILES_DESCRIPTION = (
     "List every file already saved in this conversation's workspace: its name, how "
-    "many characters it holds, and when it was last changed. Returns 'The workspace "
+    "many bytes it holds, and when it was last changed. Returns 'The workspace "
     "is empty.' when there is nothing there yet. Use this before reading or writing "
     "a file, to see what already exists and under what name."
 )
@@ -207,7 +207,7 @@ class WorkspaceTools:
         if not entries:
             return ToolResult(ok=True, content="The workspace is empty.")
         lines = [
-            f"{entry.name} — {entry.chars:,} chars — {entry.modified.strftime('%H:%M')}"
+            f"{entry.name} — {entry.size_bytes:,} bytes — {entry.modified.strftime('%H:%M')}"
             for entry in entries
         ]
         return ToolResult(ok=True, content="\n".join(lines))

@@ -44,8 +44,8 @@ When the workspace is on and holds at least one file, one fenced, untrusted bloc
 
 ```
 Files in this conversation's workspace (read them with workspace.read_file):
-notes.md — 2,481 chars — written by you — 14:02
-article.md — 9,114 chars — from research.fetch — 14:03
+notes.md — 2,481 bytes — written by you — 14:02
+article.md — 9,114 bytes — from research.fetch — 14:03
 ```
 
 Any file matching a pin is then added again, this time whole, in its own fenced block. A workspace that exists but is empty this turn adds nothing at all — a persona with an idle workspace prompts exactly as it would with none.
@@ -83,6 +83,7 @@ Household-wide, in `core.toml`'s `[workspace]` section — see [Core Settings](C
 | `tool_result_chars` | 32,000 | The most characters of one tool result, or one file read, the model receives in a turn before it is cut. |
 | `long_item_chars` | 8,000 | With a workspace on, a plain-text tool result longer than this is saved as a file instead of being cut — see "The long-result rule" above. |
 | `max_file_bytes` | 2,000,000 | The largest a single workspace file may grow. A write past this is refused, naming the limit. |
+| (fixed) | 200 files | A workspace holds at most 200 files. Appending to an existing file never counts against it. |
 | `max_workspace_bytes` | 50,000,000 | The largest one conversation's whole workspace folder may grow. A write that would push the folder over this is refused the same way. |
 
 The workspace root itself is not a setting — it is fixed at `<appdata>/workspaces`, the same way every other appdata folder is.

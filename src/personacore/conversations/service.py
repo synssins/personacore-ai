@@ -582,6 +582,13 @@ class ConversationService:
         workspace that fails to remove is a cleanup problem for the sweep
         (:func:`personacore.workspaces.sweep`) to catch later, not a reason
         to tell the owner their conversation was not hidden.
+
+        **Races a turn already in flight.** A turn that is still writing to
+        this conversation's workspace when ``hide`` runs can recreate the
+        folder after this method removes it. That is left alone rather than
+        locked against: the retention sweep (``server.py``'s scheduled purge,
+        every ``RETENTION_PURGE_INTERVAL_SECONDS`` — six hours) finds and
+        removes it again on its next pass, the same as any other stray.
         """
         assert self._layout is not None  # noqa: S101 - only called when it is
         try:
