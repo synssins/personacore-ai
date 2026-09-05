@@ -30,6 +30,7 @@ AUDIT_DIRNAME = "audit"
 STATE_DIRNAME = "state"
 CONFIG_DIRNAME = "config"
 ATTACHMENTS_DIRNAME = "attachments"
+WORKSPACES_DIRNAME = "workspaces"
 
 CORE_CONFIG_FILENAME = "core.toml"
 
@@ -112,6 +113,19 @@ class AppdataLayout:
         """
         return self.root / ATTACHMENTS_DIRNAME
 
+    @property
+    def workspaces(self) -> Path:
+        """One directory per conversation, holding whatever files that
+        conversation's tools and persona have written (workspace contract,
+        §1).
+
+        Same shape as :attr:`attachments`: the folder name is validated
+        before use by :mod:`personacore.workspaces`, and a per-conversation
+        subdirectory is created lazily, on first write, never here and never
+        merely because a conversation started.
+        """
+        return self.root / WORKSPACES_DIRNAME
+
     # -- containment ------------------------------------------------------
 
     def _resolve(self, candidate: Path | str) -> Path:
@@ -191,6 +205,7 @@ class AppdataLayout:
             self.state,
             self.config,
             self.attachments,
+            self.workspaces,
         ):
             try:
                 directory.mkdir(parents=True, exist_ok=True)

@@ -37,6 +37,7 @@ from personacore.config.hearing import HearingSettings
 from personacore.config.image import ImageSettings
 from personacore.config.memory import MemorySettings
 from personacore.config.voice import VoiceSettings
+from personacore.config.workspace import WorkspaceSettings
 from personacore.config.wyoming import WyomingSettings
 from personacore.contracts.manifest import RiskLevel
 from personacore.contracts.policy import MemoryScope, PolicyProfile, ProfileKind
@@ -603,6 +604,13 @@ class CoreSettings(BaseModel):
     """``working/contracts/memory.md`` §9 — the quiet interval, recall shape
     and retention window memory uses household-wide. Per-persona on/off is
     not here: it is ``persona.toml``'s own ``memory`` key.
+    """
+
+    workspace: WorkspaceSettings = Field(default_factory=WorkspaceSettings)
+    """``working/contracts/workspace.md`` §9 — the tool-result cap, the file
+    threshold, and the per-file and per-workspace size ceilings. The
+    workspace root itself is not here: it is fixed at
+    ``<appdata>/workspaces`` (contract §9), not a setting.
     """
 
     def llm_for(self, role: LLMRole | str) -> LLMSettings:

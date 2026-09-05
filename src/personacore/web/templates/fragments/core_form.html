@@ -314,6 +314,23 @@
     </div>
   </section>
 
+  {# Workspace — [workspace] (workspace contract §9). The per-conversation
+     scratch folder's size ceilings and the tool-result cap; the root itself
+     (<appdata>/workspaces) is fixed and has no field here. #}
+  <section class="stack" style="gap:var(--space-4)">
+    <h6 class="text-muted" style="margin:0">Workspace</h6>
+    <p class="text-muted" style="margin:0; font-size:13px; max-width:56ch">How much of a tool's result the model sees at once, and how big a conversation's saved files may grow.</p>
+    <div style="display:grid; grid-template-columns:repeat(3, 1fr); gap:var(--space-3); max-width:640px">
+      {% for r in core.workspace %}
+      <div class="field">
+        <label for="ws-{{ r.key }}">{{ r.label }}</label>
+        <input class="input" type="text" inputmode="decimal"
+               id="ws-{{ r.key }}" name="workspace_{{ r.key }}" value="{{ r.value }}">
+      </div>
+      {% endfor %}
+    </div>
+  </section>
+
   <div class="hrow">
     <button type="submit" class="btn btn-primary">Save</button>
     {% if save_result %}

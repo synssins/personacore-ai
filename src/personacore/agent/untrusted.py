@@ -40,7 +40,13 @@ cannot guess the fence; short enough not to waste context."""
 DEFAULT_MAX_CONTENT_CHARS = 8000
 """A plugin can return a megabyte of JSON. Context is finite and spec section
 10's latency budget is not helped by feeding all of it back, so content is
-truncated with a visible note rather than silently blowing the window."""
+truncated with a visible note rather than silently blowing the window.
+
+This is only the function's own fallback for a caller that builds no
+:class:`~personacore.agent.loop.AgentLoopConfig` at all. The running loop is
+handed ``settings.workspace.tool_result_chars`` instead (workspace contract
+§4), 32,000 by default — set at ``server.py``'s ``AgentLoopConfig(...,
+max_untrusted_chars=settings.workspace.tool_result_chars)``."""
 
 _MARKER_PATTERN = re.compile(f"{BEGIN_MARKER}|{END_MARKER}", re.IGNORECASE)
 

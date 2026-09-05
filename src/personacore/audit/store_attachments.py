@@ -157,6 +157,35 @@ class AttachmentsMixin(StoreBase):
         _logger.info("attachment_row_deleted", attachment_id=attachment_id)
         return record
 
+    async def attachments_for_conversation(
+        self, conversation_id: str, *, owner: Owner
+    ) -> list[AttachmentRecord]:
+        """This owner's attachments belonging to one conversation.
+
+        Owner-scoped the same way :meth:`get_attachment` is (contract §3): a
+        conversation id arrives at the caller (an administrator's delete,
+        workspace contract §2) already paired with the owner being reviewed,
+        and matching both in the query's own ``WHERE`` keeps a guessed id
+        from ever reading somebody else's attachments through this door
+        either. Used to remove exactly the attachments a deleted
+        conversation carried, ahead of the retention sweep that would
+        otherwise reap them later as orphans.
+        """
+        return await asyncio.to_thread(
+            self._attachments_for_conversation, conversation_id, owner
+        )
+
+    def _attachments_for_conversation(
+        self, conversation_id: str, owner: Owner
+    ) -> list[AttachmentRecord]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM attachments WHERE conversation_id = ? "
+                "AND owner_kind = ? AND owner_id = ?",
+                (conversation_id, owner.kind.value, owner.id),
+            ).fetchall()
+        return _tolerant(rows, _row_to_attachment, what="attachment")
+
     async def orphaned_attachments(self) -> list[AttachmentRecord]:
         """Attachments whose message has already been purged.
 

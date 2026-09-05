@@ -177,6 +177,19 @@ Household-wide defaults for [memory](Memory) — recall ranking, review timing, 
 
 A value outside its range is a validation error naming the key, not a clamp, matching every other section here.
 
+## `[workspace]`
+
+The per-conversation scratch folder a tool result can be saved into, and the cap on how much of a tool result reaches the model in the first place.
+
+| Key | Type | Default | Range | Notes |
+|---|---|---|---|---|
+| `tool_result_chars` | int | `32000` | ≥ 256 | The most characters of one tool result the model receives in a turn; past this the text is cut and the cut is marked. Read once at startup, the same as `[memory] recall_limit` — a saved change needs a restart to take effect. |
+| `long_item_chars` | int | `8000` | ≥ 256 | With a workspace turned on, a plain-text tool result longer than this is saved to the conversation's workspace as a file instead of being handed over whole. Must be no greater than `tool_result_chars`; a document that breaks that rule is refused with a plain-English message. |
+| `max_file_bytes` | int | `2000000` | ≥ 1024 | The largest a single workspace file may grow. A write past this limit is refused, naming the limit. |
+| `max_workspace_bytes` | int | `50000000` | ≥ 1024 | The largest one conversation's whole workspace folder may grow, all its files together. A write that would push the folder past this limit is refused the same way. |
+
+The workspace root itself is not a setting: it is fixed at `<appdata>/workspaces`, the same way every other appdata folder is.
+
 ## The starter file
 
 On first run the core writes a commented `core.toml` containing `default_persona`, an `[llm.interactive]` section with timeouts, a `[bus]` section, `[retention] default_days = 30`, and `[auth] method = "builtin"`. It exists so an operator has a file to find and read; without it the settings would exist only as defaults buried in code. It is never rewritten over an existing file.

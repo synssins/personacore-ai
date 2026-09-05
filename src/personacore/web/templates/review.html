@@ -1,4 +1,4 @@
-{# review.html — one person's conversations, for an administrator. Read-only.
+{# review.html — one person's conversations, for an administrator.
 
    Context: people ([UserView] or None), chosen (str or None),
      chosen_minor (bool or None), rows: [{id, title, surface, started, last,
@@ -7,16 +7,18 @@
      retention_days, shows_hidden, no_accounts, nobody_picked,
      nothing_to_show, hidden_unavailable
 
-   There is no control on this page that changes anything. A hidden
-   conversation is marked and shown; it is not un-hidden from here, and it is
-   not deleted from here. The screen is a record. #}
+   A hidden conversation is marked and shown; it is not un-hidden from here.
+   The one control that changes anything is Delete
+   (web/screens/review_delete.py) — a full destroy, not the owner's own hide
+   — reached from a row or from an open conversation and confirmed before it
+   runs anything. #}
 {% extends "base.html" %}
 {% from "_controls.html" import icon %}
 {% block title %}Review — PersonaCore admin{% endblock %}
 {% block content %}
 <header>
   <h3 style="margin:0 0 6px">Review</h3>
-  <p class="text-muted" style="margin:0; font-size:13px; max-width:64ch">One person's conversations, including the ones they removed from their own list. Read-only. Records age out on the retention windows in Core settings — {{ retention_days }} days by default.</p>
+  <p class="text-muted" style="margin:0; font-size:13px; max-width:64ch">One person's conversations, including the ones they removed from their own list. Delete removes the conversation, its messages, its attachments and its workspace files. It cannot be undone. Records age out on the retention windows in Core settings — {{ retention_days }} days by default.</p>
 </header>
 
 {% if not shows_hidden %}
@@ -61,67 +63,6 @@
   {% endif %}
 </section>
 
-{% if not chosen %}
-<div class="empty">
-  {{ icon('chat') }}
-  <p style="margin:0">{{ nobody_picked }}</p>
-</div>
-{% elif not rows %}
-<div class="empty">
-  {{ icon('chat') }}
-  <p style="margin:0">{{ nothing_to_show }}</p>
-</div>
-{% else %}
-<section class="card elev-sm" style="gap:var(--space-3)">
-  <table class="table">
-    <thead><tr><th>Conversation</th><th>Surface</th><th>Group</th><th>Last activity</th><th>Messages</th><th>Hidden</th></tr></thead>
-    <tbody>
-      {% for row in rows %}
-      <tr>
-        <td><a href="/admin/review?user={{ chosen|urlencode }}&amp;conversation={{ row.id|urlencode }}">{{ row.title }}</a></td>
-        <td><span class="tag tag-neutral">{{ row.surface }}</span></td>
-        <td>{% if row.group %}{{ row.group }}{% else %}<span class="meta">—</span>{% endif %}</td>
-        <td class="meta">{{ row.last }}</td>
-        <td>{{ row.messages }}</td>
-        <td>
-          {% if row.hidden %}
-          <span class="tag tag-accent">hidden</span>
-          <span class="meta" style="display:block">{{ row.hidden_at }}{% if row.hidden_by %} · by {{ row.hidden_by }}{% endif %}</span>
-          {% else %}
-          <span class="meta">—</span>
-          {% endif %}
-        </td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-</section>
-{% endif %}
-
-{% if opened %}
-<section class="card elev-sm" style="gap:var(--space-3)" id="conversation">
-  <div class="hrow" style="gap:8px; align-items:center">
-    <h4 style="margin:0" class="grow">{{ opened.title }}</h4>
-    {% if opened.hidden %}<span class="tag tag-accent">hidden</span>{% endif %}
-  </div>
-  <p class="meta" style="margin:0">Started {{ opened.started }} · last activity {{ opened.last }}{% if opened.hidden %} · hidden {{ opened.hidden_at }}{% if opened.hidden_by %} by {{ opened.hidden_by }}{% endif %}{% endif %}</p>
-
-  {% if not messages %}
-  <div class="empty">
-    {{ icon('scroll') }}
-    <p style="margin:0">{{ nothing_to_show }}</p>
-  </div>
-  {% else %}
-  <div class="stack" style="gap:var(--space-3)">
-    {% for message in messages %}
-    <div class="stack" style="gap:2px">
-      <span class="meta">{{ message.at }} · {{ message.who }}</span>
-      <p style="margin:0; font-size:13.5px; line-height:1.55; white-space:pre-wrap">{{ message.text }}</p>
-    </div>
-    {% endfor %}
-  </div>
-  {% endif %}
-</section>
-{% endif %}
+{% include "fragments/review_conversations.html" %}
 {% endif %}
 {% endblock %}

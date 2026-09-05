@@ -146,6 +146,24 @@ class ConversationsMixin(StoreBase):
         )
         return conversation
 
+    async def visible_conversation_ids(self) -> list[str]:
+        """Every conversation id that is not hidden, across all owners.
+
+        Read by the workspace sweep (workspace contract §2): a workspace
+        folder survives only while its conversation is visible, because
+        hiding one already removes its folder and an administrator's delete
+        removes the row. Not owner-scoped on purpose — the sweep is
+        housekeeping over the whole appdata, not a request from a person.
+        """
+        return await asyncio.to_thread(self._visible_conversation_ids)
+
+    def _visible_conversation_ids(self) -> list[str]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT conversation_id FROM conversations WHERE hidden_at IS NULL"
+            ).fetchall()
+        return [str(row[0]) for row in rows]
+
     async def list_conversations(
         self,
         *,

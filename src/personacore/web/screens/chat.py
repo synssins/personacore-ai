@@ -449,7 +449,12 @@ def register(router: APIRouter, ctx: UIContext) -> None:
     # neither has to ask twice nor has to catch: a store without them leaves
     # every call below answering "nothing", and the gap-rule grouping in
     # :func:`_grouped` carries the screen exactly as it did before.
-    conversations = ConversationService(audit, surface=Surface.ADMIN_UI)
+    # `layout` is passed so `hide()` takes the conversation's workspace with
+    # it (workspace contract §2). `ConversationService` is not built in
+    # `server.py`/`__main__.py` — it never has been; every screen that needs
+    # one builds it locally over `ctx.audit`, this one included — so this is
+    # the whole of the wiring, not half of it waiting on a change elsewhere.
+    conversations = ConversationService(audit, surface=Surface.ADMIN_UI, layout=ctx.layout)
 
     # -- reading the conversation -----------------------------------------
 

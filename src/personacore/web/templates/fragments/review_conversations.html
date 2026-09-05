@@ -1,0 +1,82 @@
+{# fragments/review_conversations.html — one person's conversations, and the
+   one that is open. Extracted from review.html so an administrator's delete
+   has something exact to redraw afterwards: the swap boundary
+   #review-conversations, the same idea key revoke's own #key-list is
+   (fragments/key_list.html).
+
+   Context: chosen (str or None), rows: [{id, title, surface, started, last,
+     messages, group, hidden, hidden_at, hidden_by, open}], opened (one row
+     or None), messages: [{at, who, text}], nobody_picked, nothing_to_show #}
+{% from "_controls.html" import icon %}
+<div id="review-conversations">
+{% if not chosen %}
+<div class="empty">
+  {{ icon('chat') }}
+  <p style="margin:0">{{ nobody_picked }}</p>
+</div>
+{% elif not rows %}
+<div class="empty">
+  {{ icon('chat') }}
+  <p style="margin:0">{{ nothing_to_show }}</p>
+</div>
+{% else %}
+<section class="card elev-sm" style="gap:var(--space-3)">
+  <table class="table">
+    <thead><tr><th>Conversation</th><th>Surface</th><th>Group</th><th>Last activity</th><th>Messages</th><th>Hidden</th><th></th></tr></thead>
+    <tbody>
+      {% for row in rows %}
+      <tr>
+        <td><a href="/admin/review?user={{ chosen|urlencode }}&amp;conversation={{ row.id|urlencode }}">{{ row.title }}</a></td>
+        <td><span class="tag tag-neutral">{{ row.surface }}</span></td>
+        <td>{% if row.group %}{{ row.group }}{% else %}<span class="meta">—</span>{% endif %}</td>
+        <td class="meta">{{ row.last }}</td>
+        <td>{{ row.messages }}</td>
+        <td>
+          {% if row.hidden %}
+          <span class="tag tag-accent">hidden</span>
+          <span class="meta" style="display:block">{{ row.hidden_at }}{% if row.hidden_by %} · by {{ row.hidden_by }}{% endif %}</span>
+          {% else %}
+          <span class="meta">—</span>
+          {% endif %}
+        </td>
+        <td>
+          <a class="btn btn-danger" href="/admin/review/{{ row.id }}/delete/confirm?user={{ chosen|urlencode }}"
+             hx-get="/admin/review/{{ row.id }}/delete/confirm/fragment?user={{ chosen|urlencode }}"
+             hx-target="#modal" hx-swap="innerHTML">Delete</a>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+
+{% if opened %}
+<section class="card elev-sm" style="gap:var(--space-3)" id="conversation">
+  <div class="hrow" style="gap:8px; align-items:center">
+    <h4 style="margin:0" class="grow">{{ opened.title }}</h4>
+    {% if opened.hidden %}<span class="tag tag-accent">hidden</span>{% endif %}
+    <a class="btn btn-danger" href="/admin/review/{{ opened.id }}/delete/confirm?user={{ chosen|urlencode }}"
+       hx-get="/admin/review/{{ opened.id }}/delete/confirm/fragment?user={{ chosen|urlencode }}"
+       hx-target="#modal" hx-swap="innerHTML">Delete this conversation</a>
+  </div>
+  <p class="meta" style="margin:0">Started {{ opened.started }} · last activity {{ opened.last }}{% if opened.hidden %} · hidden {{ opened.hidden_at }}{% if opened.hidden_by %} by {{ opened.hidden_by }}{% endif %}{% endif %}</p>
+
+  {% if not messages %}
+  <div class="empty">
+    {{ icon('scroll') }}
+    <p style="margin:0">{{ nothing_to_show }}</p>
+  </div>
+  {% else %}
+  <div class="stack" style="gap:var(--space-3)">
+    {% for message in messages %}
+    <div class="stack" style="gap:2px">
+      <span class="meta">{{ message.at }} · {{ message.who }}</span>
+      <p style="margin:0; font-size:13.5px; line-height:1.55; white-space:pre-wrap">{{ message.text }}</p>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+</section>
+{% endif %}
+</div>

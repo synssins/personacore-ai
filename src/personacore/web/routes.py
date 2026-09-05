@@ -107,6 +107,7 @@ from personacore.web.screens import plugin_status as plugin_status_screen
 from personacore.web.screens import plugins as plugins_screen
 from personacore.web.screens import profile as profile_screen
 from personacore.web.screens import review as review_screen
+from personacore.web.screens import review_delete as review_delete_screen
 from personacore.web.screens import voice as voice_screen
 from personacore.web.screens import voice_library as voice_library_screen
 from personacore.web.screens.chat import (
@@ -644,6 +645,11 @@ def create_admin_ui_router(
     # person, and a check written inside the screen would be a second
     # answer to a question this router has already answered.
     review_screen.register(router, ctx)
+    # The administrator's delete on that same screen (workspace contract §2).
+    # A separate module, the same reason `persona_delete_screen` is separate
+    # from `personas_screen`: registered right after what it deletes from,
+    # under the same default-deny.
+    review_delete_screen.register(router, ctx)
     profile_screen.register(router, ctx)
     # Voice: the engines and their switches (ADR-0029 section 2), and the
     # voices themselves — installing one, filling it in, exporting it as a

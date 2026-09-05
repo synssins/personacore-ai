@@ -25,12 +25,21 @@ and this answers a different question: *what has this person been talking
 about.* They read the same store and neither is a second implementation of the
 other.
 
-**Read-only, and the router is what makes it admin-only.** Nothing here hides,
-un-hides, renames or deletes. It is registered on the admin UI router, which
-refuses anybody who is not an admin on every path outside a written allowlist
+**The router is what makes it admin-only.** This module itself neither hides,
+un-hides nor renames. It is registered on the admin UI router, which refuses
+anybody who is not an admin on every path outside a written allowlist
 (ADR-0032), and ``/admin/review`` is deliberately not on that list. There is no
 second check in this module, for the reason ADR-0020 gives: a screen that
 guards itself is a guard that can drift out of step with the real one.
+
+**Delete lives beside this, not in it.**
+:mod:`personacore.web.screens.review_delete` adds the one control on this
+screen that changes anything — a full destroy of a conversation, its
+attachments and its workspace files (workspace contract §2), never the
+owner's own hide. It is a separate module for the same reason
+:mod:`personacore.web.screens.persona_delete` is separate from
+:mod:`personacore.web.screens.personas`, and it inherits this router's same
+default-deny rather than adding a second one.
 
 A non-admin is therefore refused *before* the handler runs, which is also what
 makes a real account and an invented one indistinguishable to them: both are

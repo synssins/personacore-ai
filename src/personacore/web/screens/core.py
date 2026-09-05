@@ -189,6 +189,57 @@ def memory_payload_and_typed(
     return (memory or None), typed
 
 
+WORKSPACE_LABELS: dict[str, str] = {
+    "tool_result_chars": "Most characters of one tool result the model receives",
+    "long_item_chars": "Save a tool result as a file when longer than",
+    "max_file_bytes": "Largest workspace file (bytes)",
+    "max_workspace_bytes": "Largest workspace per conversation (bytes)",
+}
+"""``working/contracts/workspace.md`` §9 — the four ``[workspace]`` settings,
+in the order the screen shows them. Fixed rather than built from what is on
+disk, the same reason :data:`MEMORY_LABELS` is: there is no open-ended key
+here, so the row list can never grow one nobody typed."""
+
+WORKSPACE_FIELD_PREFIX = "workspace_"
+
+
+def workspace_rows(
+    workspace: Any, *, typed: Mapping[str, str] | None = None
+) -> list[dict[str, Any]]:
+    """One input per ``[workspace]`` setting, with the operator's input
+    preserved — the same shape as :func:`memory_rows`, for the same reason:
+    ``typed`` outranks what is on disk so a refused save re-renders exactly
+    what was submitted rather than silently reverting it."""
+    section = workspace if isinstance(workspace, dict) else {}
+    typed = typed or {}
+    rows: list[dict[str, Any]] = []
+    for key, field_label in WORKSPACE_LABELS.items():
+        value: Any = typed[key] if key in typed else section.get(key, "")
+        rows.append({"key": key, "label": field_label, "value": "" if value is None else value})
+    return rows
+
+
+def workspace_payload_and_typed(
+    settings: Mapping[str, Any], form: Mapping[str, Any] | Any
+) -> tuple[dict[str, Any] | None, dict[str, str]]:
+    """The submitted ``[workspace]`` fields as a section to merge into the
+    save payload, plus what was typed for a refused save to re-render.
+
+    Matches :func:`memory_payload_and_typed` exactly: an empty box means
+    "unset" so the settings model's own default takes over, and every value
+    is passed through as text, unparsed — the settings model already bounds
+    each of these and says so in plain English.
+    """
+    workspace: dict[str, Any] = {}
+    typed: dict[str, str] = {}
+    for key in WORKSPACE_LABELS:
+        raw = str(form.get(f"{WORKSPACE_FIELD_PREFIX}{key}") or "").strip()
+        typed[key] = raw
+        if raw:
+            workspace[key] = raw
+    return (workspace or None), typed
+
+
 def _and_list(parts: list[str]) -> str:
     """``a``, ``a and b``, ``a, b and c`` — a sentence, not a comma-joined list."""
     if len(parts) == 1:
@@ -366,6 +417,7 @@ def register(router: APIRouter, ctx: UIContext) -> None:
         typed: Mapping[str, str] | None = None,
         retention_typed: Mapping[str, str] | None = None,
         memory_typed: Mapping[str, str] | None = None,
+        workspace_typed: Mapping[str, str] | None = None,
         errors: Mapping[str, str] | None = None,
     ) -> dict[str, Any]:
         """The design's ``core`` object, built from the settings that exist.
@@ -508,6 +560,7 @@ def register(router: APIRouter, ctx: UIContext) -> None:
                 settings.get("retention"), typed=retention_typed, errors=errors
             ),
             "memory": memory_rows(settings.get("memory"), typed=memory_typed),
+            "workspace": workspace_rows(settings.get("workspace"), typed=workspace_typed),
             "purge": {
                 "ok": failures == 0,
                 "schedule": purge_schedule(),
@@ -594,6 +647,11 @@ def register(router: APIRouter, ctx: UIContext) -> None:
             payload["memory"] = memory_section
         else:
             payload.pop("memory", None)
+        workspace_section, workspace_typed = workspace_payload_and_typed(current.settings, form)
+        if workspace_section is not None:
+            payload["workspace"] = workspace_section
+        else:
+            payload.pop("workspace", None)
         try:
             # The request, not just the payload: `[auth] method` is on this
             # form, and the API's save path asks the door named there whether
@@ -610,6 +668,7 @@ def register(router: APIRouter, ctx: UIContext) -> None:
                 typed=typed,
                 retention_typed=retention_typed,
                 memory_typed=memory_typed,
+                workspace_typed=workspace_typed,
                 errors=errors,
                 save_result={"kind": "invalid", "message": message},
             )
@@ -640,7 +699,12 @@ def register(router: APIRouter, ctx: UIContext) -> None:
                     request.app,
                     enabled=bool(_section(saved.settings, "wyoming").get("enabled")),
                 )
-            applied = ["The event bus", "the retention windows", "the memory settings"]
+            applied = [
+                "The event bus",
+                "the retention windows",
+                "the memory settings",
+                "the workspace settings",
+            ]
             if wyoming_changed:
                 applied.append("the Wyoming server")
             if method_changed:

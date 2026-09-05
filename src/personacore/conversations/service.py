@@ -32,14 +32,25 @@ from typing import Protocol, runtime_checkable
 
 from personacore.audit.logging import get_logger
 from personacore.audit.models import Owner, Surface, TranscriptRecord
+from personacore.config.appdata import AppdataLayout
 from personacore.conversations.models import (
     MAX_ROSTER,
     MAX_TITLE_LENGTH,
     Conversation,
     ConversationKind,
 )
+from personacore.workspaces import Workspace, WorkspaceError
+from personacore.workspaces import remove as _rmtree_workspace
 
 _logger = get_logger(__name__)
+
+# The ceilings below are workspace.py's own published defaults
+# (`config/workspace.py`'s `WorkspaceSettings`). They are read only to count
+# a workspace's files before it is removed — `Workspace.list()` never
+# enforces either ceiling, so any value here would do; these are simply the
+# ones an operator who never touched the setting would actually have.
+_COUNT_MAX_FILE_BYTES = 2_000_000
+_COUNT_MAX_WORKSPACE_BYTES = 50_000_000
 
 
 def _unless_hidden(
@@ -198,12 +209,20 @@ class RoomStore(Protocol):
 class ConversationService:
     """Conversations for one surface, over whatever store it was handed."""
 
-    def __init__(self, store: object, *, surface: Surface) -> None:
+    def __init__(
+        self, store: object, *, surface: Surface, layout: AppdataLayout | None = None
+    ) -> None:
         self._store = store if isinstance(store, ConversationStore) else None
         self._persona_store = store if isinstance(store, PersonaAwareStore) else None
         self._room_store = store if isinstance(store, RoomStore) else None
         self._roster_store = store if isinstance(store, RosterStore) else None
         self._surface = surface
+        # Workspace contract §2: hiding takes the conversation's workspace
+        # with it. `None` — the default, and what every caller before this
+        # parameter existed still passes — means no removal happens, the
+        # same "a store that cannot do this is not asked to" shape every
+        # other optional capability on this class already follows.
+        self._layout = layout
 
     @property
     def available(self) -> bool:
@@ -542,7 +561,7 @@ class ConversationService:
         if self._room_store is None:
             return False
         try:
-            return await self._room_store.hide_conversation(
+            hidden = await self._room_store.hide_conversation(
                 conversation_id, owner=owner, hidden_by=owner.id
             )
         except Exception as exc:  # noqa: BLE001 - see module docstring
@@ -552,6 +571,36 @@ class ConversationService:
                 error=repr(exc),
             )
             return False
+        if hidden and self._layout is not None:
+            self._remove_workspace(conversation_id)
+        return hidden
+
+    def _remove_workspace(self, conversation_id: str) -> None:
+        """Best-effort: count what is there, remove it, log the count.
+
+        Never raises and never changes what :meth:`hide` reports — a
+        workspace that fails to remove is a cleanup problem for the sweep
+        (:func:`personacore.workspaces.sweep`) to catch later, not a reason
+        to tell the owner their conversation was not hidden.
+        """
+        assert self._layout is not None  # noqa: S101 - only called when it is
+        try:
+            count = len(
+                Workspace(
+                    self._layout,
+                    conversation_id,
+                    max_file_bytes=_COUNT_MAX_FILE_BYTES,
+                    max_workspace_bytes=_COUNT_MAX_WORKSPACE_BYTES,
+                ).list()
+            )
+        except WorkspaceError:
+            count = 0
+        if _rmtree_workspace(self._layout, conversation_id):
+            _logger.info(
+                "conversation_workspace_removed",
+                conversation_id=conversation_id,
+                files=count,
+            )
 
     async def rename(self, owner: Owner, conversation_id: str, title: str) -> bool:
         """Retitle one of this owner's conversations.

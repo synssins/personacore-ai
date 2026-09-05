@@ -44,7 +44,7 @@ import structlog
 from fastapi import FastAPI, status
 from fastapi.responses import JSONResponse, RedirectResponse
 
-from personacore import CONTRACT_VERSION, __version__
+from personacore import CONTRACT_VERSION, __version__, workspaces
 from personacore.admin.authn import AuthContext, LiveAuth
 from personacore.agent.loop import (
     AgentLoop,
@@ -615,10 +615,13 @@ def create_app(appdata: Path | str | None = None) -> FastAPI:
         personas=personas,
         audit=audit,
         tools=tools_provider,
-        # `[memory] recall_limit` reaches the loop's own recall here; like the
-        # other loop tunables it is read at boot, and the Core settings screen
-        # says so beside the box.
-        config=AgentLoopConfig(memory_recall_limit=settings.memory.recall_limit),
+        # `[memory] recall_limit` and `[workspace] tool_result_chars` reach the
+        # loop's own tunables here; like the other loop tunables both are read
+        # at boot, and the Core settings screen says so beside each box.
+        config=AgentLoopConfig(
+            memory_recall_limit=settings.memory.recall_limit,
+            max_untrusted_chars=settings.workspace.tool_result_chars,
+        ),
         persona_llm=PersonaLLMRouter(roster, interactive_llm),
         memory=memory_provider,
     )
@@ -859,11 +862,23 @@ def create_app(appdata: Path | str | None = None) -> FastAPI:
                 status["consecutive_failures"] += 1
                 log.warning("memory_purge_failed", error=repr(exc))
                 return
+        # Workspace contract §2: a folder under `workspaces/` whose conversation
+        # is gone or hidden is a stray — hide and delete already remove the
+        # folder, so this only catches what a crash between the two left
+        # behind. Same posture as the attachment sweep above: caught on its
+        # own, counted, never a reason to call the row purge failed.
+        workspaces_swept = 0
+        try:
+            visible = await audit.visible_conversation_ids()
+            workspaces_swept = await asyncio.to_thread(workspaces.sweep, layout, visible)
+        except Exception as exc:  # noqa: BLE001 - background hygiene, never a request
+            log.warning("workspace_sweep_failed", error=repr(exc))
         status["last_success"] = datetime.now(UTC).isoformat()
         status["last_error"] = None
         status["consecutive_failures"] = 0
         log.info(
             "retention_purge_completed",
+            workspaces_swept=workspaces_swept,
             audit_deleted=result.audit_deleted,
             transcript_deleted=result.transcript_deleted,
             attachments_removed=swept.removed,
