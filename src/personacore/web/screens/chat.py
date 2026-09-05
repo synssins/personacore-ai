@@ -110,7 +110,7 @@ from personacore.conversations.models import (
     roster_of,
 )
 from personacore.conversations.service import ConversationService
-from personacore.web.screens import chat_attachments, chat_audio, chat_image
+from personacore.web.screens import chat_attachments, chat_audio, chat_image, chat_workspace
 from personacore.web.screens import chat_exchange as exchanges
 from personacore.web.screens import chat_room as room
 from personacore.web.screens import chat_streaming as streaming
@@ -712,6 +712,33 @@ def register(router: APIRouter, ctx: UIContext) -> None:
                 ctx, owner=owner, ids=ids
             )
 
+    def _attach_replay_workspace_files(
+        found: Conversation | None, built: Sequence[dict[str, Any]]
+    ) -> None:
+        """Turn a replayed reply's workspace file names back into cards —
+        workspace contract §7.
+
+        The names come off ``chat_thread._fill_reply``, read from the same
+        :data:`~personacore.web.screens.chat_workspace.WORKSPACE_FILES_ACTION`
+        record :mod:`chat_streaming` wrote when the reply landed. Needs the
+        conversation's own id, not the correlation id ``chat_thread`` matched
+        by — a card's download link is scoped by conversation
+        (``chat_workspace.chip_for``), and ``found`` is the one place this
+        screen already has it (the same reason it is handed to
+        ``_attach_replay_images`` beside this).
+
+        ``found`` is ``None`` for a brand new conversation with nothing
+        looked at yet — nothing to hydrate either way, so this is a no-op
+        rather than a guess at an id.
+        """
+        if found is None:
+            return
+        for entry in built:
+            names = entry.pop("workspace_files", None)
+            if not names:
+                continue
+            entry["workspace_files"] = chat_workspace.chips_for_names(found.conversation_id, names)
+
     def _attach_replay_images(
         built: Sequence[dict[str, Any]], conversation: Conversation | None
     ) -> None:
@@ -1020,6 +1047,7 @@ def register(router: APIRouter, ctx: UIContext) -> None:
         await _attach_replay_audio(request, built)
         await _attach_replay_attachments(user, built)
         _attach_replay_images(built, found)
+        _attach_replay_workspace_files(found, built)
         return {
             **await _shell(request, "chat"),
             **_room(rail, rows, mine),
@@ -1265,6 +1293,7 @@ def register(router: APIRouter, ctx: UIContext) -> None:
         await _attach_replay_audio(request, built)
         await _attach_replay_attachments(user, built)
         _attach_replay_images(built, found)
+        _attach_replay_workspace_files(found, built)
         return templates.TemplateResponse(
             request=request,
             name="fragments/chat_messages.html",

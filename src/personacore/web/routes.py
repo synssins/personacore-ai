@@ -90,6 +90,7 @@ from personacore.web.auth_pages import create_account_router
 from personacore.web.screens import chat as chat_screen
 from personacore.web.screens import chat_attachments as chat_attachments_screen
 from personacore.web.screens import chat_audio as chat_audio_screen
+from personacore.web.screens import chat_workspace as chat_workspace_screen
 from personacore.web.screens import core as core_screen
 from personacore.web.screens import health as health_screen
 from personacore.web.screens import hearing as hearing_screen
@@ -108,6 +109,7 @@ from personacore.web.screens import plugins as plugins_screen
 from personacore.web.screens import profile as profile_screen
 from personacore.web.screens import review as review_screen
 from personacore.web.screens import review_delete as review_delete_screen
+from personacore.web.screens import review_workspace as review_workspace_screen
 from personacore.web.screens import voice as voice_screen
 from personacore.web.screens import voice_library as voice_library_screen
 from personacore.web.screens.chat import (
@@ -620,6 +622,11 @@ def create_admin_ui_router(
     # file, never a fragment, and is under `/admin/chat/` so `MEMBER_PREFIXES`
     # already covers it.
     chat_attachments_screen.register(router, ctx)
+    # A workspace file's bytes (workspace contract §7) — same reason the
+    # attachment socket above is its own registration: this answers with a
+    # file, never a fragment, and is under `/admin/chat/` so
+    # `MEMBER_PREFIXES` already covers it.
+    chat_workspace_screen.register(router, ctx)
     health_screen.register(router, ctx)
     plugins_screen.register(router, ctx)
     plugin_install_screen.register(router, ctx)
@@ -650,6 +657,10 @@ def create_admin_ui_router(
     # from `personas_screen`: registered right after what it deletes from,
     # under the same default-deny.
     review_delete_screen.register(router, ctx)
+    # The administrator's own workspace-file download route (workspace
+    # contract §7) — a separate module for the same reason
+    # `review_delete_screen` is, registered right beside it.
+    review_workspace_screen.register(router, ctx)
     profile_screen.register(router, ctx)
     # Voice: the engines and their switches (ADR-0029 section 2), and the
     # voices themselves — installing one, filling it in, exporting it as a

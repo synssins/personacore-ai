@@ -8,6 +8,7 @@ to every client that had named the old one.
 
 from __future__ import annotations
 
+import re
 import tomllib
 from collections.abc import Mapping
 from functools import partial
@@ -116,6 +117,66 @@ PERSONA_MEMORY_HELP = (
 form, checked by default, so a save always knows the intended state: ticked
 removes the ``memory`` key (which already means on), unticked writes
 ``memory = false``."""
+
+PERSONA_WORKSPACE_LABEL = "Workspace"
+
+PERSONA_WORKSPACE_HELP = (
+    "Gives this persona a folder per conversation. Files a tool fetches and "
+    "files the persona writes are kept there, and the persona can list, "
+    "read and write them."
+)
+"""Workspace contract §5 — the persona switch. **Opposite default from
+Memory above.** The box is always on the form, so a save always knows the
+intended state — but unlike Memory, unticked writes nothing (absence already
+means off, per contract §0.1) and ticked writes ``workspace = true``."""
+
+MAX_WORKSPACE_PINS_CHARS = 2_000
+"""Ceiling on the pinned-files box. A few dozen comma-separated patterns is a
+few hundred characters; this is roomy against that and still a bound on
+something arriving from outside (spec §7)."""
+
+PERSONA_WORKSPACE_PINS_LABEL = "Pinned files"
+
+PERSONA_WORKSPACE_PINS_HELP = (
+    "Filename patterns, comma separated, e.g. B*_Ch*.md. Matching workspace "
+    "files are shown whole to the persona every turn."
+)
+"""Workspace contract §6 — ``workspace_pins``. Comma-separated on the form,
+a list in the file; an empty box removes the key rather than writing an
+empty list, matching every other optional field on this form."""
+
+_WORKSPACE_PIN_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._*?-]{0,119}$")
+"""One pinned-file pattern: the same shape
+``personacore.workspaces.FILENAME_PATTERN`` requires of a bare workspace
+filename, with ``*`` and ``?`` additionally allowed — a pin is a glob, and a
+bare filename is only ever a glob with no wildcard in it."""
+
+PERSONA_WORKSPACE_PIN_INVALID = (
+    "“{pattern}” is not a usable file pattern. A pattern is letters, "
+    "digits, '.', '_', '-', '*' or '?', up to 120 characters, and cannot "
+    "start with a dot."
+)
+
+
+def parse_workspace_pins(raw: str) -> tuple[list[str], str | None]:
+    """Comma-separated glob patterns, cleaned — or the first thing wrong.
+
+    Trimmed, empties dropped — a trailing comma or doubled spaces are not
+    errors, they are how a person edits a list in one text box. Each
+    surviving pattern is checked against :data:`_WORKSPACE_PIN_PATTERN`
+    before any of them is written, so a save either takes every pattern or
+    none of them rather than silently dropping the one that was wrong.
+    """
+    patterns: list[str] = []
+    for piece in raw.split(","):
+        pattern = piece.strip()
+        if not pattern:
+            continue
+        if not _WORKSPACE_PIN_PATTERN.fullmatch(pattern):
+            return [], PERSONA_WORKSPACE_PIN_INVALID.format(pattern=pattern)
+        patterns.append(pattern)
+    return patterns, None
+
 
 MAX_PAUSES_CHARS = 8_000
 """Ceiling on the speech-pauses box. A hundred rules of ``word = 120, 180`` is
@@ -402,6 +463,11 @@ def register(router: APIRouter, ctx: UIContext) -> None:
             "max_prefix_chars": MAX_PREFIX_CHARS,
             "memory_label": PERSONA_MEMORY_LABEL,
             "memory_help": PERSONA_MEMORY_HELP,
+            "workspace_label": PERSONA_WORKSPACE_LABEL,
+            "workspace_help": PERSONA_WORKSPACE_HELP,
+            "workspace_pins_label": PERSONA_WORKSPACE_PINS_LABEL,
+            "workspace_pins_help": PERSONA_WORKSPACE_PINS_HELP,
+            "max_workspace_pins_chars": MAX_WORKSPACE_PINS_CHARS,
             "pauses_label": PERSONA_PAUSES_LABEL,
             "pauses_help": PERSONA_PAUSES_HELP,
             "max_pauses_chars": MAX_PAUSES_CHARS,
@@ -454,6 +520,8 @@ def register(router: APIRouter, ctx: UIContext) -> None:
         pauses: str | None = None,
         prefix: str | None = None,
         memory: bool | None = None,
+        workspace: bool | None = None,
+        workspace_pins: str | None = None,
     ) -> dict[str, Any]:
         """One persona in the shape the edit form renders.
 
@@ -489,6 +557,13 @@ def register(router: APIRouter, ctx: UIContext) -> None:
                 # itself means when it cannot be read at all (absent or
                 # broken both mean on, per `Persona.memory_enabled`).
                 "memory": memory if memory is not None else True,
+                # A persona that will not load has no readable workspace switch
+                # either. Defaulting to off matches what the switch itself
+                # means when it cannot be read at all (absent means off, per
+                # contract §0.1) — the opposite of memory's own default here,
+                # because the two contracts made opposite decisions.
+                "workspace": workspace if workspace is not None else False,
+                "workspace_pins": workspace_pins if workspace_pins is not None else "",
                 # Read off the file, not through the store that just refused it:
                 # the broken thing may be this very section, and the form has to
                 # show what is there or the next save would silently drop it.
@@ -504,6 +579,20 @@ def register(router: APIRouter, ctx: UIContext) -> None:
             "pauses": pauses if pauses is not None else pause_lines(loaded.speech_pauses),
             "prefix": prefix if prefix is not None else loaded.prompt_prefix,
             "memory": memory if memory is not None else loaded.memory_enabled,
+            # `getattr` with a default rather than a plain attribute read:
+            # workspace contract §5/§6 add these to `Persona` as a separate
+            # change (this screen only writes and re-displays the two keys),
+            # so a store built before that change still has a persona with
+            # neither attribute, and the switch reads as off / no pins —
+            # exactly what an absent key already means.
+            "workspace": (
+                workspace if workspace is not None else getattr(loaded, "workspace_enabled", False)
+            ),
+            "workspace_pins": (
+                workspace_pins
+                if workspace_pins is not None
+                else ", ".join(getattr(loaded, "workspace_pins", ()) or ())
+            ),
             **connection_fields(loaded.connection),
             "problem": None,
         }
@@ -517,6 +606,8 @@ def register(router: APIRouter, ctx: UIContext) -> None:
         pauses: tuple[SpeechPause, ...] | None = None,
         prefix: str | None = None,
         memory: bool = True,
+        workspace: bool = False,
+        workspace_pins: tuple[str, ...] = (),
         connection: LLMSettings | None = None,
         own_connection: bool = False,
         key_secret: str | None = None,
@@ -593,6 +684,24 @@ def register(router: APIRouter, ctx: UIContext) -> None:
             existing.pop("memory", None)
         else:
             existing["memory"] = False
+        # WORKSPACE (workspace contract §5/§0.1). Opposite default from
+        # memory just above: absence already means off, so a ticked box
+        # writes `workspace = true` and an unticked one writes nothing —
+        # there is no "leave alone" state to preserve here either, the
+        # checkbox is always on the form.
+        if workspace:
+            existing["workspace"] = True
+        else:
+            existing.pop("workspace", None)
+        # Pins (contract §6): a comma-separated box, a list in the file. An
+        # emptied box removes the key rather than writing an empty list, the
+        # same rule the pauses and prefix boxes follow, for the same reason —
+        # a persona with no pins is the same file it was before the box
+        # existed.
+        if workspace_pins:
+            existing["workspace_pins"] = list(workspace_pins)
+        else:
+            existing.pop("workspace_pins", None)
         # The connection, written as the three fields the form has controls for
         # and nothing else; whatever else is in the section survives a save that
         # said nothing about it, because `persona.toml` is the operator's file.
@@ -640,6 +749,9 @@ def register(router: APIRouter, ctx: UIContext) -> None:
         key: KeySubmission
         typed_prefix: str
         memory: bool
+        workspace: bool
+        typed_workspace_pins: str
+        workspace_pins: tuple[str, ...]
         refusal: str | None
 
     class _KeyPlan(NamedTuple):
@@ -707,11 +819,14 @@ def register(router: APIRouter, ctx: UIContext) -> None:
         prompt = str(form.get("prompt") or "")
         typed_pauses = str(form.get("pauses") or "")[:MAX_PAUSES_CHARS]
         typed_prefix = str(form.get("prompt_prefix") or "")
+        typed_workspace_pins = str(form.get("workspace_pins") or "")[:MAX_WORKSPACE_PINS_CHARS]
         # A checkbox that is absent from the POST means unchecked — there is
         # no marker field here, unlike the Core settings switches: this form
         # always renders the box, so its presence or absence already says
-        # everything a save needs to know.
+        # everything a save needs to know. Same rule for the workspace switch
+        # below, even though its own default is the opposite of memory's.
         memory_checked = bool(str(form.get("memory") or ""))
+        workspace_checked = bool(str(form.get("workspace") or ""))
         connection = read_connection_form(form)
         key = read_key_form(form)
         raw_voice = str(form.get("voice") or "").strip()
@@ -722,17 +837,39 @@ def register(router: APIRouter, ctx: UIContext) -> None:
                 voice = voice_value(require_engine_id(engine or ""), require_voice_id(name or ""))
             except PackageRejected:
                 return _Submission(
-                    display_name, prompt, "", typed_pauses, (), connection, key,
-                    typed_prefix, memory_checked, PERSONA_VOICE_UNKNOWN,
+                    display_name,
+                    prompt,
+                    "",
+                    typed_pauses,
+                    (),
+                    connection,
+                    key,
+                    typed_prefix,
+                    memory_checked,
+                    workspace_checked,
+                    typed_workspace_pins,
+                    (),
+                    PERSONA_VOICE_UNKNOWN,
                 )
         # Parsed before the other checks so that a refusal from this box is
         # reported whichever else is also wrong; it says nothing about the
         # prompt and nothing here is written until every check has passed.
         pauses, pauses_refusal = parse_pause_lines(typed_pauses)
+        workspace_pins, workspace_pins_refusal = parse_workspace_pins(typed_workspace_pins)
         made = partial(
             _Submission,
-            display_name, prompt, voice, typed_pauses, pauses, connection, key, typed_prefix,
+            display_name,
+            prompt,
+            voice,
+            typed_pauses,
+            pauses,
+            connection,
+            key,
+            typed_prefix,
             memory_checked,
+            workspace_checked,
+            typed_workspace_pins,
+            workspace_pins,
         )
         if not display_name:
             return made(PERSONA_NAME_REQUIRED)
@@ -744,7 +881,7 @@ def register(router: APIRouter, ctx: UIContext) -> None:
             return made(PERSONA_PREFIX_TOO_LONG.format(limit=MAX_PREFIX_CHARS))
         # After the prompt checks, because a persona is its prompt and that is
         # the refusal worth reading first when both boxes are wrong.
-        return made(pauses_refusal or connection.refusal or key.refusal)
+        return made(pauses_refusal or workspace_pins_refusal or connection.refusal or key.refusal)
 
     async def _edit_page(
         request: Request,
@@ -785,6 +922,8 @@ def register(router: APIRouter, ctx: UIContext) -> None:
             "pauses": sub.typed_pauses,
             "prefix": sub.typed_prefix,
             "memory": sub.memory,
+            "workspace": sub.workspace,
+            "workspace_pins": sub.typed_workspace_pins,
             "connection_mode": sub.connection.mode,
             "connection_address": sub.connection.typed_address,
             "connection_model": sub.connection.typed_model,
@@ -824,6 +963,8 @@ def register(router: APIRouter, ctx: UIContext) -> None:
             pauses=sub.pauses,
             prefix=sub.typed_prefix,
             memory=sub.memory,
+            workspace=sub.workspace,
+            workspace_pins=tuple(sub.workspace_pins),
             connection=sub.connection.connection,
             own_connection=sub.connection.mode == CONNECTION_MODE_CUSTOM,
             key_secret=plan.secret_name,
@@ -874,6 +1015,8 @@ def register(router: APIRouter, ctx: UIContext) -> None:
                 pauses=sub.typed_pauses,
                 prefix=sub.typed_prefix,
                 memory=sub.memory,
+                workspace=sub.workspace,
+                workspace_pins=sub.typed_workspace_pins,
             )
             # The boxes keep what was typed; the key state stays whatever
             # `_persona_form` read off the file, because nothing was written.
@@ -898,6 +1041,8 @@ def register(router: APIRouter, ctx: UIContext) -> None:
             typed["pauses"] = sub.typed_pauses
             typed["prefix"] = sub.typed_prefix
             typed["memory"] = sub.memory
+            typed["workspace"] = sub.workspace
+            typed["workspace_pins"] = sub.typed_workspace_pins
             return await _edit_page(
                 request, typed, {"kind": "invalid", "message": plan.refusal}
             )
@@ -909,6 +1054,8 @@ def register(router: APIRouter, ctx: UIContext) -> None:
             pauses=sub.pauses,
             prefix=sub.typed_prefix,
             memory=sub.memory,
+            workspace=sub.workspace,
+            workspace_pins=tuple(sub.workspace_pins),
             connection=sub.connection.connection,
             own_connection=sub.connection.mode == CONNECTION_MODE_CUSTOM,
             key_secret=plan.secret_name,

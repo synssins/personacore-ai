@@ -425,6 +425,19 @@
   var thinkingText = '';   // its accumulated text — the only copy once a
                             // swap has detached the node holding the rest of it
 
+  // The workspace-file cards row under the growing reply (workspace
+  // contract §7), or null before the first one arrives. Created lazily on
+  // the first `workspace_files` frame, the same reason `thinking` is: a
+  // turn whose tools kept nothing must draw none of this. Carries
+  // `data-streaming` like every other node this file draws while a
+  // character is speaking, so `clearStreaming()` removes it the moment the
+  // server's own rendering of the same reply lands — that rendering
+  // includes the identical cards (chat_exchange_body.html includes the same
+  // fragments/chat_workspace_cards.html this frame's own `html` is), so
+  // nothing is lost, only redrawn from the one place that survives a
+  // reload.
+  var workspaceCards = null;
+
   function waiting(on) {
     streamWaiting = !!on;
     var line = document.getElementById('chat-waiting');
@@ -977,6 +990,7 @@
     // is created lazily, on the first `thinking` frame, rather than here.
     thinking = null;
     thinkingText = '';
+    workspaceCards = null;
     var settled = false;
     var carried = false; // any frame other than `done` — see `attaching`
     var lost = false;
@@ -1032,6 +1046,7 @@
                 replyAuthor = '';
                 thinking = null;
                 thinkingText = '';
+                workspaceCards = null;
               }
               carried = true;
             }
@@ -1118,7 +1133,36 @@
                 // The next character's own thinking, if any — not this one's.
                 thinking = null;
                 thinkingText = '';
+                // Likewise the next character's own workspace cards, if any.
+                workspaceCards = null;
               });
+            } else if (name === 'workspace_files') {
+              // A tool call this turn just made left a file behind
+              // (workspace contract §7) — a card under the growing reply,
+              // the same `attach-card` markup the finished exchange draws
+              // (fragments/chat_workspace_cards.html, rendered server-side
+              // either way so the two are pixel for pixel the same). Not
+              // `land()`: that swaps a whole boundary by id, and this is one
+              // or more small tiles appended to a row that keeps growing as
+              // more tool calls finish.
+              var workspaceHtml = payload.html || '';
+              if (workspaceHtml) {
+                appendKeepingPlace(messages(), function () {
+                  if (!reply) reply = bubble(messages(), replyAuthor);
+                  if (!workspaceCards) {
+                    workspaceCards = document.createElement('div');
+                    workspaceCards.className = 'attach-sent-row';
+                    workspaceCards.style.alignSelf = 'flex-start';
+                    workspaceCards.setAttribute('data-streaming', '');
+                    if (reply && reply.parentNode === messages()) {
+                      reply.insertAdjacentElement('afterend', workspaceCards);
+                    } else {
+                      messages().appendChild(workspaceCards);
+                    }
+                  }
+                  workspaceCards.insertAdjacentHTML('beforeend', workspaceHtml);
+                });
+              }
             } else if (name === 'reply') {
               // One character has finished and another follows. Its rendered
               // exchange lands now rather than at the end of the room's
@@ -1133,11 +1177,13 @@
                 reply = null;
                 replyText = '';
                 replyAuthor = '';
-                // `clearStreaming()` already removed the thinking panel — it
-                // carries `data-streaming` like the bubble it sat above — so
-                // this only lets go of the reference to a node that is gone.
+                // `clearStreaming()` already removed the thinking panel and
+                // the workspace-cards row — both carry `data-streaming` like
+                // the bubble they sat above — so this only lets go of
+                // references to nodes that are gone.
                 thinking = null;
                 thinkingText = '';
+                workspaceCards = null;
                 land(messages(), payload.html || '');
               });
             } else if (name === 'done') {
@@ -1153,6 +1199,7 @@
                 replyAuthor = '';
                 thinking = null;
                 thinkingText = '';
+                workspaceCards = null;
                 if (attaching && !carried) return;
                 land(messages(), payload.html || '');
               });

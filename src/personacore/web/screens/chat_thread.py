@@ -58,6 +58,11 @@ from personacore.web.screens.chat_reply import (
     _latency,
     _metrics_fields,
 )
+from personacore.web.screens.chat_workspace import (
+    WORKSPACE_FILES_ACTION,
+    WORKSPACE_FILES_CATEGORY,
+    workspace_files_from_detail,
+)
 from personacore.web.shared import _human_gap
 
 CHAT_HISTORY_MESSAGES = 20
@@ -799,6 +804,15 @@ def _fill_reply(
     if typed_len is not None:
         entry["message"] = entry["message"][:typed_len]
     entry["attachment_ids"] = attachment_ids
+    # This turn's own workspace files (workspace contract §7) — the read
+    # side of `chat_streaming._record_workspace_files`'s write, the same
+    # correlation id every other per-turn fact on this row is read back by.
+    # Names only; `chat.py`'s `_attach_replay_workspace_files` is what turns
+    # them into cards, the same split `attachment_ids` above keeps for the
+    # same reason (this module holds no store to hydrate them with).
+    entry["workspace_files"] = workspace_files_from_detail(
+        _workspace_detail_for(audit_rows, record.correlation_id)
+    )
     # First token, tokens, first audio and the rate they give: absent for a
     # turn that predates this feature, or whose write failed (`chat_streaming`
     # treats a failed write as costing the replay's numbers, never the turn) —
@@ -891,6 +905,27 @@ def _attachment_detail_for(
     )
 
 
+def _workspace_detail_for(
+    audit_rows: Sequence[AuditRecord], correlation_id: str
+) -> Mapping[str, Any] | None:
+    """One turn's own :data:`~personacore.web.screens.chat_workspace.
+    WORKSPACE_FILES_ACTION` record, read back by correlation id — the read
+    side of :func:`personacore.web.screens.chat_streaming._record_workspace_files`'s
+    write, the same shape :func:`_attachment_detail_for` reads its own
+    record with and for the same reason: nothing to show is not a guess, it
+    is a turn whose tools kept nothing or one that predates this feature."""
+    return next(
+        (
+            row.detail
+            for row in audit_rows
+            if row.correlation_id == correlation_id
+            and row.category is WORKSPACE_FILES_CATEGORY
+            and row.action == WORKSPACE_FILES_ACTION
+        ),
+        None,
+    )
+
+
 def _replayed(
     *, message: str = "", reply: str = "", author: str = "", reply_author: str = ""
 ) -> dict[str, Any]:
@@ -900,6 +935,7 @@ def _replayed(
         "attachments": [],
         "attachment_notice": "",
         "attachment_ids": [],
+        "workspace_files": [],
         "author": author,
         "reply_author": reply_author,
         # Filled in by `_fill_reply` for a real reply; an empty entry (the

@@ -2,10 +2,12 @@
    GET /admin/personas/new (persona=None) and GET /admin/personas/{slug}/edit.
 
    Context: persona? {slug, name, prompt, voice, voice_value, pauses, prefix,
-     memory, connection_mode, connection_address, connection_model,
-     connection_key_secret, problem?},
+     memory, workspace, workspace_pins, connection_mode, connection_address,
+     connection_model, connection_key_secret, problem?},
      identifier_note, model_field_note, max_prompt_chars, max_prefix_chars, save_result?,
      memory_label, memory_help,
+     workspace_label, workspace_help, workspace_pins_label, workspace_pins_help,
+     max_workspace_pins_chars,
      connection_label, connection_help, connection_default_label,
      connection_custom_label, connection_key, connection_mode_default,
      connection_mode_custom, max_connection_address_chars,
@@ -89,6 +91,31 @@
       <label for="p-memory" style="font-size:14px">{{ memory_label }}</label>
       <p class="field-help" id="p-memory-help" style="margin:2px 0 0">{{ memory_help }}</p>
     </div>
+  </div>
+
+  {# WORKSPACE (workspace contract §5/§6). Directly below Memory, same shape
+     — but the opposite default: absence already means off, so an unticked
+     box writes nothing and a ticked one writes `workspace = true`. Below it,
+     the pinned-files box: a comma-separated list of glob patterns shown
+     whole to the persona every turn. #}
+  <div class="hrow" style="align-items:flex-start; gap:12px">
+    <input type="checkbox" id="p-workspace" name="workspace" value="1"
+           style="margin-top:3px"
+           {% if persona and persona.workspace %}checked{% endif %}
+           aria-describedby="p-workspace-help">
+    <div>
+      <label for="p-workspace" style="font-size:14px">{{ workspace_label }}</label>
+      <p class="field-help" id="p-workspace-help" style="margin:2px 0 0">{{ workspace_help }}</p>
+    </div>
+  </div>
+
+  <div class="field">
+    <label for="p-workspace-pins">{{ workspace_pins_label }}</label>
+    <input class="input" type="text" id="p-workspace-pins" name="workspace_pins"
+           maxlength="{{ max_workspace_pins_chars }}" placeholder="B*_Ch*.md"
+           value="{{ persona.workspace_pins if persona else '' }}"
+           aria-describedby="p-workspace-pins-help">
+    <p class="field-help" id="p-workspace-pins-help">{{ workspace_pins_help }}</p>
   </div>
 
   {# THIS PERSONA'S MODEL (ADR-0036). Two radios: the system's connection, or

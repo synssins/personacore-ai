@@ -42,6 +42,7 @@ from typing import Any
 from personacore.audit.models import AuditCategory
 from personacore.web.markdown import render_markdown
 from personacore.web.screens.chat_attachments import AttachmentChip
+from personacore.web.screens.chat_workspace import WorkspaceChip
 from personacore.web.shared import PERSONA_UNRECORDED, _human_gap
 
 # ---------------------------------------------------------------------------
@@ -272,6 +273,7 @@ def chat_exchange(
     attachment_notice: str = "",
     reasoning: str = "",
     context_limit: int | None = None,
+    workspace_files: Sequence[WorkspaceChip] = (),
 ) -> dict[str, Any]:
     """One finished turn in the shape ``fragments/chat_exchange.html`` renders.
 
@@ -303,11 +305,23 @@ def chat_exchange(
 
     ``attachments`` is this message's own — attachments.md contract §6a: one
     tile shape for every kind, drawn from :class:`AttachmentChip`. Never the
-    reply's; an assistant producing a file is not part of this version
-    (contract §10). ``attachment_notice`` is the one sentence this screen
+    reply's — a file the *reply's own turn* produced is a different thing,
+    covered next. ``attachment_notice`` is the one sentence this screen
     owes when something about an attachment needs saying out loud — an
     image refused because no connection is known to see (§4.3), or a part
     that could not be kept (§6a/§10) — and is empty for the ordinary turn.
+
+    ``workspace_files`` is what this turn's own tool calls left in the
+    conversation's workspace — workspace contract §7, drawn from
+    :class:`~personacore.web.screens.chat_workspace.WorkspaceChip`. Handed
+    in already built, the same way ``reasoning`` is: a fresh turn gathers the
+    names as its tool results arrive
+    (:class:`~personacore.web.screens.chat_streaming._Spoken.workspace_files`)
+    and turns them into cards here; a replayed turn's own names come back
+    through a different seam (``chat_thread._fill_reply`` /
+    ``chat.py``'s ``_attach_replay_workspace_files``) and land in this same
+    key. Empty for the ordinary turn, which is most of them: a persona with
+    no workspace, or one whose tools produced nothing to keep, sends none.
 
     ``reasoning`` is the model's own thinking, when there was any — the same
     text ``chat.js`` streamed live into the collapsed "Thinking…" line while
@@ -347,6 +361,7 @@ def chat_exchange(
         "message": message,
         "attachments": list(attachments),
         "attachment_notice": attachment_notice,
+        "workspace_files": list(workspace_files),
         # Who said each half (§5.3). Spelled by `author_label` before it got
         # here, so this function cannot disagree with the replayed rendering
         # of the very same message a page load later.
@@ -484,6 +499,7 @@ def _refused(
     author: str = "",
     attachments: Sequence[AttachmentChip] = (),
     attachment_notice: str = "",
+    workspace_files: Sequence[WorkspaceChip] = (),
 ) -> dict[str, Any]:
     """An exchange that never reached the model, in the same shape as one
     that did — so a refusal appears in the conversation where the reply
@@ -496,12 +512,16 @@ def _refused(
     ``attachments``/``attachment_notice`` exist for the one case a turn can
     fail *after* a message's attachments were already stored (the model
     raised partway through): what was kept is still shown, exactly as it
-    would be beside a reply that succeeded.
+    would be beside a reply that succeeded. ``workspace_files`` is the same
+    idea for a turn's own tool calls (workspace contract §7) — a stopped or
+    broken turn can still have left files behind before it gave out, and
+    what was kept there is shown too.
     """
     return {
         "message": message,
         "attachments": list(attachments),
         "attachment_notice": attachment_notice,
+        "workspace_files": list(workspace_files),
         "author": author,
         "reply_author": "",
         "reply_model": "",

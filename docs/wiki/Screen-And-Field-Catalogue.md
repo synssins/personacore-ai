@@ -272,6 +272,12 @@ from the server replaces it in place. A reply is appended as one fragment —
 the rest of the page, including scroll position, is untouched unless the
 reader was already at the bottom.
 
+**Workspace files.** When the persona's [workspace](Personas) is on, a file a
+tool fetched or the persona itself wrote during the turn appears as a card
+under the reply — the same document tile attachments use, sublabelled
+`Workspace · Markdown`/`Workspace · JSON`/`Workspace · Text`. Click to
+download; there is no editor or preview.
+
 **Not present:** generation statistics (tokens in/out, tokens per second,
 time to first token). Designed, not built.
 

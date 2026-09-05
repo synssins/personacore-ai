@@ -3,7 +3,8 @@
    Context: people ([UserView] or None), chosen (str or None),
      chosen_minor (bool or None), rows: [{id, title, surface, started, last,
      messages, group, hidden, hidden_at, hidden_by, open}],
-     opened (one row or None), messages: [{at, who, text}],
+     opened (one row or None, plus workspace_files:
+     [WorkspaceChip {name, url, kind_label}]), messages: [{at, who, text}],
      retention_days, shows_hidden, no_accounts, nobody_picked,
      nothing_to_show, hidden_unavailable
 

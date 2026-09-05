@@ -6,7 +6,8 @@
 
    Context: chosen (str or None), rows: [{id, title, surface, started, last,
      messages, group, hidden, hidden_at, hidden_by, open}], opened (one row
-     or None), messages: [{at, who, text}], nobody_picked, nothing_to_show #}
+     or None, plus workspace_files: [WorkspaceChip {name, url, kind_label}]),
+     messages: [{at, who, text}], nobody_picked, nothing_to_show #}
 {% from "_controls.html" import icon %}
 <div id="review-conversations">
 {% if not chosen %}
@@ -74,6 +75,17 @@
       <span class="meta">{{ message.at }} · {{ message.who }}</span>
       <p style="margin:0; font-size:13.5px; line-height:1.55; white-space:pre-wrap">{{ message.text }}</p>
     </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {# Workspace contract §7's admin half — the same files the owner's own
+     Chat screen shows as cards, small and plain here: a name and a link. #}
+  {% if opened.workspace_files %}
+  <div class="stack" style="gap:4px; border-top:1px solid var(--color-divider); padding-top:var(--space-3)">
+    <span class="meta">Workspace files</span>
+    {% for file in opened.workspace_files %}
+    <a href="{{ file.url }}" style="font-size:13px">{{ file.name }}</a>
     {% endfor %}
   </div>
   {% endif %}

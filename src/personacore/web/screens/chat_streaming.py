@@ -85,7 +85,7 @@ from personacore.audit.models import (
     Surface,
 )
 from personacore.voice.live import finished_prefix
-from personacore.web.screens import chat_attachments
+from personacore.web.screens import chat_attachments, chat_workspace
 from personacore.web.screens import chat_voices as voices
 from personacore.web.screens.chat_audio import begin_live
 from personacore.web.screens.chat_exchange import (
@@ -303,6 +303,16 @@ class _Spoken:
     at all. Kept here, not only forwarded to the ``thinking`` frame, because
     the owner asked to be able to read this back later (2026-09-02) — see
     ``_record_reasoning``, which is what makes that true."""
+
+    workspace_files: list[str] = field(default_factory=list)
+    """Every workspace file this turn's own tool calls left behind — workspace
+    contract §7 — gathered off each ``tool_result`` event's own ``detail``
+    (``AgentEvent(type=TOOL_RESULT).detail["files"]``, the agent loop's own
+    joint), in the order the tool calls finished. Empty for a persona with no
+    workspace, or one whose tools produced nothing to keep — most turns,
+    which never touch this field at all. Turned into cards for the finished
+    exchange by ``chat_workspace.chips_for_names`` and into the one audit
+    record a reload reads back by (``_record_workspace_files``)."""
 
 
 # ---------------------------------------------------------------------------
@@ -525,6 +535,7 @@ def _stopped_or_broken(
     stopped: bool,
     attachments: Sequence[Any] = (),
     attachment_notice: str = "",
+    workspace_files: Sequence[Any] = (),
 ) -> dict[str, Any]:
     """The card a turn that produced no reply leaves behind.
 
@@ -556,6 +567,7 @@ def _stopped_or_broken(
         STOPPED_REPLY if stopped else out.broke,
         attachments=attachments,
         attachment_notice=attachment_notice,
+        workspace_files=workspace_files,
     )
 
 
@@ -743,6 +755,19 @@ def register(router: APIRouter, exchange: ChatExchange) -> None:
     _rendered = exchange.rendered
     _fragment_html = exchange.fragment_html
     _markers_template = ctx.templates.get_template("fragments/chat_markers.html")
+    _workspace_cards_template = ctx.templates.get_template("fragments/chat_workspace_cards.html")
+
+    def _workspace_cards_html(chips: Sequence[Any]) -> str:
+        """The live ``workspace_files`` frame's own markup — the same
+        template the finished exchange includes (``chat_exchange_body.
+        html``), rendered on its own the same way ``_markers_html`` renders
+        ``chat_markers.html`` on its own: neither needs a ``request`` or a
+        ``url_for``, and a card appearing while the reply is still
+        streaming must be the exact bytes a reload would draw for it, or the
+        two would visibly swap the moment the finished exchange lands."""
+        if not chips:
+            return ""
+        return _workspace_cards_template.render(chips=chips)
 
     def _markers_html(conversation: str) -> str:
         """``chat_markers.html``, rendered on its own rather than riding along
@@ -877,6 +902,49 @@ def register(router: APIRouter, exchange: ChatExchange) -> None:
             )
         except Exception as exc:  # noqa: BLE001 - a lost replay line beats a dead turn
             log.warning("chat_reasoning_write_failed", error=repr(exc))
+
+    async def _record_workspace_files(
+        user: AdminUser, started: datetime | None, files: Sequence[str]
+    ) -> None:
+        """Keep this turn's own workspace files, filed under the reply's own
+        correlation id, so a reload can draw the same cards again
+        (``chat_thread._fill_reply`` / ``chat.py``'s
+        ``_attach_replay_workspace_files``) — workspace contract §7.
+
+        One record for the whole turn, written once it has finished, the
+        same shape :func:`personacore.web.screens.chat_attachments.
+        store_pending` writes ``chat.attachments`` in and for the same
+        reason: several tool calls in one turn each add their own names to
+        ``out.workspace_files`` as they finish (see ``_stream_one``), and
+        this is the point they are all known and can be filed together
+        rather than overwritten call by call.
+
+        Called only when there is something to keep, same rule
+        ``_record_reasoning`` follows: a turn whose tools produced nothing
+        must write nothing and render no card.
+
+        Best-effort, like ``_record_turn_metrics``/``_record_reasoning``
+        beside it: a failure here costs the replayed cards, never the turn,
+        which has already shown them live by the time this runs.
+        """
+        row = await _turn_reply_row(user, started)
+        if row is None:
+            return
+        try:
+            await audit.record_audit(
+                AuditRecord(
+                    correlation_id=row.correlation_id,
+                    timestamp=row.timestamp,
+                    surface=Surface.ADMIN_UI,
+                    owner=Owner.profile(user.id),
+                    category=chat_workspace.WORKSPACE_FILES_CATEGORY,
+                    action=chat_workspace.WORKSPACE_FILES_ACTION,
+                    outcome=AuditOutcome.SUCCESS,
+                    detail={"files": list(files)},
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - a lost replay linkage beats a dead turn
+            log.warning("chat_workspace_files_link_failed", error=repr(exc))
 
     @router.post(
         "/chat/stream",
@@ -1240,6 +1308,17 @@ def register(router: APIRouter, exchange: ChatExchange) -> None:
                         if _carries_conversation and conversation is not None
                         else None
                     ),
+                    # Workspace contract §7's own use of the conversation id —
+                    # decoupled from `conversation_id` just above, which is
+                    # gated on whether the *agent loop* accepts it
+                    # (`_carries_conversation`). Card links need the real id
+                    # regardless of that: a runner too old to take
+                    # `conversation_id` can still run a persona with a
+                    # workspace on, and its cards still need somewhere to
+                    # link to.
+                    workspace_ref=(
+                        conversation.conversation_id if conversation is not None else None
+                    ),
                     aloud=aloud,
                     streaming=streaming,
                     holding=holding,
@@ -1283,6 +1362,17 @@ def register(router: APIRouter, exchange: ChatExchange) -> None:
                         stopped=turn.stopping.is_set(),
                         attachments=attachment_chips,
                         attachment_notice=attachment_notice,
+                        # A tool call can have left files behind before the
+                        # turn stopped or broke — workspace contract §7, the
+                        # same "what was kept is still shown" rule the
+                        # attachment chips just above follow.
+                        workspace_files=(
+                            chat_workspace.chips_for_names(
+                                conversation.conversation_id, out.workspace_files
+                            )
+                            if conversation is not None and out.workspace_files
+                            else ()
+                        ),
                     )
                     # No `conversation=` here, deliberately unchanged: this
                     # turn already has one (it is `conversation`, above), and
@@ -1344,6 +1434,9 @@ def register(router: APIRouter, exchange: ChatExchange) -> None:
                     # after `conversations.append`, so the row this files
                     # under is already claimed by this conversation.
                     await _record_reasoning(user, opened, out.reasoning)
+                if out.workspace_files:
+                    # Same ordering reason again — workspace contract §7.
+                    await _record_workspace_files(user, opened, out.workspace_files)
 
                 if out.reply.strip():
                     # A turn that produced nothing said nothing, so there is
@@ -1370,12 +1463,27 @@ def register(router: APIRouter, exchange: ChatExchange) -> None:
                     )
                     attachment_notice = _with_size_refusals(size_refusals, attachment_notice)
 
+                # This character's own workspace-file cards (workspace
+                # contract §7) — built once and handed to whichever of the
+                # two branches below actually draws them, the same
+                # `conversation is not None` guard `_stopped_or_broken`
+                # above already needs (a stale marker naming a hidden
+                # conversation, per the same comment on `conversation_id`
+                # below).
+                workspace_chips = (
+                    chat_workspace.chips_for_names(
+                        conversation.conversation_id, out.workspace_files
+                    )
+                    if conversation is not None and out.workspace_files
+                    else ()
+                )
                 view = (
                     _refused(
                         message if first else "",
                         "The assistant returned nothing.",
                         attachments=attachment_chips if first else (),
                         attachment_notice=attachment_notice if first else "",
+                        workspace_files=workspace_chips,
                     )
                     if out.result is None
                     else chat_exchange(
@@ -1392,6 +1500,7 @@ def register(router: APIRouter, exchange: ChatExchange) -> None:
                         attachment_notice=attachment_notice if first else "",
                         reasoning=out.reasoning,
                         context_limit=context_limit,
+                        workspace_files=workspace_chips,
                     )
                 )
                 # A reply that has just been read aloud does not read itself
@@ -1431,6 +1540,7 @@ def register(router: APIRouter, exchange: ChatExchange) -> None:
         room: Sequence[str],
         image_urls: Sequence[str] = (),
         conversation_id: str | None = None,
+        workspace_ref: str | None = None,
         aloud: bool,
         streaming: Any,
         holding: _TurnHolding,
@@ -1458,6 +1568,20 @@ def register(router: APIRouter, exchange: ChatExchange) -> None:
         (``working/contracts/memory.md`` §3.1) — passed to ``streaming`` only
         when ``_carries_conversation`` says it can be, the same discovery as
         ``image_urls``.
+
+        ``workspace_ref`` is the real conversation id, workspace contract §7's
+        own use of it and deliberately **not** the same value as
+        ``conversation_id`` above: that one is gated on whether the agent
+        loop can be told, this one only builds a download link for a live
+        card, and a runner too old to accept ``conversation_id`` can still
+        run a persona with a workspace on. Every file name still lands on
+        ``out.workspace_files`` regardless — the caller needs the plain
+        names either way, for the audit record and for the finished
+        exchange's own cards, built once ``conversation`` is known not to be
+        ``None``. ``workspace_ref`` being ``None`` only costs the *live*
+        card, for the one turn that truly has no conversation yet (see the
+        caller's own comment on ``conversation is None``): there is nothing
+        to link a card to before that exists.
 
         ``stopping`` is §4a's stop, handed straight to `_kept_alive` because
         that is where the turn is actually suspended. When it fires the loop
@@ -1582,6 +1706,32 @@ def register(router: APIRouter, exchange: ChatExchange) -> None:
                     if name:
                         out.tools.append((name, float(took) if took is not None else None))
                         yield _frame("tool_done", {"name": name, "took": _latency(took)})
+                    # Workspace contract §7, the joint: `detail["files"]` on a
+                    # `TOOL_RESULT` event is the agent loop's own list of bare
+                    # filenames this one call wrote into the conversation's
+                    # workspace — empty, or the key simply absent, for a tool
+                    # call that kept nothing, which is most of them. `getattr`
+                    # rather than a plain attribute read because `event` is
+                    # built outside this package (`ChatStreamEvent`'s own
+                    # docstring: "an unknown kind is ignored"), and the same
+                    # defensiveness extends to a `detail` that is not a dict.
+                    detail = getattr(event, "detail", None)
+                    files = detail.get("files") if isinstance(detail, dict) else None
+                    new_files = [str(item) for item in files] if isinstance(files, list) else []
+                    if new_files:
+                        out.workspace_files.extend(new_files)
+                        # Live, so a card appears under the growing reply
+                        # without waiting for the whole turn to finish —
+                        # `workspace_ref` is `None` only for the one turn that
+                        # has no conversation yet (see `_stream_one`'s own
+                        # docstring), and a card with nothing to link to is
+                        # not drawn rather than drawn broken.
+                        if workspace_ref is not None:
+                            html = _workspace_cards_html(
+                                chat_workspace.chips_for_names(workspace_ref, new_files)
+                            )
+                            if html:
+                                yield _frame("workspace_files", {"html": html})
                 elif kind == "notice":
                     yield _frame("notice", {"text": str(getattr(event, "text", "") or "")})
                 elif kind == "done":

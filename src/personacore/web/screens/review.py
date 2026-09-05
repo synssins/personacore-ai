@@ -61,6 +61,7 @@ from fastapi.responses import HTMLResponse
 from personacore.audit.logging import get_logger
 from personacore.audit.models import DEFAULT_RETENTION_DAYS, MessageRole, Owner, Surface
 from personacore.auth.accounts import AccountRejected, normalise_name
+from personacore.web.screens import review_workspace
 from personacore.web.shared import UIContext
 
 logger = get_logger(__name__)
@@ -330,6 +331,12 @@ def register(router: APIRouter, ctx: UIContext) -> None:
             opened = next((row for row in rows if row["open"]), None)
             if opened is not None:
                 messages = message_rows(await _messages(owner, opened["id"]))
+                # Workspace contract §7's admin half: the same cards the
+                # owner's own Chat screen draws, linked into this screen's
+                # own admin-only download route instead of theirs.
+                opened["workspace_files"] = review_workspace.workspace_files_for(
+                    request, ctx.layout, opened["id"], chosen
+                )
 
         return ctx.templates.TemplateResponse(
             request=request,

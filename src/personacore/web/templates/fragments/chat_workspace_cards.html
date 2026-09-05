@@ -1,0 +1,27 @@
+{# fragments/chat_workspace_cards.html — file cards for a turn's own
+   workspace files (workspace contract §7). The same `attach-card` markup
+   attachments.md uses for a document
+   (fragments/chat_exchange_body.html), sublabelled "Workspace · <kind>"
+   rather than "Document · <kind>" so a person can tell where a file came
+   from at a glance. Rendered two ways: as part of a finished exchange
+   (chat_exchange_body.html includes this with `chips=exchange.
+   workspace_files`) and, live, as its own small `workspace_files` SSE frame
+   (chat_streaming.py renders exactly this template for the new files one
+   tool call just left behind) — one piece of markup either way, so the live
+   card and the one a reload draws can never drift apart.
+
+   Context: chips: [WorkspaceChip {name, url, kind_label}] #}
+{% from "_controls.html" import icon %}
+{% if chips %}
+<div class="attach-sent-row" style="align-self:flex-start">
+  {% for chip in chips %}
+  <a class="attach-card" href="{{ chip.url }}">
+    <span class="attach-card-icon">{{ icon('scroll') }}</span>
+    <span class="attach-card-text">
+      <span class="attach-card-title">{{ chip.name }}</span>
+      <span class="attach-card-sub">Workspace · {{ chip.kind_label }}</span>
+    </span>
+  </a>
+  {% endfor %}
+</div>
+{% endif %}

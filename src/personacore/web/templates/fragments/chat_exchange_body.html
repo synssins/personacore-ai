@@ -1,5 +1,6 @@
 {# fragments/chat_exchange_body.html — ONE exchange. The design's unit, kept.
    Context: exchange {message, attachments: [AttachmentChip], attachment_notice,
+                      workspace_files: [WorkspaceChip],
                       author, reply_author, reply_model, ok, reply,
                       reply_html, reply_image_url (str|None), reasoning,
                       error, persona,
@@ -82,8 +83,9 @@
      reply that just landed or one read back on a reload
      (chat_thread._fill_reply / chat.py's `_attach_replay_attachments` fill
      `exchange.attachments` either way, so this block does not know or care
-     which). An assistant producing a file is not part of this version
-     (contract §10), so this is always the person's own. #}
+     which). This is always the person's own — a file the *reply's own turn*
+     produced is `exchange.workspace_files`, drawn further down, after the
+     reply itself (workspace contract §7). #}
   {% if exchange.attachments %}
   <div class="attach-sent-row" style="align-self:flex-end">
     {% for chip in exchange.attachments %}
@@ -183,6 +185,15 @@
      bubble, same styling. #}
   <div class="md" style="align-self:flex-start; max-width:85%; margin:0; padding:var(--space-3) var(--space-4); border-radius:var(--radius-md); background:var(--color-surface); font-size:14px; line-height:1.55">{{ exchange.reply_html }}</div>
   {% endif %}
+
+  {# ── workspace files this turn's own tool calls left behind — workspace
+     contract §7 ── after any attachment cards above (those are the
+     person's own; these are the reply's), the same `attach-card` tile,
+     sublabelled "Workspace · <kind>". Shared with the live SSE frame
+     (chat_streaming.py) through fragments/chat_workspace_cards.html, so a
+     card drawn while the reply was still streaming and the one this
+     render draws are pixel for pixel the same markup. #}
+  {% with chips = exchange.workspace_files %}{% include "fragments/chat_workspace_cards.html" %}{% endwith %}
 
   {% if exchange.audio_url %}
   {# `preload="none"`: the audio is synthesised on the request the play button
