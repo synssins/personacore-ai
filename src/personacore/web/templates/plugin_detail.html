@@ -120,6 +120,31 @@
 </section>
 {% endif %}
 
+{# Runbooks (alpha.17 contract §1.10) — shown only for a plugin whose manifest
+   declares [runbooks] supported = true. Greyed with the core switch's own
+   reason while [runbooks] enabled is off; nothing here can override it. #}
+{% if plugin.runbooks.supported %}
+<section class="card elev-sm" aria-label="Runbooks for {{ plugin.name }}">
+  <form method="post" action="/admin/plugins/{{ plugin.name }}/runbooks" class="hrow" style="align-items:flex-start; gap:12px">
+    <input type="checkbox" role="switch" class="switch" id="plugin-runbooks-enabled" name="enabled" value="1"
+           {% if plugin.runbooks.enabled %}checked{% endif %}
+           {% if not plugin.runbooks.core_enabled %}disabled{% endif %}
+           aria-describedby="plugin-runbooks-enabled-help">
+    <div class="grow">
+      <label for="plugin-runbooks-enabled" style="font-size:14px">Runbooks enabled
+        {% if plugin.runbooks.enabled %}<span class="state-word ok" style="font-size:12px">on</span>
+        {% else %}<span class="state-word off" style="font-size:12px">off</span>{% endif %}
+      </label>
+      <p class="meta" id="plugin-runbooks-enabled-help" style="margin:2px 0 0; max-width:56ch">
+        {% if not plugin.runbooks.core_enabled %}{{ plugin.runbooks.off_reason }}
+        {% else %}Lets this plugin's runbooks be started once uploaded on the <a href="/admin/runbooks">Runbooks</a> screen.{% endif %}
+      </p>
+    </div>
+    <button type="submit" class="btn btn-secondary" {% if not plugin.runbooks.core_enabled %}disabled{% endif %}>Save</button>
+  </form>
+</section>
+{% endif %}
+
 {# tabs — full navigations, server renders the active one #}
 <div class="seg" role="tablist">
   <a class="seg-opt" role="tab" href="/admin/plugins/{{ plugin.name }}" aria-selected="{{ 'true' if active_tab == 'form' else 'false' }}">

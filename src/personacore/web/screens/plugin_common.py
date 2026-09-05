@@ -126,9 +126,7 @@ def secret_names(layout: AppdataLayout, plugin: str) -> list[str]:
         return []
 
 
-def plugin_schema(
-    layout: AppdataLayout, name: str
-) -> tuple[PluginSchema | None, str]:
+def plugin_schema(layout: AppdataLayout, name: str) -> tuple[PluginSchema | None, str]:
     """The plugin's schema, or ``(None, why not)``.
 
     A refusal is a sentence rather than an exception the page dies on: a
@@ -185,11 +183,7 @@ def group_field(schema: PluginSchema, key: str) -> SchemaField:
     own field names before it is used for anything at all (spec section 7).
     """
     field = next(
-        (
-            one
-            for one in schema.fields
-            if one.key == key and one.kind is FieldKind.ENTRY_GROUP
-        ),
+        (one for one in schema.fields if one.key == key and one.kind is FieldKind.ENTRY_GROUP),
         None,
     )
     if field is None:
@@ -299,8 +293,7 @@ an unexplained box asking for a credential is one an operator should hesitate
 over, and the honest thing is to tell them the author explained nothing."""
 
 SECRETS_STORED_NOTE = (
-    "Stored {names} for {plugin}. Never shown again — paste a new value to "
-    "replace it."
+    "Stored {names} for {plugin}. Never shown again — paste a new value to replace it."
 )
 
 SECRETS_NONE_SUBMITTED = "Nothing was stored — every field was left empty."
@@ -329,6 +322,29 @@ def plugin_manifest_path(layout: AppdataLayout, name: str) -> Path:
             f"The manifest for {name!r} does not sit inside that plugin's folder.", []
         )
     return resolved
+
+
+def plugin_supports_runbooks(layout: AppdataLayout, name: str) -> bool:
+    """Whether this plugin's manifest declares ``[runbooks] supported = true``.
+
+    Read as raw TOML rather than through
+    :class:`~personacore.contracts.manifest.PluginManifest`, for the same
+    reason :func:`declared_secret_requests` is: a plugin whose manifest is
+    otherwise broken may still carry this one flag honestly, and this
+    function is used by two screens that both need to work for a plugin that
+    failed to load — the per-plugin page (which shows the switch at all only
+    when this is true) and the Runbooks screen's own plugin selector (which
+    offers only plugins this returns ``True`` for). Anything unreadable is
+    ``False`` rather than raised: a plugin whose manifest cannot be read
+    plainly does not declare support for anything.
+    """
+    try:
+        path = plugin_manifest_path(layout, name)
+        raw = tomllib.loads(path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 - see docstring
+        return False
+    section = raw.get("runbooks")
+    return isinstance(section, dict) and section.get("supported") is True
 
 
 def declared_secret_requests(layout: AppdataLayout, name: str) -> list[dict[str, Any]]:
@@ -456,15 +472,11 @@ def waiting_for(requests: list[dict[str, Any]]) -> list[str]:
     waiting for something it is already running without would be the page
     describing a state that does not exist.
     """
-    return [
-        item["name"]
-        for item in requests
-        if not item["stored"] and item.get("required", True)
-    ]
+    return [item["name"] for item in requests if not item["stored"] and item.get("required", True)]
 
 
 def waiting_sentence(names: list[str]) -> str:
-    """"Waiting for a credential: openweather_key", written out for a person."""
+    """ "Waiting for a credential: openweather_key", written out for a person."""
     template = WAITING_ONE if len(names) == 1 else WAITING_MANY
     return template.format(names=", ".join(names))
 
@@ -518,7 +530,5 @@ def secret_fields_from(form: Any) -> dict[str, str]:
     return {
         key: value
         for key, value in form.multi_items()
-        if isinstance(key, str)
-        and key.startswith(SECRET_FIELD_PREFIX)
-        and isinstance(value, str)
+        if isinstance(key, str) and key.startswith(SECRET_FIELD_PREFIX) and isinstance(value, str)
     }

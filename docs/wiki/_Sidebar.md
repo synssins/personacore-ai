@@ -44,6 +44,7 @@
 - [Appdata layout](Appdata-Layout)
 - [LLM roles](LLM-Roles)
 - [Personas](Personas)
+- [Runbooks](Runbooks)
 - [Event bus](Event-Bus)
 - [Health & diagnostics](Health-And-Diagnostics)
 

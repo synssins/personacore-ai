@@ -333,6 +333,14 @@ Risk comes from the manifest and *only* from the manifest. The running server's 
 
 Both are validated as lists of strings and then **read by nothing in the core today**. They are documentation of intent for whoever reviews the plugin. See [Events](Plugin-Events) for what the bus actually does and how a plugin actually publishes.
 
+## `[runbooks]`
+
+| Key | Type | Default |
+|---|---|---|
+| `supported` | bool | `false` |
+
+Declares that this plugin's tools are meant to be driven by a [runbook](Runbooks) — an ordered list of steps the core can run in one conversation. `supported = true` is what makes a plugin appear as a group in the Runbooks screen's plugin selector and what puts a **Runbooks enabled** checkbox on the plugin's own settings page; without it, the core will not accept an uploaded runbook naming this plugin at all. It says nothing about whether any runbook actually exists yet — see [Runbooks](Runbooks) for bundling one (`runbooks/*.yaml`, optionally with `prompts/`) inside the plugin package itself.
+
 ## Load-order and error handling
 
 `PluginDiscovery.scan()` never raises for a single bad plugin. Every failure becomes a `PluginLoadFailure` carrying a plain-English message, and the scan returns successes and failures side by side so the admin UI can list a broken plugin *next to its error* rather than losing the whole scan (spec §5.1, §9).

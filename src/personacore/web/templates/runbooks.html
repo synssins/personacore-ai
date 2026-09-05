@@ -1,0 +1,119 @@
+{# runbooks.html — upload, list and delete (contract section 6). No runner in
+   this alpha: this screen is files in, files listed, files validated, files
+   out.
+   Context: available (bool), unavailable_message, core_enabled (bool),
+     banner (str|None), rows: [{plugin, id, title, version,
+     requires: [str], installed: [str], source ('bundled'|'uploaded'), valid,
+     problems: [str], verdict_ok, verdict_text, plugin_enabled, greyed,
+     grey_reason}], plugin_choices: [str], upload_result {kind, message}? #}
+{% extends "base.html" %}
+{% from "_controls.html" import icon %}
+{% block title %}Runbooks — PersonaCore admin{% endblock %}
+{% block content %}
+<header>
+  <h3 style="margin:0 0 6px">Runbooks</h3>
+  <p class="text-muted" style="margin:0; font-size:13px; max-width:62ch">
+    Files a plugin author or the household writes — an ordered list of steps
+    the core can run inside one conversation. Upload, review and delete them
+    here. There is no runner yet: nothing on this page starts one.
+  </p>
+</header>
+
+{% if not available %}
+<div class="empty">
+  {{ icon('scroll') }}
+  <p style="margin:0; font-size:15px">{{ unavailable_message }}</p>
+</div>
+{% else %}
+
+{% if banner %}
+<div class="banner warn" role="status">
+  {{ icon('warn') }}
+  <div class="grow">{{ banner }}</div>
+</div>
+{% endif %}
+
+{# upload — a plain multipart post, no two-step review dance: a runbook is
+   validated the moment it lands, and the whole result is this same page. #}
+<form class="card elev-sm" method="post" action="{{ '/admin/runbooks' }}"
+      enctype="multipart/form-data" style="gap:var(--space-3)">
+  <div class="hrow" style="flex-wrap:wrap; gap:var(--space-3)">
+    <div class="field" style="min-width:220px">
+      <label for="runbook-plugin">Plugin</label>
+      <select class="input" id="runbook-plugin" name="plugin" {% if not plugin_choices %}disabled{% endif %}>
+        {% if not plugin_choices %}<option value="">no eligible plugin installed</option>{% endif %}
+        {% for name in plugin_choices %}<option value="{{ name }}">{{ name }}</option>{% endfor %}
+      </select>
+    </div>
+    <div class="field" style="min-width:220px">
+      <label for="runbook-file">Runbook (.yaml or .zip)</label>
+      <input class="input" type="file" id="runbook-file" name="archive" accept=".yaml,.yml,.zip"
+             {% if not plugin_choices %}disabled{% endif %}>
+    </div>
+    <button type="submit" class="btn btn-primary" style="align-self:flex-end"
+            {% if not plugin_choices %}disabled{% endif %}>Upload</button>
+  </div>
+  {% if not plugin_choices %}
+  <p class="meta" style="margin:0">No installed plugin declares <code>[runbooks] supported = true</code>, so there is nothing to upload one for.</p>
+  {% endif %}
+  {% if upload_result %}
+    {% if upload_result.kind == 'ok' %}
+    <span class="save-note ok" role="status">{{ icon('check') }} {{ upload_result.message }}</span>
+    {% else %}
+    <span class="save-note error" role="alert">{{ icon('hand') }} {{ upload_result.message }}</span>
+    {% endif %}
+  {% endif %}
+</form>
+
+{% if not rows %}
+<div class="empty">
+  {{ icon('scroll') }}
+  <p style="margin:0; font-size:15px">No runbooks yet.</p>
+</div>
+{% else %}
+<div style="overflow-x:auto">
+<table class="table" aria-label="Runbooks">
+  <thead>
+    <tr>
+      <th>Plugin</th><th>Runbook</th><th>Version</th><th>Requires</th>
+      <th>Installed</th><th>Source</th><th>Verdict</th><th></th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for r in rows %}
+    <tr {% if r.greyed %}style="opacity:0.6"{% endif %} aria-label="{{ r.plugin }} {{ r.title }}">
+      <td>{{ r.plugin }}</td>
+      <td>{{ r.title }}<div class="meta">{{ r.id }}</div></td>
+      <td>{{ r.version }}</td>
+      <td>{% for line in r.requires %}<div>{{ line }}</div>{% endfor %}</td>
+      <td>{% for line in r.installed %}<div>{{ line }}</div>{% endfor %}</td>
+      <td><span class="tag tag-neutral">{{ r.source }}</span></td>
+      <td>
+        {% if not r.valid %}
+        <span class="state-word down">invalid</span>
+        <ul style="margin:4px 0 0; padding-left:18px">
+          {% for problem in r.problems %}<li style="color:var(--color-danger-text); font-size:13px">{{ problem }}</li>{% endfor %}
+        </ul>
+        {% elif r.verdict_ok %}
+        <span class="state-word ok">{{ r.verdict_text }}</span>
+        {% else %}
+        <span class="state-word warn">{{ r.verdict_text }}</span>
+        {% endif %}
+        {% if r.greyed %}
+        <div class="meta" style="margin-top:4px">{{ r.grey_reason }}</div>
+        {% endif %}
+      </td>
+      <td>
+        <a class="btn btn-danger outlined" href="/admin/runbooks/{{ r.plugin }}/{{ r.id }}/delete/confirm">
+          {{ icon('trash') }} Delete
+        </a>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endif %}
+
+{% endif %}
+{% endblock %}

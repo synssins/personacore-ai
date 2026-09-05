@@ -16,7 +16,7 @@
        password_secret, password_secret_broken},
      retention: [{surface, label, value, error?}], purge {ok, schedule,
      last_success, last_error, consecutive_failures, can_retry},
-     memory: [{key, label, value}]}, save_result?
+     memory: [{key, label, value}], runbooks {enabled}}, save_result?
 
    Fields whose setting does not exist in CoreSettings — instance name, log
    level, and both security toggles — are disabled and marked `later` rather
@@ -311,6 +311,29 @@
                id="mem-{{ r.key }}" name="memory_{{ r.key }}" value="{{ r.value }}">
       </div>
       {% endfor %}
+    </div>
+  </section>
+
+  {# Runbooks — [runbooks] (alpha.17 contract §1.9). One switch, default off:
+     with it off, no runbook can ever be run (there is no runner at all yet),
+     and the Runbooks screen says so. Uploading, listing, validating and
+     deleting runbooks all work regardless — only running is gated. #}
+  <section class="stack" style="gap:var(--space-4)">
+    <h6 class="text-muted" style="margin:0">Runbooks</h6>
+    <p class="text-muted" style="margin:0; font-size:13px; max-width:60ch">Whether a runbook may ever be run. Off by default. Files still upload, list and validate on the <a href="/admin/runbooks">Runbooks</a> screen either way.</p>
+    <div class="hrow" style="align-items:flex-start; gap:12px">
+      <input type="hidden" name="present.runbooks_enabled" value="1">
+      <input type="checkbox" role="switch" class="switch" id="runbooks-enabled" style="margin-top:2px"
+             name="runbooks_enabled" value="1"
+             {% if core.runbooks.enabled %}checked{% endif %}
+             aria-describedby="runbooks-enabled-help">
+      <div>
+        <label for="runbooks-enabled" style="font-size:14px">Runbook runs
+          {% if core.runbooks.enabled %}<span class="state-word ok" style="font-size:12px">on</span>
+          {% else %}<span class="state-word off" style="font-size:12px">off</span>{% endif %}
+        </label>
+        <p class="meta" id="runbooks-enabled-help" style="margin:2px 0 0; max-width:56ch">No plugin declaration, bundled runbook or upload can turn this on. A per-plugin switch on that plugin's own settings page must also be on before its runbooks run.</p>
+      </div>
     </div>
   </section>
 

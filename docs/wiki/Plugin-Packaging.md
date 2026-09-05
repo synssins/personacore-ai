@@ -143,6 +143,12 @@ The folder is located in either plugins directory, then:
 
 Unlike API-key revocation, uninstall answers `404` for something that is not installed. It destroys data, and an operator who deletes the wrong name has to find out rather than be told "done" by an interface that quietly did nothing.
 
+## Bundling runbooks
+
+A plugin that declares `[runbooks] supported = true` may ship one or more [runbooks](Runbooks) inside its own package: `runbooks/*.yaml`, each optionally paired with its own `prompts/*.md` for the model steps that need them. On install (and on every reinstall), the core copies each one into `<appdata>/runbooks/<plugin>/<id>.yaml` and marks it bundled — the same place an upload for that plugin would land, so the two are indistinguishable on the Runbooks screen except for their `Source` column.
+
+**A bad bundled runbook is a warning, not a refusal.** It is validated the same way an upload is, but a mistake in a prompt file must not be the reason the whole plugin fails to install: the runbook is copied in and listed with its problems on the Runbooks screen, and the plugin installs and runs exactly as it would without it.
+
 ## Signing
 
 **Deliberately out of scope for now** (ADR-0013). A signature is only worth anything with a key distribution story, and there is no plugin ecosystem to sign. Revisit if plugins ever come from anywhere but the operator's own hand.
@@ -151,6 +157,6 @@ Which means: the hardening above is not optional detail; it is the reason accept
 
 ## See also
 
-[Plugin Contract](Plugin-Contract) · [Manifest](Plugin-Manifest) · [Lifecycle](Plugin-Lifecycle) · [Configuration](Plugin-Configuration)
+[Plugin Contract](Plugin-Contract) · [Manifest](Plugin-Manifest) · [Lifecycle](Plugin-Lifecycle) · [Configuration](Plugin-Configuration) · [Runbooks](Runbooks)
 
 Walked through end to end in [Scenario: Installing a Plugin](Scenario-Installing-A-Plugin).

@@ -87,6 +87,10 @@
       {% if not nav_collapsed %}
       <a class="navlink sub" href="/admin/plugins/health" {% if nav_active == 'plugin-health' %}aria-current="page"{% endif %}><span class="grow">Plugin health</span></a>
       <a class="navlink sub" href="/admin/plugins/logs" {% if nav_active == 'plugin-output' %}aria-current="page"{% endif %}><span class="grow">Plugin output</span></a>
+      {# Runbooks (alpha.17 contract section 6): upload, list, delete. A third
+         sibling beside health and output — all three are "about the plugins
+         list" rather than about one plugin. #}
+      <a class="navlink sub" href="/admin/runbooks" {% if nav_active == 'runbooks' %}aria-current="page"{% endif %}><span class="grow">Runbooks</span></a>
       {% endif %}
       <a class="navlink" href="/admin/personas" {% if nav_active == 'personas' %}aria-current="page"{% endif %} {{ navname('Personas', nav_collapsed) }}>{{ icon('mask') }}{% if not nav_collapsed %}<span class="grow">Personas</span>{% endif %}</a>
       {# What each character has kept about each person, and the household's

@@ -110,6 +110,7 @@ from personacore.web.screens import profile as profile_screen
 from personacore.web.screens import review as review_screen
 from personacore.web.screens import review_delete as review_delete_screen
 from personacore.web.screens import review_workspace as review_workspace_screen
+from personacore.web.screens import runbooks as runbooks_screen
 from personacore.web.screens import voice as voice_screen
 from personacore.web.screens import voice_library as voice_library_screen
 from personacore.web.screens.chat import (
@@ -633,6 +634,11 @@ def create_admin_ui_router(
     plugin_status_screen.register(router, ctx)
     plugin_detail_screen.register(router, ctx)
     plugin_entries_screen.register(router, ctx)
+    # Runbooks (alpha.17): upload, list, delete, and the two switches this
+    # alpha's contract adds. No runner yet — see the module docstring.
+    # Registered beside the other plugin-adjacent screens, under the same
+    # default-deny (ADR-0032): absent from `MEMBER_PATHS`/`MEMBER_PREFIXES`.
+    runbooks_screen.register(router, ctx)
     models_screen.register(router, ctx)
     core_screen.register(router, ctx)
     personas_screen.register(router, ctx)
@@ -693,7 +699,6 @@ def create_admin_ui_router(
         )
 
     return router
-
 
 
 __all__ = [

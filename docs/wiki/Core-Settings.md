@@ -190,6 +190,16 @@ The per-conversation scratch folder a tool result can be saved into, and the cap
 
 The workspace root itself is not a setting: it is fixed at `<appdata>/workspaces`, the same way every other appdata folder is.
 
+## `[runbooks]`
+
+The master switch for [runbooks](Runbooks) — a runbook is an ordered list of steps the core can run inside one conversation. Alpha.17 ships upload, listing, validation and delete only; there is no runner yet, so this switch currently gates nothing but is here in advance because it is a condition of the design (a runbook carries no way to run without it).
+
+| Key | Type | Default | Notes |
+|---|---|---|---|
+| `enabled` | bool | `false` | Off by default. No plugin declaration, bundled runbook or upload can turn this on — only this checkbox, on the Core settings screen. With it off, the [Runbooks](Runbooks) screen still lists files and their validation; only running is gated (and nothing can run yet regardless). |
+
+A second, per-plugin switch sits under this one, on each supporting plugin's own settings page — see [Runbooks](Runbooks) and [Plugin Configuration](Plugin-Configuration). Both default off, and the core switch overrides the plugin one: a plugin's own switch being on means nothing while this one is off.
+
 ## The starter file
 
 On first run the core writes a commented `core.toml` containing `default_persona`, an `[llm.interactive]` section with timeouts, a `[bus]` section, `[retention] default_days = 30`, and `[auth] method = "builtin"`. It exists so an operator has a file to find and read; without it the settings would exist only as defaults buried in code. It is never rewritten over an existing file.

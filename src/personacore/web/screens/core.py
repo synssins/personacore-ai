@@ -63,6 +63,7 @@ not a cleanup schedule, so all of them are on the screen rather than only the
 ones somebody happened to set.
 """
 
+
 def purge_schedule() -> str:
     """When the retention purge actually runs, in words.
 
@@ -145,9 +146,7 @@ key here, so the row list can never grow one nobody typed."""
 MEMORY_FIELD_PREFIX = "memory_"
 
 
-def memory_rows(
-    memory: Any, *, typed: Mapping[str, str] | None = None
-) -> list[dict[str, Any]]:
+def memory_rows(memory: Any, *, typed: Mapping[str, str] | None = None) -> list[dict[str, Any]]:
     """One input per ``[memory]`` setting, with the operator's input preserved.
 
     Same shape and the same reason as :func:`retention_rows`: ``typed``
@@ -238,6 +237,69 @@ def workspace_payload_and_typed(
         if raw:
             workspace[key] = raw
     return (workspace or None), typed
+
+
+# ---------------------------------------------------------------------------
+# Runbooks — the core master switch (alpha.17 contract §1.9)
+# ---------------------------------------------------------------------------
+#
+# One checkbox, `[runbooks] enabled`, default off. Handled the way memory and
+# workspace are — read straight from the form in `core_save` and merged into
+# the payload here, without touching `core_form.py`'s own `core_payload` at
+# all — rather than the way dictation and Wyoming are, which both live in
+# `core_form.py` (out of this task's file list; PLAN.md's `screen` row owns
+# `core.py` and its own template only).
+#
+# It is still a checkbox rather than a text box, so it has the same silent-post
+# hazard `DICTATION_BROWSER_PRESENT_FIELD` exists for: an unticked box and a
+# form that never drew this section post the same nothing. `RUNBOOKS_PRESENT_FIELD`
+# is this switch's own marker, read here rather than through a helper in
+# `core_form.py` for the reason above — the hidden input lives in
+# `fragments/core_form.html`, which this task does own.
+
+RUNBOOKS_ENABLED_FIELD = "runbooks_enabled"
+"""``[runbooks] enabled`` — whether a runbook may ever be run. Default off
+(contract §1.9); this screen is the only place it is switched on."""
+
+RUNBOOKS_PRESENT_FIELD = "present.runbooks_enabled"
+"""Says the Runbooks checkbox was actually on the submitted form — see the
+section docstring above and :data:`DICTATION_BROWSER_PRESENT_FIELD`, which
+this mirrors."""
+
+
+def runbooks_context(runbooks: Any, *, typed: Mapping[str, str] | None = None) -> dict[str, Any]:
+    """The Runbooks section's one control, with the operator's input
+    preserved — same reasoning as :func:`memory_rows`: ``typed`` outranks
+    what is on disk so a refused save re-renders what was submitted."""
+    section = runbooks if isinstance(runbooks, dict) else {}
+    typed = typed or {}
+    if RUNBOOKS_ENABLED_FIELD in typed:
+        enabled = bool(typed[RUNBOOKS_ENABLED_FIELD])
+    else:
+        enabled = bool(section.get("enabled", False))
+    return {"enabled": enabled}
+
+
+def runbooks_payload_and_typed(
+    settings: Mapping[str, Any], form: Mapping[str, Any] | Any
+) -> tuple[dict[str, Any] | None, dict[str, str]]:
+    """The submitted ``[runbooks]`` section to merge into the save payload,
+    plus what was typed for a refused save to re-render.
+
+    ``None`` when the marker is missing — a save from a page that never drew
+    this section (or an old client) must leave the stored switch exactly as
+    it was, not reset it to off. ``core_payload`` already carries the disk's
+    ``[runbooks]`` section forward untouched in that case, since it knows
+    nothing about this key at all; this function only ever has an opinion
+    when the marker says the control was genuinely on the page.
+    """
+    if not str(form.get(RUNBOOKS_PRESENT_FIELD) or ""):
+        return None, {}
+    stored = settings.get("runbooks")
+    stored = dict(stored) if isinstance(stored, dict) else {}
+    enabled = bool(str(form.get(RUNBOOKS_ENABLED_FIELD) or ""))
+    typed = {RUNBOOKS_ENABLED_FIELD: "on" if enabled else ""}
+    return {**stored, "enabled": enabled}, typed
 
 
 def _and_list(parts: list[str]) -> str:
@@ -407,7 +469,6 @@ def register(router: APIRouter, ctx: UIContext) -> None:
     _shell = ctx.shell
     _current_config = partial(current_config, ctx.layout)
 
-
     # -- core settings -----------------------------------------------------
 
     def _core_context(
@@ -418,6 +479,7 @@ def register(router: APIRouter, ctx: UIContext) -> None:
         retention_typed: Mapping[str, str] | None = None,
         memory_typed: Mapping[str, str] | None = None,
         workspace_typed: Mapping[str, str] | None = None,
+        runbooks_typed: Mapping[str, str] | None = None,
         errors: Mapping[str, str] | None = None,
     ) -> dict[str, Any]:
         """The design's ``core`` object, built from the settings that exist.
@@ -434,9 +496,7 @@ def register(router: APIRouter, ctx: UIContext) -> None:
         bus = settings.get("bus")
         state = request.app.state
         running = getattr(state, "bus", None)
-        live_bus: dict[str, Any] = (
-            dict(running.health.as_dict()) if running is not None else {}
-        )
+        live_bus: dict[str, Any] = dict(running.health.as_dict()) if running is not None else {}
         status_report = getattr(state, "retention_status", None)
         status_report = status_report if isinstance(status_report, dict) else {}
         failures = int(status_report.get("consecutive_failures") or 0)
@@ -552,15 +612,14 @@ def register(router: APIRouter, ctx: UIContext) -> None:
                 # the fix, and an error would send them looking for a different
                 # one. The sentence itself still reaches Health.
                 "password_secret": _text(bus, "password_secret"),
-                "password_secret_broken": bool(
-                    getattr(state, "bus_password_degraded", None)
-                ),
+                "password_secret_broken": bool(getattr(state, "bus_password_degraded", None)),
             },
             "retention": retention_rows(
                 settings.get("retention"), typed=retention_typed, errors=errors
             ),
             "memory": memory_rows(settings.get("memory"), typed=memory_typed),
             "workspace": workspace_rows(settings.get("workspace"), typed=workspace_typed),
+            "runbooks": runbooks_context(settings.get("runbooks"), typed=runbooks_typed),
             "purge": {
                 "ok": failures == 0,
                 "schedule": purge_schedule(),
@@ -573,9 +632,7 @@ def register(router: APIRouter, ctx: UIContext) -> None:
             },
         }
 
-    def _core_form(
-        request: Request, current: ConfigResponse, **kwargs: Any
-    ) -> HTMLResponse:
+    def _core_form(request: Request, current: ConfigResponse, **kwargs: Any) -> HTMLResponse:
         save_result = kwargs.pop("save_result", None)
         return templates.TemplateResponse(
             request=request,
@@ -652,14 +709,20 @@ def register(router: APIRouter, ctx: UIContext) -> None:
             payload["workspace"] = workspace_section
         else:
             payload.pop("workspace", None)
+        # Runbooks — a checkbox, not a text box, so absence of the marker means
+        # "this save has no opinion" rather than "clear it": unlike memory and
+        # workspace above, a missing section here is left exactly as
+        # `core_payload` already copied it from disk, never popped. See
+        # `runbooks_payload_and_typed`'s docstring.
+        runbooks_section, runbooks_typed = runbooks_payload_and_typed(current.settings, form)
+        if runbooks_section is not None:
+            payload["runbooks"] = runbooks_section
         try:
             # The request, not just the payload: `[auth] method` is on this
             # form, and the API's save path asks the door named there whether
             # it would still admit the caller who sent this. Without it the
             # swap is refused rather than taken on trust.
-            saved = await save_config(
-                payload, user, action="config.update", request=request
-            )
+            saved = await save_config(payload, user, action="config.update", request=request)
         except HTTPException as exc:
             errors, message = settings_problems(exc)
             return _core_form(
@@ -669,6 +732,7 @@ def register(router: APIRouter, ctx: UIContext) -> None:
                 retention_typed=retention_typed,
                 memory_typed=memory_typed,
                 workspace_typed=workspace_typed,
+                runbooks_typed=runbooks_typed,
                 errors=errors,
                 save_result={"kind": "invalid", "message": message},
             )
@@ -753,9 +817,7 @@ def register(router: APIRouter, ctx: UIContext) -> None:
             # form, and the API's save path asks the door named there whether
             # it would still admit the caller who sent this. Without it the
             # swap is refused rather than taken on trust.
-            saved = await save_config(
-                payload, user, action="config.update", request=request
-            )
+            saved = await save_config(payload, user, action="config.update", request=request)
         except HTTPException as exc:
             _, message = settings_problems(exc)
             return await _core_page(request, tab="raw", raw_error=message)

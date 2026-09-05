@@ -60,6 +60,7 @@ from personacore.web.screens.plugin_common import (
     plugin_config,
     plugin_name_or_404,
     plugin_schema,
+    plugin_supports_runbooks,
     secret_fields_from,
     secret_names,
     secret_requests,
@@ -71,13 +72,15 @@ from personacore.web.shared import (
     NO_PLUGIN_OPERATIONS,
     UIContext,
     api_handler,
+    current_config,
     refusal,
 )
 
-RAW_TOO_LARGE = (
-    "Not saved: those settings are larger than {limit} characters. Nothing was "
-    "written."
-)
+RUNBOOKS_OFF_IN_CORE = "runs are off in Core settings"
+"""Contract §1.10's exact wording for this switch, greyed while
+``[runbooks] enabled`` is off — see ``runbooks_context`` below."""
+
+RAW_TOO_LARGE = "Not saved: those settings are larger than {limit} characters. Nothing was written."
 
 FORM_TOO_LARGE = (
     "Not saved: those settings would make config.toml larger than {limit} "
@@ -153,6 +156,45 @@ def register(router: APIRouter, ctx: UIContext) -> None:
     _secret_names = partial(secret_names, ctx.layout)
     layout = ctx.layout
 
+    def _runbooks_store(request: Request) -> Any | None:
+        """``request.app.state.runbooks``, duck-typed — see
+        ``web/screens/runbooks.py``'s module docstring for why this never
+        imports the package it comes from."""
+        return getattr(request.app.state, "runbooks", None)
+
+    def _core_runbooks_enabled() -> bool:
+        """``[runbooks] enabled`` off the settings document — the same read
+        every other screen's switch state comes from, not off ``app.state``."""
+        current, _unreadable = current_config(layout)
+        if current is None:
+            return False
+        section = current.settings.get("runbooks")
+        return bool(section.get("enabled", False)) if isinstance(section, dict) else False
+
+    def _plugin_runbooks_context(request: Request, name: str) -> dict[str, Any]:
+        """Alpha.17 contract §1.10's per-plugin switch: shown only for a
+        plugin that declares ``[runbooks] supported = true``, greyed with
+        :data:`RUNBOOKS_OFF_IN_CORE` while the core switch is off.
+        """
+        supported = plugin_supports_runbooks(layout, name)
+        if not supported:
+            return {
+                "supported": False,
+                "available": False,
+                "enabled": False,
+                "core_enabled": False,
+                "off_reason": RUNBOOKS_OFF_IN_CORE,
+            }
+        store = _runbooks_store(request)
+        core_enabled = _core_runbooks_enabled()
+        enabled = bool(store.plugin_enabled(name)) if store is not None else False
+        return {
+            "supported": True,
+            "available": store is not None,
+            "enabled": enabled,
+            "core_enabled": core_enabled,
+            "off_reason": RUNBOOKS_OFF_IN_CORE,
+        }
 
     def _settings_context(
         name: str,
@@ -189,9 +231,7 @@ def register(router: APIRouter, ctx: UIContext) -> None:
             {"key": item.key, "label": item.label, "reason": item.reason}
             for item in schema.unrenderable
         ]
-        document, _problem = parse_plugin_toml(
-            config.content, Path(config.path or "config.toml")
-        )
+        document, _problem = parse_plugin_toml(config.content, Path(config.path or "config.toml"))
         if document is None:
             context["form_note"] = BROKEN_CONFIG_NOTE
             return context
@@ -259,6 +299,10 @@ def register(router: APIRouter, ctx: UIContext) -> None:
         requests = secret_requests(layout, name)
         plugin["secrets"] = requests
         plugin["waiting"] = waiting_for(requests)
+        # The Runbooks switch (alpha.17 contract §1.10) — shown only when this
+        # plugin's manifest declares support, off by default, greyed while the
+        # core switch is off. See `_plugin_runbooks_context`.
+        plugin["runbooks"] = _plugin_runbooks_context(request, name)
         return {
             **await _shell(request, "plugins"),
             "plugin": plugin,
@@ -422,9 +466,7 @@ def register(router: APIRouter, ctx: UIContext) -> None:
             _settings_context(name, fresh or config, view),
             {
                 "kind": "saved",
-                "message": saved_message(
-                    outcome.config.path, changed, values, outcome.message
-                ),
+                "message": saved_message(outcome.config.path, changed, values, outcome.message),
             },
         )
 
@@ -513,9 +555,7 @@ def register(router: APIRouter, ctx: UIContext) -> None:
         elif stored:
             result = {
                 "kind": "ok",
-                "message": SECRETS_STORED_NOTE.format(
-                    names=", ".join(stored), plugin=name
-                ),
+                "message": SECRETS_STORED_NOTE.format(names=", ".join(stored), plugin=name),
             }
             # A plugin reads its environment when it starts, so a credential
             # supplied after it gave up is not in use until it starts again.
@@ -579,3 +619,33 @@ def register(router: APIRouter, ctx: UIContext) -> None:
         """Off, keeping the folder and every setting in it. Its tools stop being
         offered to the model and stop being callable."""
         return await _toggle_page(request, name, "disable")
+
+    # -- the per-plugin Runbooks switch (alpha.17 contract §1.10) ----------
+
+    @router.post(
+        "/plugins/{name}/runbooks",
+        response_class=HTMLResponse,
+        summary="Switch runbooks on or off for one plugin",
+    )
+    async def plugin_runbooks_toggle(request: Request, name: str) -> HTMLResponse:
+        """The checkbox on this plugin's own page. Core-side state, through
+        the store's own ``set_plugin_enabled`` (PLAN.md's Joints) — never
+        called while the core switch is off or the plugin does not declare
+        support, both of which the template already greys the control for,
+        and both checked again here rather than trusted from the form.
+        """
+        _plugin_name_or_404(name)
+        if plugin_supports_runbooks(layout, name) and _core_runbooks_enabled():
+            store = _runbooks_store(request)
+            if store is not None:
+                form = await request.form()
+                try:
+                    value = bool(form.get("enabled"))
+                finally:
+                    await form.close()
+                store.set_plugin_enabled(name, value)
+        return templates.TemplateResponse(
+            request=request,
+            name="plugin_detail.html",
+            context=await _detail_context(request, name),
+        )
