@@ -546,6 +546,16 @@ class ChatRunner(Protocol):
     cannot do rather than raising ``TypeError`` mid-turn. There is no gate
     here either: contract §4.3 says the vision probe never blocks the send
     path, and a runner is not the place to start.
+
+    ``thinking`` is the workspace contract's own addition (§13, D): the
+    conversation's own override of its persona's thinking switch, or
+    ``None`` to follow the persona. **``None`` is the default and composes
+    the request exactly as it always has** — the same rule ``also_present``
+    and ``image_data_urls`` follow, for the same reason: a runner that
+    predates this keyword simply never sees it, discovered with
+    ``inspect.signature`` before it is offered, exactly like
+    ``image_data_urls`` — so an older runner is asked for nothing it cannot
+    do.
     """
 
     async def __call__(
@@ -558,6 +568,7 @@ class ChatRunner(Protocol):
         record_user_message: bool = True,
         also_present: Sequence[str] = (),
         image_data_urls: Sequence[str] = (),
+        thinking: bool | None = None,
     ) -> ChatTurnResult: ...
 
 
@@ -639,6 +650,7 @@ class ChatStreamRunner(Protocol):
         record_user_message: bool = True,
         also_present: Sequence[str] = (),
         image_data_urls: Sequence[str] = (),
+        thinking: bool | None = None,
     ) -> AsyncIterator[ChatStreamEvent]: ...
 
 

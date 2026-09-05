@@ -358,6 +358,26 @@ def _resource_filename(uri: object) -> str | None:
     return segment if FILENAME_PATTERN.fullmatch(segment) else None
 
 
+def _resource_pin(block: object) -> bool:
+    """Workspace contract §13, C: a resource block asks to be pinned by
+    carrying ``_meta: {"personacore": {"pin": true}}``.
+
+    ``mcp`` 2.0's ``EmbeddedResource`` exposes this as the Python attribute
+    ``meta`` (``_meta`` is only its wire/serialisation alias — confirmed with
+    ``EmbeddedResource.model_fields["meta"].alias``). Anything else —
+    ``meta`` absent, not a dict, ``personacore`` absent or not a dict, ``pin``
+    absent or not literally ``True`` — means unpinned and never raises: a
+    plugin's malformed metadata costs the pin, not the file.
+    """
+    meta = getattr(block, "meta", None)
+    if not isinstance(meta, dict):
+        return False
+    own = meta.get("personacore")
+    if not isinstance(own, dict):
+        return False
+    return own.get("pin") is True
+
+
 def render_call_result(result: object) -> RemoteToolResult:
     """Turn an SDK ``CallToolResult`` into text, plus any files it carried.
 
@@ -387,7 +407,9 @@ def render_call_result(result: object) -> RemoteToolResult:
                 name = _resource_filename(getattr(resource, "uri", ""))
                 if name is not None:
                     mime = getattr(resource, "mime_type", None) or "text/plain"
-                    files.append(ToolFile(name=name, mime=mime, text=resource_text))
+                    files.append(
+                        ToolFile(name=name, mime=mime, text=resource_text, pin=_resource_pin(block))
+                    )
                     continue
                 logger.warning(
                     "mcp_resource_name_refused",

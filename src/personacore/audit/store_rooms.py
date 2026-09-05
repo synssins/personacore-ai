@@ -96,6 +96,60 @@ class RoomsMixin(StoreBase):
         )
         return changed
 
+    async def set_conversation_thinking(
+        self, conversation_id: str, *, owner: Owner, thinking: bool | None
+    ) -> bool:
+        """Record this conversation's own override of its persona's thinking
+        switch — workspace contract §13, D.
+
+        Returns whether a row was changed: ``False`` covers "no such
+        conversation" and "not this owner's", exactly like
+        :meth:`set_conversation_persona` and for the same reason — the owner
+        check is here for that reason on every query in this section, and
+        telling a caller that somebody else's conversation exists would
+        undo it.
+
+        ``thinking`` is stored as given: ``True``/``False`` pins the switch
+        one way or the other for this thread, and ``None`` clears the
+        override, a real request — "go back to whatever this persona's own
+        ``thinking`` key says" — and not the same as pinning whatever that
+        happens to resolve to today, because the persona's own file may
+        change later.
+
+        Nothing else about the conversation moves — not ``last_activity_at``,
+        not the title. Choosing whether this thread thinks is not speaking
+        in it.
+        """
+        return await asyncio.to_thread(
+            self._set_conversation_thinking, conversation_id, owner, thinking
+        )
+
+    def _set_conversation_thinking(
+        self, conversation_id: str, owner: Owner, thinking: bool | None
+    ) -> bool:
+        stored = None if thinking is None else (1 if thinking else 0)
+        with self._lock:
+            cursor = self._conn.execute(
+                """
+                UPDATE conversations SET thinking = ?
+                WHERE conversation_id = ? AND owner_kind = ? AND owner_id = ?
+                  AND hidden_at IS NULL
+                """,
+                (stored, conversation_id, owner.kind.value, owner.id),
+            )
+            self._conn.commit()
+        changed = cursor.rowcount > 0
+        # The override itself is a flag about a switch, not conversation
+        # content — the same reasoning `conversation_persona_set` is logged
+        # under.
+        _logger.info(
+            "conversation_thinking_set",
+            conversation_id=conversation_id,
+            thinking=thinking,
+            changed=changed,
+        )
+        return changed
+
     async def set_conversation_roster(
         self, conversation_id: str, *, owner: Owner, roster: Sequence[str]
     ) -> bool:

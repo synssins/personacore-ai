@@ -40,6 +40,7 @@ from personacore.conversations.service import (
     PersonaAwareStore,
     RoomStore,
     RosterStore,
+    ThinkingAwareStore,
 )
 
 __all__ = [
@@ -61,6 +62,7 @@ __all__ = [
     "PersonaAwareStore",
     "RoomStore",
     "RosterStore",
+    "ThinkingAwareStore",
     "addressed",
     "claims_floor",
     "derive_title",

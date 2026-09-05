@@ -100,6 +100,16 @@ class ToolFile(BaseModel):
     the model, but it reaches the model later through ``workspace.read_file``
     or a pin, and goes through the same fence at that point."""
 
+    pin: bool = False
+    """Whether this file should be pinned the moment it is written — workspace
+    contract §13, C. Read by :func:`personacore.plugins.mcp_client.render_call_result`
+    off an MCP resource block's own ``_meta: {"personacore": {"pin": true}}``,
+    defaulting ``False`` for every resource that predates this (and for every
+    file this loop spills to disk itself, contract §4, which never sets it).
+    ``agent/loop.py``'s ``_apply_workspace`` is what turns a ``True`` here into
+    an actual call to :meth:`personacore.workspaces.Workspace.pin` once the
+    file has actually been written under its final name."""
+
 
 class ToolResult(BaseModel):
     """What came back from a tool call.

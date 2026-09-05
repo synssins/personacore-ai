@@ -97,12 +97,13 @@ from personacore.audit import (
 from personacore.contracts import MemoryScope, PolicyProfile, ProfileKind, RiskLevel
 from personacore.conversations.addressing import FloorAnswer
 from personacore.llm import (
+    ChatCompletionChunk,
     LLMClientError,
     LLMResponseError,
     ToolCall,
     ToolCallAccumulator,
 )
-from personacore.workspaces import Workspace, WorkspaceError
+from personacore.workspaces import FileEntry, Workspace, WorkspaceError
 
 logger = get_logger(__name__)
 
@@ -595,6 +596,21 @@ class TurnRequest(BaseModel):
     happened since the user spoke, not conversation before it. Their content is
     outside content and is fenced like any tool result (ADR-0003)."""
 
+    thinking: bool | None = None
+    """This conversation's own override of its persona's thinking switch
+    (workspace contract §13, D) — ``None`` means "follow
+    :attr:`~personacore.agent.personas.Persona.thinking_enabled`", which is
+    every caller before this field existed and every turn with no conversation
+    override chosen. ``True``/``False`` pins thinking on or off for this turn
+    regardless of what the persona's own file says.
+
+    Read from ``Conversation.thinking`` by whichever surface resolves a
+    conversation before building a request (the admin chat screen, by way of
+    ``boot/chat.py``'s own ``thinking=`` parameter); a caller with no notion of
+    conversations — the OpenAI-compatible API, an event waking the agent —
+    simply never sets it, and the persona's own switch answers exactly as it
+    always did."""
+
     def owner(self) -> Owner:
         """Who this turn belongs to, spec section 8."""
         if self.profile is None:
@@ -697,6 +713,13 @@ class TurnContext:
     """Carried straight from :attr:`TurnRequest.conversation_id` — see that
     field's own docstring. ``None`` on ``ask_persona``'s turn, which has no
     request of its own and writes nothing a conversation id would label."""
+
+    thinking_override: bool | None = None
+    """Carried straight from :attr:`TurnRequest.thinking` — workspace
+    contract §13, D. ``None`` on ``ask_persona``'s turn and on every turn
+    whose conversation has never chosen otherwise; see
+    :meth:`AgentLoop._thinking_fields` for how this and the persona's own
+    switch combine."""
 
 
 def _usage_detail(prompt_tokens: int | None) -> dict[str, Any]:
@@ -1019,6 +1042,7 @@ class AgentLoop:
             fence_token=new_fence_token(),
             human=Author(name=profile.display_name or profile.id, kind=AuthorKind.HUMAN),
             conversation_id=request.conversation_id,
+            thinking_override=request.thinking,
         )
         if request.record_user_message:
             await self._transcript(ctx, MessageRole.USER, request.user_message)
@@ -1401,45 +1425,59 @@ class AgentLoop:
             f"{entry.name} — {entry.size_bytes:,} bytes — "
             + (f"from {entry.source}" if entry.source else "written by you")
             + f" — {entry.modified.strftime('%H:%M')}"
+            + (" (pinned)" if entry.pinned else "")
             for entry in entries
         ]
 
         # Pinned files are read whole and fenced individually, but the total
         # is not: past `tool_result_chars` (the same cap one tool result is
-        # held to) no more pinned content is added, however many patterns
-        # still match. A file skipped for that reason is named in the
-        # manifest instead of silently vanishing — the model can still
-        # `workspace.read_file` it itself.
+        # held to) no more pinned content is added, however many files or
+        # patterns still match. A file skipped for that reason is named in
+        # the manifest instead of silently vanishing — the model can still
+        # `workspace.read_file` it itself. Contract §13, C: the universe of
+        # pinned files is the conversation's own pin sidecar
+        # (`entry.pinned`, checked first, in listing order) *plus* every
+        # file matching one of the persona's `workspace_pins` globs, as
+        # before — one running total and one cap across both sources, so a
+        # file pinned both ways is never counted, or shown, twice.
         cap = workspace_tools.settings.tool_result_chars
         pinned_already: set[str] = set()
         pinned_total = 0
         pinned_blocks: list[str] = []
         skipped_lines: list[str] = []
+
+        def _include_pin(entry: FileEntry) -> None:
+            nonlocal pinned_total
+            if entry.name in pinned_already:
+                return
+            pinned_already.add(entry.name)
+            if pinned_total >= cap:
+                skipped_lines.append(
+                    f"{entry.name} — pinned, not shown: the pinned files already fill the limit."
+                )
+                return
+            try:
+                text = workspace.read(entry.name)
+            except WorkspaceError:
+                return
+            remaining = cap - pinned_total
+            block = wrap_untrusted(
+                text,
+                kind=UntrustedKind.WORKSPACE,
+                source=f"pinned {entry.name}",
+                token=ctx.fence_token,
+                max_content_chars=remaining,
+            )
+            pinned_total += min(len(text), remaining)
+            pinned_blocks.append(block)
+
+        for entry in entries:
+            if entry.pinned:
+                _include_pin(entry)
         for pattern in persona.workspace_pins:
             for entry in entries:
-                if entry.name in pinned_already or not fnmatch.fnmatch(entry.name, pattern):
-                    continue
-                pinned_already.add(entry.name)
-                if pinned_total >= cap:
-                    skipped_lines.append(
-                        f"{entry.name} — pinned, not shown: the pinned files "
-                        "already fill the limit."
-                    )
-                    continue
-                try:
-                    text = workspace.read(entry.name)
-                except WorkspaceError:
-                    continue
-                pinned_total += len(text)
-                pinned_blocks.append(
-                    wrap_untrusted(
-                        text,
-                        kind=UntrustedKind.WORKSPACE,
-                        source=f"pinned {entry.name}",
-                        token=ctx.fence_token,
-                        max_content_chars=cap,
-                    )
-                )
+                if fnmatch.fnmatch(entry.name, pattern):
+                    _include_pin(entry)
 
         manifest_body = (
             "Files in this conversation's workspace (read them with workspace.read_file):\n"
@@ -1573,9 +1611,17 @@ class AgentLoop:
         # sometimes reports it) leaves the last real number standing rather
         # than blanking it.
         prompt_tokens: int | None = None
+        # Workspace contract §13, D, the owner's rule: thinking follows the
+        # persona/override on the first round of a turn and is off on every
+        # round after that — this turn has, by definition, used a tool by
+        # then. Flipped once, after the first round's tool calls are handled
+        # below, and never flipped back.
+        had_tool_result = False
         while True:
             result = _RoundResult()
-            async for event in self._stream_round(messages, tool_schemas, result, ctx):
+            async for event in self._stream_round(
+                messages, tool_schemas, result, ctx, after_tool_result=had_tool_result
+            ):
                 yield event
             if result.prompt_tokens is not None:
                 prompt_tokens = result.prompt_tokens
@@ -1641,6 +1687,7 @@ class AgentLoop:
             for call in result.tool_calls:
                 async for event in self._handle_tool_call(call, ctx, messages):
                     yield event
+            had_tool_result = True
 
         yield AgentEvent(
             type=AgentEventType.DONE, text=final_text, detail=_usage_detail(prompt_tokens)
@@ -1711,12 +1758,81 @@ class AgentLoop:
             return self._llm
         return self._persona_llm.stream_for(persona)
 
+    def _thinking_fields(self, ctx: TurnContext, *, after_tool_result: bool) -> dict[str, Any]:
+        """Workspace contract §13, D: what ``chat_template_kwargs`` this
+        round's streaming call should carry, or nothing at all.
+
+        Silent — an empty ``dict``, so nothing is added to the request — when
+        neither the persona nor the conversation's own override says anything
+        about thinking (a raw-passthrough turn, above all: it has no persona
+        and, ordinarily, no override either). Otherwise the effective setting
+        is :attr:`TurnContext.thinking_override` when it is not ``None``, else
+        :attr:`~personacore.agent.personas.Persona.thinking_enabled` — and
+        **off on every round after a tool result, regardless of either**, the
+        owner's rule (contract §13, D): a model reasoning about a tool result
+        it never actually sees is exactly the failure the workspace exists to
+        remove, and this is the other half of it.
+        """
+        persona = ctx.persona
+        override = ctx.thinking_override
+        if persona is None and override is None:
+            return {}
+        if after_tool_result:
+            enabled = False
+        elif override is not None:
+            enabled = override
+        else:
+            enabled = persona.thinking_enabled if persona is not None else True
+        return {"chat_template_kwargs": {"enable_thinking": enabled}}
+
+    async def _consume_stream(
+        self,
+        stream: AsyncIterator[ChatCompletionChunk],
+        accumulator: ToolCallAccumulator,
+        parts: list[str],
+        result: _RoundResult,
+        seen: list[int],
+    ) -> AsyncIterator[AgentEvent]:
+        """The body of one streamed call, factored out of :meth:`_stream_round`
+        so it can be run a second time — unchanged — on the plain retry
+        below. ``seen`` is a one-element list used as a mutable counter: it is
+        how the retry knows whether anything from the *first* attempt already
+        reached the caller, which is the one case a retry must never be
+        allowed to happen (see :meth:`_stream_round`).
+        """
+        async for chunk in stream:
+            seen[0] += 1
+            accumulator.add_chunk(chunk)
+            if chunk.model:
+                result.model = chunk.model
+            if chunk.usage is not None:
+                # The one extra, choice-less chunk `stream_options` asked for
+                # (`ChatCompletionChunk.usage`'s own docstring) — real, on
+                # every backend tried so far, and never estimated here.
+                prompt = chunk.usage.get("prompt_tokens")
+                if isinstance(prompt, int):
+                    result.prompt_tokens = prompt
+            for choice in chunk.choices:
+                reasoning = choice.delta.reasoning_content
+                if reasoning:
+                    # Forwarded and never accumulated into `parts`: it is not
+                    # the reply, and section 10's two-second budget is about
+                    # the words themselves, not the thinking that preceded
+                    # them — see AgentEventType.REASONING_DELTA.
+                    yield AgentEvent(type=AgentEventType.REASONING_DELTA, text=reasoning)
+                delta = choice.delta.content
+                if delta:
+                    parts.append(delta)
+                    yield AgentEvent(type=AgentEventType.TEXT_DELTA, text=delta)
+
     async def _stream_round(
         self,
         messages: Sequence[Mapping[str, Any]],
         tool_schemas: list[dict[str, Any]] | None,
         result: _RoundResult,
         ctx: TurnContext,
+        *,
+        after_tool_result: bool = False,
     ) -> AsyncIterator[AgentEvent]:
         """One streamed call to the LLM host.
 
@@ -1724,37 +1840,43 @@ class AgentLoop:
         mechanism behind section 10's two-second first-audio budget — while
         tool-call fragments accumulate, because a tool call is only actionable
         once complete.
+
+        Workspace contract §13, D: :meth:`_thinking_fields` names this
+        round's ``chat_template_kwargs``, sent as ``extra_body`` on the
+        streaming call exactly the way
+        :meth:`ask_persona`/:meth:`_ask_once` already send
+        :data:`~personacore.conversations.addressing.FLOOR_NO_THINKING`. If
+        the host answers with a 4xx — the only shape "I do not know this
+        field" arrives in — **and nothing from the stream has reached the
+        caller yet**, the same call is retried once with no extra fields at
+        all, so a hint meant for one backend never costs the turn on a
+        backend that has never heard of it. Once a chunk has already been
+        forwarded a retry would either duplicate it or silently resend a
+        request the host may have partially acted on, so at that point the
+        error is left to fall through to the ordinary ``LLMClientError``
+        handling below instead.
         """
         accumulator = ToolCallAccumulator()
         parts: list[str] = []
+        seen = [0]
+        fields = self._thinking_fields(ctx, after_tool_result=after_tool_result)
         try:
-            stream = self._streamer_for(ctx).stream_chat_completion(
-                messages, tools=tool_schemas
-            )
-            async for chunk in stream:
-                accumulator.add_chunk(chunk)
-                if chunk.model:
-                    result.model = chunk.model
-                if chunk.usage is not None:
-                    # The one extra, choice-less chunk `stream_options`
-                    # asked for (`ChatCompletionChunk.usage`'s own
-                    # docstring) — real, on every backend tried so far, and
-                    # never estimated here.
-                    prompt = chunk.usage.get("prompt_tokens")
-                    if isinstance(prompt, int):
-                        result.prompt_tokens = prompt
-                for choice in chunk.choices:
-                    reasoning = choice.delta.reasoning_content
-                    if reasoning:
-                        # Forwarded and never accumulated into `parts`: it is
-                        # not the reply, and section 10's two-second budget is
-                        # about the words themselves, not the thinking that
-                        # preceded them — see AgentEventType.REASONING_DELTA.
-                        yield AgentEvent(type=AgentEventType.REASONING_DELTA, text=reasoning)
-                    delta = choice.delta.content
-                    if delta:
-                        parts.append(delta)
-                        yield AgentEvent(type=AgentEventType.TEXT_DELTA, text=delta)
+            try:
+                stream = self._streamer_for(ctx).stream_chat_completion(
+                    messages, tools=tool_schemas, **fields
+                )
+                async for event in self._consume_stream(stream, accumulator, parts, result, seen):
+                    yield event
+            except LLMResponseError as exc:
+                rejected = exc.status_code is not None and 400 <= exc.status_code < 500
+                if not fields or not rejected or seen[0]:
+                    raise
+                logger.info("turn_thinking_fields_retried_plain")
+                stream = self._streamer_for(ctx).stream_chat_completion(
+                    messages, tools=tool_schemas
+                )
+                async for event in self._consume_stream(stream, accumulator, parts, result, seen):
+                    yield event
         except LLMClientError as exc:
             # Section 10: the LLM host is down, timed out, or the breaker is
             # open. The assistant says so, in a sentence, out loud.
@@ -1985,7 +2107,18 @@ class AgentLoop:
                     extra_lines.append(str(exc))
                     continue
                 files_written.append(final_name)
-                extra_lines.append(_saved_line(final_name, tool_file.text))
+                pinned = False
+                if tool_file.pin:
+                    # Contract §13, C: pin only once the file actually landed
+                    # under its final (possibly versioned) name — pinning the
+                    # name the tool asked for would silently miss a name that
+                    # collided and was versioned instead.
+                    try:
+                        workspace.pin(final_name)
+                        pinned = True
+                    except WorkspaceError as exc:
+                        extra_lines.append(str(exc))
+                extra_lines.append(_saved_line(final_name, tool_file.text, pinned=pinned))
             if extra_lines:
                 lines = "\n".join(extra_lines)
                 payload = f"{payload}\n{lines}" if payload else lines
@@ -2320,11 +2453,15 @@ def _user_content(text: str, image_urls: Sequence[str]) -> str | list[dict[str, 
     return content
 
 
-def _saved_line(name: str, text: str) -> str:
+def _saved_line(name: str, text: str, *, pinned: bool = False) -> str:
     """Workspace contract §3/§4's own sentence, told to the model whenever a
     file actually landed in the workspace: ``Saved to workspace: NAME (N
-    chars, M words).``"""
-    return f"Saved to workspace: {name} ({len(text):,} chars, {len(text.split()):,} words)"
+    chars, M words).`` Contract §13, C: a file the tool asked to be pinned
+    gets the same sentence with ``and pinned`` worked in, so the model is
+    told in one line rather than two that it will see this file whole again
+    without having to read it back."""
+    verb = "Saved to workspace and pinned" if pinned else "Saved to workspace"
+    return f"{verb}: {name} ({len(text):,} chars, {len(text.split()):,} words)"
 
 
 def _tool_message(tool_call_id: str, name: str, content: str) -> dict[str, Any]:

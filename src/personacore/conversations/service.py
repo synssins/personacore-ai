@@ -155,6 +155,24 @@ class PersonaAwareStore(Protocol):
 
 
 @runtime_checkable
+class ThinkingAwareStore(Protocol):
+    """The conversation's own thinking override — workspace contract §13, D.
+
+    A fifth protocol, for the same reason :class:`PersonaAwareStore` and the
+    others are separate: :class:`ConversationStore` is checked with
+    ``isinstance`` against objects this package did not build, so widening it
+    would make every existing store and test double stop being a conversation
+    store on the day this shipped. A store that cannot answer this still
+    lists, reads, attaches and remembers a persona; the chat header's Thinking
+    checkbox simply reports that it cannot be remembered here.
+    """
+
+    async def set_conversation_thinking(
+        self, conversation_id: str, *, owner: Owner, thinking: bool | None
+    ) -> bool: ...
+
+
+@runtime_checkable
 class RosterStore(Protocol):
     """Who else is in the room — the many-voices contract, §2.
 
@@ -216,6 +234,7 @@ class ConversationService:
         self._persona_store = store if isinstance(store, PersonaAwareStore) else None
         self._room_store = store if isinstance(store, RoomStore) else None
         self._roster_store = store if isinstance(store, RosterStore) else None
+        self._thinking_store = store if isinstance(store, ThinkingAwareStore) else None
         self._surface = surface
         # Workspace contract §2: hiding takes the conversation's workspace
         # with it. `None` — the default, and what every caller before this
@@ -252,6 +271,15 @@ class ConversationService:
         that silently does nothing is worse than a button that is not there.
         """
         return self._room_store is not None
+
+    @property
+    def remembers_thinking(self) -> bool:
+        """Whether a conversation's own thinking override can be written
+        down.
+
+        Asked before offering the chat header's Thinking checkbox, for the
+        same reason :attr:`remembers_persona` is asked before the picker."""
+        return self._thinking_store is not None
 
     @property
     def holds_a_roster(self) -> bool:
@@ -325,6 +353,39 @@ class ConversationService:
             _logger.error(
                 "conversation_persona_failed",
                 conversation_id=conversation.conversation_id,
+                error=repr(exc),
+            )
+            return False
+
+    async def set_thinking(
+        self, owner: Owner, conversation_id: str, value: bool | None
+    ) -> bool:
+        """Record this conversation's own thinking override (workspace
+        contract §13, D). ``False`` when nothing was written.
+
+        Unlike :meth:`set_persona`, this takes ``owner`` and
+        ``conversation_id`` directly rather than a loaded
+        :class:`~personacore.conversations.models.Conversation` — the chat
+        header's Thinking checkbox already knows both without needing to
+        load the row first.
+
+        ``value`` is tri-state: ``True``/``False`` pins thinking on or off
+        for this thread regardless of the persona's own switch; ``None``
+        clears the override and goes back to following the persona.
+
+        ``False`` is returned rather than raised for a store that cannot do
+        this, and an unreadable store — the caller turns that into a
+        sentence, or simply leaves the checkbox unremembered."""
+        if self._thinking_store is None:
+            return False
+        try:
+            return await self._thinking_store.set_conversation_thinking(
+                conversation_id, owner=owner, thinking=value
+            )
+        except Exception as exc:  # noqa: BLE001 - see module docstring
+            _logger.error(
+                "conversation_thinking_failed",
+                conversation_id=conversation_id,
                 error=repr(exc),
             )
             return False
@@ -713,4 +774,5 @@ __all__ = [
     "PersonaAwareStore",
     "RoomStore",
     "RosterStore",
+    "ThinkingAwareStore",
 ]

@@ -296,6 +296,12 @@ def _row_to_conversation(row: sqlite3.Row) -> Conversation:
         kind = models.ConversationKind(raw_kind)
     except ValueError:
         kind = models.ConversationKind.TEXT
+    # Same tolerant shape as `persona`: a row from before migration 0009, and
+    # a thread that has never touched the Thinking checkbox, are one state —
+    # no override, so the persona's own switch answers (workspace contract
+    # §13, D).
+    raw_thinking = _column(row, "thinking")
+    thinking = None if raw_thinking is None else bool(raw_thinking)
     return models.Conversation(
         also_present=_row_to_roster(_column(row, "also_present")),
         conversation_id=row["conversation_id"],
@@ -311,4 +317,5 @@ def _row_to_conversation(row: sqlite3.Row) -> Conversation:
         hidden_at=_parse_iso(str(hidden_at)) if hidden_at else None,
         hidden_by=str(hidden_by) if hidden_by else None,
         group_name=str(group_name) if group_name else None,
+        thinking=thinking,
     )

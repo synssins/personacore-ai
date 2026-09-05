@@ -485,22 +485,25 @@ class Persona(BaseModel):
     override, never a constraint on it: see ``AgentLoop._system_prompt`` for
     where it sits and why. Set by an administrator on a screen, so it is
     configuration and is not fenced."""
-    memory_enabled: bool = True
+    memory_enabled: bool = False
     """Whether this persona reads or writes memory at all (memory contract
-    §9). Read from ``persona.toml``'s top-level ``memory`` key. Absent means
-    on, matching every persona that existed before this key did; anything
-    other than a plain boolean also means on and never raises — the same
-    rule ``prompt_prefix`` follows, for the same reason: a broken value
-    costs the switch, not the persona."""
+    §9). Read from ``persona.toml``'s top-level ``memory`` key.
+
+    **Absent means off** (workspace contract §13, E — flipped from this
+    field's original default). A new persona gets no memory until somebody
+    turns it on; a persona that already had ``memory = true`` or ``memory =
+    false`` written down keeps reading exactly that value, because only the
+    *absent* case changed. Anything other than a plain boolean also means
+    off and never raises — the same rule ``prompt_prefix`` follows, for the
+    same reason: a broken value costs the switch, not the persona."""
     workspace_enabled: bool = False
     """Whether this persona has a per-conversation workspace at all
     (workspace contract §0.1, §5). Read from ``persona.toml``'s top-level
     ``workspace`` key, exactly the way :attr:`memory_enabled` reads
-    ``memory`` — absent or not a plain boolean both mean off, which is the
-    opposite default from memory's on: the owner's decision (contract
-    §0.1) is that a persona gets no workspace until somebody turns it on,
-    where memory shipped already on for every persona that predated its
-    switch."""
+    ``memory`` — absent or not a plain boolean both mean off: the owner's
+    decision (contract §0.1) is that a persona gets no workspace until
+    somebody turns it on. (``memory_enabled`` shipped with the opposite
+    default and was later flipped to match — contract §13, E.)"""
     workspace_pins: list[str] = Field(default_factory=list)
     """Filename globs (``fnmatch`` patterns) whose matches are always
     included whole in the workspace manifest (contract §6), read from
@@ -511,6 +514,22 @@ class Persona(BaseModel):
     at 20 entries of at most 120 characters each — a pins list is a handful
     of glob patterns an administrator typed on a settings page, not a
     document."""
+    thinking_enabled: bool = True
+    """Whether this persona reasons before it answers (workspace contract
+    §13, D). Read from ``persona.toml``'s top-level ``thinking`` key.
+
+    **Absent means on** — the opposite default from :attr:`workspace_enabled`
+    and the same one :attr:`memory_enabled` had before contract §13, E: a
+    persona that predates this key keeps thinking exactly as it always did.
+    Anything other than a plain boolean also means on and never raises, the
+    same permissive-read rule every switch on this class follows.
+
+    A conversation may override this per thread
+    (``personacore.conversations.models.Conversation.thinking``); the
+    persona's own value is what a thread that has never chosen otherwise
+    gets, and what every round after a tool result falls back to regardless
+    of either setting (the owner's rule: thinking is off once a turn has
+    already used a tool)."""
     description: str | None = None
     voice_engine: str | None = None
     voice_name: str | None = None
@@ -694,16 +713,23 @@ class PersonaStore:
         # A broken value costs the prefix, not the persona.
         prompt_prefix = raw_prefix.strip() if isinstance(raw_prefix, str) else ""
         raw_memory = metadata.get("memory")
-        # Absent or broken both mean on — a persona that predates this key,
-        # or whose value is not a plain bool, keeps reading and writing
-        # memory exactly as it always has. Never raises.
-        memory_enabled = raw_memory if isinstance(raw_memory, bool) else True
+        # Absent or broken both mean off (contract §13, E) — a persona that
+        # predates this key, or whose value is not a plain bool, gets no
+        # memory until somebody turns it on. Only the *absent* case changed
+        # from this field's original default; an explicit `memory = true` or
+        # `memory = false` already on disk keeps reading exactly that value.
+        # Never raises.
+        memory_enabled = raw_memory if isinstance(raw_memory, bool) else False
         raw_workspace = metadata.get("workspace")
-        # Absent or broken both mean off (contract §0.1) — the opposite
-        # default from memory, on purpose: a persona gets no workspace until
-        # somebody turns it on. Never raises.
+        # Absent or broken both mean off (contract §0.1) — a persona gets no
+        # workspace until somebody turns it on. Never raises.
         workspace_enabled = raw_workspace if isinstance(raw_workspace, bool) else False
         workspace_pins = _read_workspace_pins(metadata.get("workspace_pins"))
+        raw_thinking = metadata.get("thinking")
+        # Absent or broken both mean on (contract §13, D) — a persona that
+        # predates this key keeps thinking exactly as it always did. Never
+        # raises.
+        thinking_enabled = raw_thinking if isinstance(raw_thinking, bool) else True
         # Never raises, whatever is in the file: a persona whose pauses block
         # is broken loads without them and speaks exactly as it does today.
         pauses = read_pauses(metadata)
@@ -720,6 +746,7 @@ class PersonaStore:
             memory_enabled=memory_enabled,
             workspace_enabled=workspace_enabled,
             workspace_pins=workspace_pins,
+            thinking_enabled=thinking_enabled,
             description=description if isinstance(description, str) else None,
             voice_engine=voice_engine if isinstance(voice_engine, str) else None,
             voice_name=voice_name if isinstance(voice_name, str) else None,

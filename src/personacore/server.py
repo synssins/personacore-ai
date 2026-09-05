@@ -125,6 +125,7 @@ from personacore.config.settings import (
 )
 from personacore.hearing.registry import HearingRegistry
 from personacore.hearing.registry import builtin_engines as builtin_recognisers
+from personacore.llm import LLMResponseError
 from personacore.memory.composite import CompositeToolProvider
 from personacore.memory.embed import Embedder
 from personacore.memory.provider import CoreMemoryProvider
@@ -385,6 +386,12 @@ def create_app(appdata: Path | str | None = None) -> FastAPI:
         "last_error": None,
         "consecutive_failures": 0,
     }
+    # Workspace contract §13, D: the boot probe's own finding about whether
+    # the interactive model actually honours `chat_template_kwargs:
+    # {enable_thinking: false}` — read by the Health screen's LLM row.
+    # `None` until `_startup` runs the probe (or forever, on a build with no
+    # LLM configured at all); see `_probe_thinking_switch` below.
+    app.state.llm_thinking_probe = None
     app.state.bus_password_degraded = bus_password_error
     app.state.voice_registry = voice_registry
     app.state.hearing_registry = hearing_registry
@@ -931,6 +938,61 @@ def create_app(appdata: Path | str | None = None) -> FastAPI:
             await asyncio.shield(purge)
             await asyncio.sleep(RETENTION_PURGE_INTERVAL_SECONDS)
 
+    async def _probe_thinking_switch() -> None:
+        """Workspace contract §13, D's own boot check: does the interactive
+        model actually stop reasoning when asked to?
+
+        One non-streaming request, `chat_template_kwargs: {enable_thinking:
+        false}`, `max_tokens=8`. Three outcomes, each recorded on
+        `app.state.llm_thinking_probe` for the Health screen's LLM row —
+        this function never builds UI, only the fact:
+
+        * The reply still carries a non-empty `reasoning_content` — the
+          switch is ignored by this backend. Logged at `warning`.
+        * The host answers with a 4xx — it does not know the field at all.
+          Logged at `info`; not a warning, because "never heard of this"
+          is a plainer, less alarming fact than "heard it and ignored it".
+        * Anything else that goes wrong (timeout, connection refused, a
+          5xx) — recorded as unreached and never raised. This is a boot
+          courtesy, not a gate: nothing here may fail the boot, and it is
+          skipped outright when the interactive role has no usable
+          connection at all (no API key supplied, contract §13 note).
+        """
+        if interactive_llm.unusable is not None:
+            return
+        try:
+            response = await interactive_llm.chat_completion(
+                [{"role": "user", "content": "Say hi."}],
+                max_tokens=8,
+                chat_template_kwargs={"enable_thinking": False},
+            )
+        except LLMResponseError as exc:
+            rejected = exc.status_code is not None and 400 <= exc.status_code < 500
+            if rejected:
+                log.info("thinking_switch_unsupported", model=interactive_llm.facts.get("model"))
+                app.state.llm_thinking_probe = {
+                    "checked": True,
+                    "ignored": False,
+                    "unsupported": True,
+                    "model": interactive_llm.facts.get("model"),
+                }
+            else:
+                log.info("thinking_switch_probe_failed", error=repr(exc))
+            return
+        except Exception as exc:  # noqa: BLE001 - a boot courtesy, never fatal
+            log.info("thinking_switch_probe_failed", error=repr(exc))
+            return
+        reasoning = response.choices[0].message.reasoning_content if response.choices else None
+        ignored = bool(reasoning)
+        if ignored:
+            log.warning("thinking_switch_ignored", model=response.model)
+        app.state.llm_thinking_probe = {
+            "checked": True,
+            "ignored": ignored,
+            "unsupported": False,
+            "model": response.model,
+        }
+
     @app.on_event("startup")
     async def _startup() -> None:
         # The bus is a degradable dependency (spec §10): if no broker is reachable
@@ -1013,6 +1075,13 @@ def create_app(appdata: Path | str | None = None) -> FastAPI:
             await apply_wyoming_settings(
                 app, hearing_registry, voices, app.state.settings.wyoming
             )
+        # Workspace contract §13, D: awaited, not backgrounded — it is one
+        # bounded request (the LLM client's own timeout) and the release
+        # note (ADR-style discipline this build follows) is "boot the core
+        # before every tag", which means knowing the answer before the port
+        # opens, not finding out later from a Health screen nobody is
+        # looking at yet. `_probe_thinking_switch` never raises.
+        await _probe_thinking_switch()
         log.info(
             "personacore_started",
             version=__version__,

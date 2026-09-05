@@ -1,4 +1,5 @@
-"""``WorkspaceTools`` — the three model-facing tools, workspace contract §5.
+"""``WorkspaceTools`` — the model-facing workspace tools, contract §5 and
+§13's ``pin``/``unpin`` addition.
 
 Modelled directly on :mod:`personacore.memory.tools` (:class:`MemoryTools`):
 one ``specs()`` returning plain JSON-schema tool descriptions and one async
@@ -38,6 +39,8 @@ logger = structlog.get_logger(__name__)
 LIST_FILES_TOOL = "workspace.list_files"
 READ_FILE_TOOL = "workspace.read_file"
 WRITE_FILE_TOOL = "workspace.write_file"
+PIN_TOOL = "workspace.pin"
+UNPIN_TOOL = "workspace.unpin"
 
 _LIST_FILES_DESCRIPTION = (
     "List every file already saved in this conversation's workspace: its name, how "
@@ -62,13 +65,25 @@ _WRITE_FILE_DESCRIPTION = (
     "confirmation naming the file and its size."
 )
 
+_PIN_DESCRIPTION = (
+    "Pin a file already saved in this conversation's workspace, so its whole text is "
+    "put in front of you at the start of every later turn in this conversation, "
+    "without having to call workspace.read_file for it again. Give the exact file "
+    "name shown by workspace.list_files."
+)
+_UNPIN_DESCRIPTION = (
+    "Unpin a file in this conversation's workspace, so it stops being shown whole "
+    "on every turn and goes back to being read on request with workspace.read_file. "
+    "Unpinning a file that is not pinned is not an error."
+)
+
 _NO_CONVERSATION_ERROR = "There's no conversation to keep a workspace for."
 
 
 class WorkspaceTools:
-    """``workspace.list_files``, ``workspace.read_file`` and
-    ``workspace.write_file``, over one :class:`AppdataLayout` and one
-    :class:`WorkspaceSettings`.
+    """``workspace.list_files``, ``workspace.read_file``, ``workspace.write_file``,
+    ``workspace.pin`` and ``workspace.unpin``, over one :class:`AppdataLayout`
+    and one :class:`WorkspaceSettings`.
 
     One instance serves every conversation: a :class:`Workspace` is a cheap,
     stateless view over one folder, built fresh for whichever conversation a
@@ -100,7 +115,7 @@ class WorkspaceTools:
         )
 
     def specs(self) -> list[ToolSpec]:
-        """All three tools, ``RiskLevel.SAFE`` (contract §5: "they touch one
+        """All five tools, ``RiskLevel.SAFE`` (contract §5: "they touch one
         jailed folder and nothing else")."""
         return [
             ToolSpec(
@@ -167,6 +182,36 @@ class WorkspaceTools:
                     "required": ["path", "content"],
                 },
             ),
+            ToolSpec(
+                name=PIN_TOOL,
+                risk=RiskLevel.SAFE,
+                description=_PIN_DESCRIPTION,
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "The exact file name, from workspace.list_files.",
+                        },
+                    },
+                    "required": ["path"],
+                },
+            ),
+            ToolSpec(
+                name=UNPIN_TOOL,
+                risk=RiskLevel.SAFE,
+                description=_UNPIN_DESCRIPTION,
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "The exact file name, from workspace.list_files.",
+                        },
+                    },
+                    "required": ["path"],
+                },
+            ),
         ]
 
     async def call(
@@ -195,12 +240,16 @@ class WorkspaceTools:
                 return self._read_file(arguments, workspace)
             if name == WRITE_FILE_TOOL:
                 return self._write_file(arguments, workspace)
+            if name == PIN_TOOL:
+                return self._pin(arguments, workspace)
+            if name == UNPIN_TOOL:
+                return self._unpin(arguments, workspace)
         except Exception as exc:  # noqa: BLE001 - a workspace failure never fails the turn
             logger.error("workspace_tool_failed", tool=name, error=repr(exc))
             return ToolResult(ok=False, error="I couldn't do that with the workspace just now.")
         return ToolResult(ok=False, error=f"{name} is not a workspace tool.")
 
-    # -- the three tools ----------------------------------------------------
+    # -- the five tools -----------------------------------------------------
 
     def _list_files(self, workspace: Workspace) -> ToolResult:
         entries = workspace.list()
@@ -208,6 +257,7 @@ class WorkspaceTools:
             return ToolResult(ok=True, content="The workspace is empty.")
         lines = [
             f"{entry.name} — {entry.size_bytes:,} bytes — {entry.modified.strftime('%H:%M')}"
+            + (" (pinned)" if entry.pinned else "")
             for entry in entries
         ]
         return ToolResult(ok=True, content="\n".join(lines))
@@ -266,5 +316,32 @@ class WorkspaceTools:
         verb = "Appended to" if append else "Wrote"
         return ToolResult(ok=True, content=f"{verb} {final_name} ({len(content):,} chars).")
 
+    def _pin(self, arguments: dict[str, object], workspace: Workspace) -> ToolResult:
+        path = arguments.get("path")
+        if not isinstance(path, str) or not path.strip():
+            return ToolResult(ok=False, error="I need a file name to pin.")
+        try:
+            workspace.pin(path)
+        except WorkspaceError as exc:
+            return ToolResult(ok=False, error=str(exc))
+        return ToolResult(ok=True, content=f"Pinned {path}.")
 
-__all__ = ["LIST_FILES_TOOL", "READ_FILE_TOOL", "WRITE_FILE_TOOL", "WorkspaceTools"]
+    def _unpin(self, arguments: dict[str, object], workspace: Workspace) -> ToolResult:
+        path = arguments.get("path")
+        if not isinstance(path, str) or not path.strip():
+            return ToolResult(ok=False, error="I need a file name to unpin.")
+        try:
+            workspace.unpin(path)
+        except WorkspaceError as exc:
+            return ToolResult(ok=False, error=str(exc))
+        return ToolResult(ok=True, content=f"Unpinned {path}.")
+
+
+__all__ = [
+    "LIST_FILES_TOOL",
+    "PIN_TOOL",
+    "READ_FILE_TOOL",
+    "UNPIN_TOOL",
+    "WRITE_FILE_TOOL",
+    "WorkspaceTools",
+]

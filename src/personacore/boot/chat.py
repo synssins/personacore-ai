@@ -209,6 +209,13 @@ class _AdminChat:
     makes can carry it. ``None`` by default, which is every caller before
     this field existed; the chat screens resolve or mint the conversation
     before calling this runner and pass its id.
+
+    ``thinking`` is the workspace contract's own addition (§13, D), passed
+    straight to ``TurnRequest.thinking``. ``None`` by default — "follow the
+    persona's own switch" — which is every caller before this field existed;
+    the chat screen reads the conversation's own override (if the store
+    remembers one) and passes it here so the header's Thinking checkbox
+    means something.
     """
 
     def __init__(
@@ -295,6 +302,7 @@ class _AdminChat:
         also_present: Sequence[str] = (),
         image_data_urls: Sequence[str] = (),
         conversation_id: str | None = None,
+        thinking: bool | None = None,
     ) -> TurnRequest:
         return TurnRequest(
             user_message=message,
@@ -315,6 +323,11 @@ class _AdminChat:
             # by default, which is every caller before this existed — see
             # ``TurnRequest.conversation_id``'s own docstring.
             conversation_id=conversation_id,
+            # Workspace contract §13, D. ``None`` by default, which is every
+            # caller before this existed and every conversation that has
+            # never touched the chat header's Thinking checkbox — see
+            # ``TurnRequest.thinking``'s own docstring.
+            thinking=thinking,
         )
 
     async def ask(
@@ -374,6 +387,7 @@ class _AdminChat:
         also_present: Sequence[str] = (),
         image_data_urls: Sequence[str] = (),
         conversation_id: str | None = None,
+        thinking: bool | None = None,
     ) -> AsyncIterator[_AdminChatEvent]:
         """The turn as it happens, ending with the finished result.
 
@@ -402,6 +416,7 @@ class _AdminChat:
             also_present=also_present,
             image_data_urls=image_data_urls,
             conversation_id=conversation_id,
+            thinking=thinking,
         )
 
         parts: list[str] = []
@@ -504,6 +519,7 @@ class _AdminChat:
         also_present: Sequence[str] = (),
         image_data_urls: Sequence[str] = (),
         conversation_id: str | None = None,
+        thinking: bool | None = None,
     ) -> _AdminChatResult:
         """The same turn, collected. Non-streaming callers are unchanged.
 
@@ -522,6 +538,7 @@ class _AdminChat:
             also_present=also_present,
             image_data_urls=image_data_urls,
             conversation_id=conversation_id,
+            thinking=thinking,
         ):
             if event.kind == "done" and event.result is not None:
                 result = event.result

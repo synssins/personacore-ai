@@ -33,6 +33,12 @@ outright on a file recorded as a tool's own in the hidden ``.sources.json``
 sidecar: the model can never address that file directly (it is not listed,
 and its name cannot be typed as an argument to any tool), so it is the one
 place this module keeps a fact the folder's contents alone cannot show.
+
+**Pins per conversation** (contract §13, C) are a second hidden sidecar,
+``.pins.json`` — the same treatment as ``.sources.json`` for the same reason:
+never listed, never addressable, the one place :meth:`Workspace.pin`,
+:meth:`Workspace.unpin` and :meth:`Workspace.pinned` keep a fact about a file
+that the file itself cannot show.
 """
 
 from __future__ import annotations
@@ -77,6 +83,12 @@ _SOURCES_FILENAME = ".sources.json"
 the persona. Hidden (a leading dot), so it can never be listed, read or
 addressed as a workspace file by the model — see :meth:`Workspace.write`."""
 
+_PINS_FILENAME = ".pins.json"
+"""The sidecar recording which files are pinned for this conversation
+(contract §13, C) — a JSON array of names, e.g. ``["B1_Ch1.stamped.md"]``.
+Hidden for the same reason :data:`_SOURCES_FILENAME` is: it must never be
+listed, read or addressed as a workspace file by the model."""
+
 _MAX_VERSION_ATTEMPTS = 10_000
 """A generous ceiling on ``write``'s versioning loop, so a directory nobody
 could plausibly fill this way still terminates rather than looping forever."""
@@ -119,6 +131,11 @@ class FileEntry:
     source: str | None
     """The tool that produced this file, or ``None`` when the persona wrote
     it itself."""
+    pinned: bool = False
+    """Whether this file is in this conversation's pin sidecar (contract
+    §13, C) — see :meth:`Workspace.pinned`. Defaults to ``False`` so a
+    caller building a :class:`FileEntry` directly (tests, mostly) is not
+    forced to know about pins."""
 
 
 def _require_filename(name: str) -> str:
@@ -209,6 +226,74 @@ class Workspace:
     def _write_sources(self, sources: dict[str, str]) -> None:
         self._sources_path().write_text(json.dumps(sources), encoding="utf-8")
 
+    # -- sidecar: which files are pinned (contract §13, C) -------------------
+
+    def _pins_path(self) -> Path:
+        return self.path / _PINS_FILENAME
+
+    def _read_pins(self) -> list[str]:
+        path = self._pins_path()
+        if not path.is_file():
+            return []
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return []
+        if not isinstance(data, list):
+            return []
+        seen: set[str] = set()
+        names: list[str] = []
+        for item in data:
+            if not isinstance(item, str) or item in seen:
+                continue
+            seen.add(item)
+            names.append(item)
+        return names
+
+    def _write_pins(self, names: list[str]) -> None:
+        self._pins_path().write_text(json.dumps(names), encoding="utf-8")
+
+    def pin(self, name: str) -> None:
+        """Mark an existing file pinned for this conversation.
+
+        Refuses a name shaped wrong or one with no file behind it, the same
+        way :meth:`read` does — a pin names something real, not a promise
+        about a file that might arrive later. Pinning an already-pinned name
+        is not an error: it simply stays pinned.
+        """
+        checked = _require_filename(name)
+        target = self.path / checked
+        if target.is_symlink() or not target.is_file():
+            raise WorkspaceError(
+                f"There is no file called {checked} in this conversation's workspace."
+            )
+        pins = self._read_pins()
+        if checked not in pins:
+            pins.append(checked)
+            self._write_pins(pins)
+
+    def unpin(self, name: str) -> None:
+        """Clear a pin. Never raises for a name that was not pinned, or that
+        does not exist — unpinning something already unpinned is a no-op,
+        not a refusal."""
+        checked = _require_filename(name)
+        pins = self._read_pins()
+        if checked in pins:
+            pins.remove(checked)
+            self._write_pins(pins)
+
+    def pinned(self) -> list[str]:
+        """Every name currently pinned for this conversation, in the order
+        they were pinned — dropping any whose file is no longer there. A
+        conversation that removed a file some other way (there is no delete
+        tool today, but the sidecar makes no assumption that there never will
+        be) does not keep reporting it pinned forever."""
+        return [
+            name
+            for name in self._read_pins()
+            if not (self.path / name).is_symlink() and (self.path / name).is_file()
+        ]
+
     # -- reading -------------------------------------------------------------
 
     def exists(self) -> bool:
@@ -217,10 +302,10 @@ class Workspace:
     def list(self) -> list[FileEntry]:
         """Every file in this workspace, sorted by name.
 
-        Hidden files (a leading dot — in practice only ``.sources.json``)
+        Hidden files (a leading dot — ``.sources.json`` and ``.pins.json``)
         are never listed: the model must not be able to address, or even see
-        the name of, the one file that records which of its siblings it is
-        not allowed to touch.
+        the name of, either sidecar that records something about its
+        siblings it is not allowed to touch directly.
 
         Reads no file's content — only ``stat()`` — so a listing costs the
         same whether the workspace holds a kilobyte or the whole ceiling,
@@ -231,6 +316,7 @@ class Workspace:
         if not self.path.is_dir():
             return []
         sources = self._read_sources()
+        pins = set(self._read_pins())
         entries: list[FileEntry] = []
         for child in self.path.iterdir():
             if child.name.startswith("."):
@@ -247,6 +333,7 @@ class Workspace:
                     size_bytes=stat.st_size,
                     modified=datetime.fromtimestamp(stat.st_mtime, tz=UTC),
                     source=sources.get(child.name),
+                    pinned=child.name in pins,
                 )
             )
         entries.sort(key=lambda entry: entry.name)

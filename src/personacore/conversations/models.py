@@ -218,6 +218,25 @@ class Conversation(BaseModel):
     transcript — it said what it said — and stops being asked to speak.
     """
 
+    thinking: bool | None = None
+    """This conversation's own override of its persona's thinking switch
+    (workspace contract §13, D), or ``None`` for "follow the persona".
+
+    The same shape :attr:`persona` already has, and for the same reason:
+    the choice belongs to the *thread*, not to a setting that would move it
+    for every other conversation held with the same persona. ``None`` is
+    every conversation before this field existed and every one that has
+    never touched the chat header's Thinking checkbox — it is not stamped
+    with today's persona setting, because the persona's own switch may
+    change later and a stamped value would silently stop following it.
+
+    ``True``/``False`` pins thinking on or off for this thread regardless of
+    the persona's own file, until the override is cleared back to ``None``.
+    Read by :class:`~personacore.agent.loop.TurnRequest` as :attr:`thinking`,
+    written through
+    :meth:`~personacore.conversations.service.ConversationService.set_thinking`.
+    """
+
     message_count: int = 0
     """How many transcript rows still carry this conversation's id.
 

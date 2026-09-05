@@ -436,6 +436,28 @@ def _migration_0008_conversation_kind(conn: sqlite3.Connection) -> None:
     conn.execute("ALTER TABLE conversations ADD COLUMN kind TEXT NOT NULL DEFAULT 'text'")
 
 
+def _migration_0009_conversation_thinking(conn: sqlite3.Connection) -> None:
+    """Whether this conversation overrides its persona's thinking switch —
+    workspace contract §13, D.
+
+    One nullable column on ``conversations``, exactly like ``persona``
+    (migration 0003) and for the same reason: ``NULL`` means "no override was
+    chosen for this thread", which resolves to the persona's own ``thinking``
+    setting *at the moment it answers* — never backfilled, because writing
+    today's resolved value into yesterday's rows would be inventing a choice
+    nobody made.
+
+    Stored as ``INTEGER`` rather than a real boolean type (SQLite has none):
+    ``1`` for on, ``0`` for off, ``NULL`` for "follow the persona" — the
+    reader (``store_rows._row_to_conversation``) turns ``NULL`` into ``None``
+    and anything else into a plain ``bool``.
+
+    No index: read only through a conversation already found by id, exactly
+    like ``persona``.
+    """
+    conn.execute("ALTER TABLE conversations ADD COLUMN thinking INTEGER")
+
+
 # Ordered, append-only. Adding schema changes later means appending a new
 # _migration_00NN function here and to this list — never editing an already
 # shipped migration, and never relying on an ORM to infer the diff.
@@ -448,4 +470,5 @@ _MIGRATIONS: list[Migration] = [
     _migration_0006_attachments,
     _migration_0007_reply_reasoning,
     _migration_0008_conversation_kind,
+    _migration_0009_conversation_thinking,
 ]
