@@ -566,7 +566,7 @@ class PluginHost:
             owner=owner,
             surface=surface,
             caller_detail=caller_detail,
-            result=ToolResult(ok=True, content=result.text),
+            result=ToolResult(ok=True, content=result.text, files=result.files),
         )
 
     # -- audit (spec section 7) --------------------------------------------

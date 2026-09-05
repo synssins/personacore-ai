@@ -44,6 +44,7 @@ block* and the tool-risk clamp, which are core policy, are implemented).
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import re
 import time
@@ -69,6 +70,7 @@ from personacore.agent.protocols import (
     ToolProvider,
     ToolResult,
     ToolSpec,
+    WorkspaceAccess,
 )
 from personacore.agent.untrusted import (
     DEFAULT_MAX_CONTENT_CHARS,
@@ -100,6 +102,7 @@ from personacore.llm import (
     ToolCall,
     ToolCallAccumulator,
 )
+from personacore.workspaces import Workspace, WorkspaceError
 
 logger = get_logger(__name__)
 
@@ -751,6 +754,7 @@ class AgentLoop:
         tools: ToolProvider | None = None,
         confirmations: ConfirmationProvider | None = None,
         memory: MemoryProvider | None = None,
+        workspace: WorkspaceAccess | None = None,
         persona_llm: PersonaLLMSource | None = None,
         config: AgentLoopConfig | None = None,
     ) -> None:
@@ -761,6 +765,17 @@ class AgentLoop:
         self._tools = tools
         self._confirmations = confirmations
         self._memory = memory
+        # Workspace contract §3/§4/§6: the same `WorkspaceTools` instance
+        # `server.py` folds into the `CompositeToolProvider` for
+        # `workspace.*` calls, held here too because *this* is where a tool's
+        # own files get written (`_handle_tool_call`) and where the manifest
+        # and pins are composed (`_workspace_blocks`) — neither of which goes
+        # through a tool call at all, so `self._tools` is the wrong seam for
+        # either. Typed as `WorkspaceAccess`, not the concrete
+        # `WorkspaceTools`, for the same reason `memory` is typed as
+        # `MemoryProvider` rather than as a concrete memory-store class — see
+        # that protocol's own docstring in `agent/protocols.py`.
+        self._workspace = workspace
         self._config = config or AgentLoopConfig()
 
     # -- public entry point -------------------------------------------------
@@ -1098,6 +1113,13 @@ class AgentLoop:
             # before the user turn so its fence is unmistakable.
             messages.append({"role": "user", "content": memory_block})
 
+        for workspace_message in self._workspace_blocks(ctx):
+            # Workspace contract §6: after memory, before the user turn, for
+            # the same reason memory sits there — untrusted content earns the
+            # lowest-privilege slot available, immediately ahead of what the
+            # user actually said so the fence is the last thing before it.
+            messages.append({"role": "user", "content": workspace_message})
+
         messages.append(
             {
                 "role": "user",
@@ -1329,6 +1351,94 @@ class AgentLoop:
             max_content_chars=self._config.max_untrusted_chars,
         )
 
+    def _workspace_ready(self, ctx: TurnContext) -> bool:
+        """Workspace contract §5: on for this turn only when a
+        :class:`WorkspaceTools` was actually wired in, the persona has its
+        own switch on, and the turn carries a conversation id to keep one
+        for. Checked the same way everywhere this matters — offering the
+        tools (:meth:`_tool_schemas`), gating a call (:meth:`gate_tool_call`),
+        saving a tool's files (:meth:`_handle_tool_call`), and composing the
+        manifest (:meth:`_workspace_block`) — so those four places can never
+        quietly disagree about whether this turn has a workspace.
+        """
+        return (
+            self._workspace is not None
+            and ctx.persona is not None
+            and ctx.persona.workspace_enabled
+            and ctx.conversation_id is not None
+        )
+
+    def _workspace_blocks(self, ctx: TurnContext) -> list[str]:
+        """Workspace contract §6: the manifest, then one fenced block per
+        file matching one of the persona's pins.
+
+        Empty whenever :meth:`_workspace_ready` is false, or the folder does
+        not exist yet, or (contract §6) exists but is empty — "a room of one
+        composes byte-identically to the way it always has" is
+        :func:`room_block`'s rule and applies here too: a persona with a
+        workspace that happens to be empty this turn must prompt exactly as
+        it did before workspaces existed.
+        """
+        if not self._workspace_ready(ctx):
+            return []
+        workspace_tools = self._workspace
+        persona = ctx.persona
+        # `_workspace_ready` above already guarantees all three of these are
+        # not `None`; the assertions are for the type checker, not a runtime
+        # concern.
+        assert workspace_tools is not None  # noqa: S101 - narrowing, guarded above
+        assert persona is not None  # noqa: S101 - narrowing, guarded above
+        assert ctx.conversation_id is not None  # noqa: S101 - narrowing, guarded above
+        try:
+            workspace = workspace_tools.workspace_for(ctx.conversation_id)
+        except WorkspaceError:
+            return []
+        entries = workspace.list()
+        if not entries:
+            return []
+
+        lines = [
+            f"{entry.name} — {entry.chars:,} chars — "
+            + (f"from {entry.source}" if entry.source else "written by you")
+            + f" — {entry.modified.strftime('%H:%M')}"
+            for entry in entries
+        ]
+        manifest_body = (
+            "Files in this conversation's workspace (read them with workspace.read_file):\n"
+            + "\n".join(lines)
+        )
+        blocks = [
+            wrap_untrusted(
+                manifest_body,
+                kind=UntrustedKind.WORKSPACE,
+                source="workspace",
+                token=ctx.fence_token,
+                max_content_chars=self._config.max_untrusted_chars,
+            )
+        ]
+
+        cap = workspace_tools.settings.tool_result_chars
+        pinned_already: set[str] = set()
+        for pattern in persona.workspace_pins:
+            for entry in entries:
+                if entry.name in pinned_already or not fnmatch.fnmatch(entry.name, pattern):
+                    continue
+                try:
+                    text = workspace.read(entry.name)
+                except WorkspaceError:
+                    continue
+                pinned_already.add(entry.name)
+                blocks.append(
+                    wrap_untrusted(
+                        text,
+                        kind=UntrustedKind.WORKSPACE,
+                        source=f"pinned {entry.name}",
+                        token=ctx.fence_token,
+                        max_content_chars=cap,
+                    )
+                )
+        return blocks
+
     async def _tool_schemas(
         self, ctx: TurnContext, client_tools: Sequence[ClientTool] = ()
     ) -> list[dict[str, Any]] | None:
@@ -1381,12 +1491,18 @@ class AgentLoop:
         # turn that cannot recall cannot be told to remember either. Checked
         # once per call rather than per spec below.
         memory_off = ctx.persona is None or not ctx.persona.memory_enabled
+        # Workspace contract §5's own gate, the same shape: a persona with no
+        # workspace, or a turn with no conversation id to keep one for, sees
+        # none of the three `workspace.*` tools.
+        workspace_off = not self._workspace_ready(ctx)
 
         allowed = set(profile.allowed_tools)
         ceiling = _rank(self._effective_ceiling(profile))
         for spec in available:
             ctx.catalogue[spec.name] = spec
             if memory_off and spec.name.startswith("memory."):
+                continue
+            if workspace_off and spec.name.startswith("workspace."):
                 continue
             rank = _rank(spec.risk)
             if spec.name in ctx.client_tools:
@@ -1761,6 +1877,7 @@ class AgentLoop:
             )
 
         payload = tool_result.content if tool_result.ok else (tool_result.error or "")
+        payload, files_written = self._apply_workspace(name, payload, tool_result, ctx)
         fenced = wrap_untrusted(
             payload,
             kind=UntrustedKind.TOOL_RESULT,
@@ -1778,8 +1895,80 @@ class AgentLoop:
             # only written down. It was measured here already; a surface that
             # wants to show what a turn spent its time on was otherwise left
             # timing the gap between two events and calling that the tool.
-            detail={"ok": tool_result.ok, "duration_ms": duration_ms},
+            # `files` is workspace contract §3/§7's own joint: the exact
+            # filenames this call wrote, so a screen can draw a card per file
+            # without re-deriving anything from `text`. Always present, empty
+            # when nothing was written.
+            detail={"ok": tool_result.ok, "duration_ms": duration_ms, "files": files_written},
         )
+
+    def _apply_workspace(
+        self, name: str, payload: str, tool_result: ToolResult, ctx: TurnContext
+    ) -> tuple[str, list[str]]:
+        """Workspace contract §3 and §4: turn a tool's own files, or one long
+        plain-text result, into workspace writes, and say so in the text the
+        model sees. Returns the (possibly rewritten) payload and the names
+        actually written this call — the second is :attr:`AgentEventType.
+        TOOL_RESULT`'s ``detail["files"]``.
+
+        Two shapes, not one, because they answer different questions:
+
+        * **A tool handed back files** (:attr:`ToolResult.files`, e.g. an MCP
+          resource) — each one is saved and a line is appended per file,
+          after whatever text the tool already returned. With no workspace,
+          each file gets its own "was not kept" line instead — the model is
+          never shown the body it cannot keep.
+        * **A tool handed back one long piece of plain text** with no files
+          at all — contract §4: past ``long_item_chars`` it is written to
+          disk instead of being cut, and the model gets the first 1,000
+          characters plus the save line. Below that length, or with no
+          workspace on, nothing here changes — the existing
+          ``tool_result_chars`` fence still applies exactly as it always has.
+
+        Never raises: a :class:`WorkspaceError` (a ceiling, a bad name) is
+        reported to the model in the same sentence the workspace itself
+        would have refused it with, and the turn carries on.
+        """
+        workspace_tools = self._workspace
+        workspace: Workspace | None = None
+        if workspace_tools is not None and self._workspace_ready(ctx):
+            assert ctx.conversation_id is not None  # noqa: S101 - `_workspace_ready` just checked
+            try:
+                workspace = workspace_tools.workspace_for(ctx.conversation_id)
+            except WorkspaceError:
+                workspace = None
+
+        files_written: list[str] = []
+        extra_lines: list[str] = []
+
+        if tool_result.files:
+            for tool_file in tool_result.files:
+                if workspace is None:
+                    extra_lines.append(
+                        f"File {tool_file.name} was not kept: this persona has no workspace."
+                    )
+                    continue
+                try:
+                    final_name = workspace.write(tool_file.name, tool_file.text, source=name)
+                except WorkspaceError as exc:
+                    extra_lines.append(str(exc))
+                    continue
+                files_written.append(final_name)
+                extra_lines.append(_saved_line(final_name, tool_file.text))
+            if extra_lines:
+                lines = "\n".join(extra_lines)
+                payload = f"{payload}\n{lines}" if payload else lines
+            return payload, files_written
+
+        if workspace is not None and len(payload) > workspace_tools.settings.long_item_chars:
+            try:
+                final_name = workspace.write(f"{name}.txt", payload, source=name)
+            except WorkspaceError as exc:
+                return (f"{payload}\n{exc}" if payload else str(exc)), files_written
+            files_written.append(final_name)
+            payload = f"{payload[:1000]}\n{_saved_line(final_name, payload)}"
+
+        return payload, files_written
 
     async def _invoke(
         self,
@@ -1849,6 +2038,17 @@ class AgentLoop:
             return ToolGateDecision(
                 allowed=False,
                 reason=f"I don't have a tool called {name}, so I can't do that.",
+            )
+
+        # Workspace contract §5: refused here too, not only withheld from the
+        # offer in `_tool_schemas` — belt and braces against a model that
+        # names a tool it was never shown, or a persona whose switch flipped
+        # off mid-turn.
+        if name.startswith("workspace.") and not self._workspace_ready(ctx):
+            return ToolGateDecision(
+                allowed=False,
+                risk=spec.risk,
+                reason=f"{name} needs a workspace, and this conversation doesn't have one.",
             )
 
         if name not in set(profile.allowed_tools):
@@ -2077,6 +2277,13 @@ def _user_content(text: str, image_urls: Sequence[str]) -> str | list[dict[str, 
     content: list[dict[str, Any]] = [{"type": "text", "text": text}]
     content.extend({"type": "image_url", "image_url": {"url": url}} for url in image_urls)
     return content
+
+
+def _saved_line(name: str, text: str) -> str:
+    """Workspace contract §3/§4's own sentence, told to the model whenever a
+    file actually landed in the workspace: ``Saved to workspace: NAME (N
+    chars, M words).``"""
+    return f"Saved to workspace: {name} ({len(text):,} chars, {len(text.split()):,} words)"
 
 
 def _tool_message(tool_call_id: str, name: str, content: str) -> dict[str, Any]:

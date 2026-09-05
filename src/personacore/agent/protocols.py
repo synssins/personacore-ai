@@ -41,8 +41,10 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from personacore.agent.personas import Persona
 from personacore.audit import AuditRecord, TranscriptRecord
+from personacore.config.workspace import WorkspaceSettings
 from personacore.contracts import MemoryScope, RiskLevel
 from personacore.llm import ChatCompletionChunk
+from personacore.workspaces import Workspace
 
 # ---------------------------------------------------------------------------
 # Tools — spec sections 5.1 and 7
@@ -72,6 +74,33 @@ class ToolSpec(BaseModel):
     """JSON Schema for the arguments, passed to the model untouched."""
 
 
+class ToolFile(BaseModel):
+    """One file a tool call handed back — workspace contract §3, the joint.
+
+    Produced two ways: an MCP text resource
+    (:func:`personacore.plugins.mcp_client.render_call_result`) or a plain
+    tool result long enough that the loop spills it to disk instead of the
+    model's context (contract §4). Frozen, like :class:`ToolSpec` and
+    :class:`ToolResult` are conceptually immutable once returned — a file a
+    tool produced is a fact about what happened this turn, not something a
+    later step edits in place.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    name: str = Field(min_length=1)
+    """The bare filename this file should be saved under — workspace
+    contract §1's shape, checked again by :class:`personacore.workspaces.Workspace`
+    when it is actually written, not trusted here."""
+
+    mime: str = "text/plain"
+    text: str = ""
+    """UNTRUSTED, exactly like :attr:`ToolResult.content` — the loop writes
+    it to a workspace file, which is not the same as putting it in front of
+    the model, but it reaches the model later through ``workspace.read_file``
+    or a pin, and goes through the same fence at that point."""
+
+
 class ToolResult(BaseModel):
     """What came back from a tool call.
 
@@ -91,6 +120,12 @@ class ToolResult(BaseModel):
 
     error: str | None = None
     """Plain-English failure, safe to speak aloud. Set when ``ok`` is False."""
+
+    files: list[ToolFile] = Field(default_factory=list)
+    """Files this call produced — workspace contract §3. Empty for every
+    tool that predates the workspace, and for one that simply returned none
+    this time. The loop (``agent/loop.py:_handle_tool_call``) is what turns
+    these into workspace writes; nothing below that point interprets them."""
 
     audited: bool = False
     """The callee already wrote this call's audit record.
@@ -252,6 +287,34 @@ class MemoryProvider(Protocol):
 
 
 # ---------------------------------------------------------------------------
+# Workspace — workspace contract §3, §4, §6. A seam for the same reason
+# MemoryProvider is one: personacore.workspace_tools.WorkspaceTools (the
+# concrete class, which also implements the model-facing workspace.* tools)
+# needs this module's own ToolResult/ToolSpec, so agent/loop.py depending on
+# that module directly would close a cycle back through personacore.agent's
+# own package __init__. Naming the loop's actual needs here instead — build
+# a Workspace for a conversation, read the settings two thresholds live on —
+# keeps the loop's dependency graph exactly the shape it already was.
+# ---------------------------------------------------------------------------
+
+
+@runtime_checkable
+class WorkspaceAccess(Protocol):
+    """What :class:`~personacore.agent.loop.AgentLoop` needs from the
+    workspace tool family, structurally satisfied by
+    :class:`personacore.workspace_tools.WorkspaceTools` without either module
+    importing the other."""
+
+    @property
+    def settings(self) -> WorkspaceSettings: ...
+
+    def workspace_for(self, conversation_id: str) -> Workspace:
+        """The :class:`~personacore.workspaces.Workspace` for one
+        conversation, ceilings already applied from :attr:`settings`."""
+        ...
+
+
+# ---------------------------------------------------------------------------
 # The LLM and the audit store, as narrow shapes
 # ---------------------------------------------------------------------------
 
@@ -319,7 +382,9 @@ __all__ = [
     "MemoryProvider",
     "MemoryRecallRequest",
     "PersonaLLMSource",
+    "ToolFile",
     "ToolProvider",
     "ToolResult",
     "ToolSpec",
+    "WorkspaceAccess",
 ]

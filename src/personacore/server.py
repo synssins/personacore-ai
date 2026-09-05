@@ -144,6 +144,7 @@ from personacore.voice.library import VoiceLibrary, voice_health
 from personacore.voice.registry import VoiceRegistry, builtin_engines
 from personacore.voice.reply import SPEAKER_ATTRIBUTE, ReplySpeaker
 from personacore.web.shared import KeepsTheAddressBar, method_not_allowed
+from personacore.workspace_tools import WorkspaceTools
 from personacore.wyoming import WyomingService
 
 log = structlog.get_logger(__name__)
@@ -553,14 +554,34 @@ def create_app(appdata: Path | str | None = None) -> FastAPI:
     embedder = Embedder.bundled() if Embedder.available() else None
     memory_store: MemoryStore | None = None
     memory_provider: CoreMemoryProvider | None = None
-    tools_provider = host
+    memory_tools: MemoryTools | None = None
     if embedder is not None:
         memory_store = MemoryStore(layout.memory / "memory.db", embedder, settings.memory)
         memory_provider = CoreMemoryProvider(memory_store, settings.memory)
-        tools_provider = CompositeToolProvider(host, MemoryTools(memory_store, personas))
+        memory_tools = MemoryTools(memory_store, personas)
     else:
         log.warning("memory_unavailable", reason="embedding model not bundled")
     app.state.memory_store = memory_store
+
+    # Workspace (``working/contracts/workspace.md`` §5): a per-conversation
+    # folder and three model-facing tools. Unlike memory this needs no
+    # bundled model — only the appdata layout and its own settings — so it is
+    # always built, independent of whether `memory_tools` above is `None`.
+    workspace_tools = WorkspaceTools(layout, settings.workspace)
+    app.state.workspace_tools = workspace_tools
+
+    # `CompositeToolProvider` folds the plugin host and the core's own tool
+    # families into one `ToolProvider` (contract §2: "The loop does not learn
+    # that some tools are the core's own") — every consumer of `host` that
+    # lists or calls tools for a real turn takes this composite instead, and
+    # only the plugin-management surfaces below (`app.state.plugin_host`,
+    # `_PluginHealthView`, `_mount_admin`'s own plugin routes, `host.start`/
+    # `.stop`) still take the bare `PluginHost`, which is the only thing that
+    # knows how to install, remove or health-check a plugin. Built
+    # unconditionally now that workspace tools do not depend on `memory_tools`
+    # being real; `CompositeToolProvider` itself tolerates either being
+    # `None`.
+    tools_provider = CompositeToolProvider(host, memory_tools, workspace=workspace_tools)
 
     # The review pass (memory contract §5.2): a conversation that has gone
     # quiet is read once by the triage role for facts worth keeping. Built
@@ -624,6 +645,11 @@ def create_app(appdata: Path | str | None = None) -> FastAPI:
         ),
         persona_llm=PersonaLLMRouter(roster, interactive_llm),
         memory=memory_provider,
+        # Workspace contract §3/§4/§6: the same `WorkspaceTools` instance
+        # folded into `tools_provider` above, held here too because saving a
+        # tool's own files and composing the manifest/pins happen in the loop
+        # directly rather than through a tool call.
+        workspace=workspace_tools,
     )
     app.state.agent = agent
 

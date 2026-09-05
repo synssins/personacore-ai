@@ -52,16 +52,21 @@ from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontext
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from mcp import ClientSession, MCPError, StdioServerParameters, types
 from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamable_http_client
 
+from personacore.agent.protocols import ToolFile
+from personacore.audit import get_logger
 from personacore.config.secrets import SecretError, SecretStore
 from personacore.contracts.manifest import Transport
 from personacore.plugins.discovery import PluginRecord
 from personacore.plugins.health import PluginOutput
+from personacore.workspaces import FILENAME_PATTERN
+
+logger = get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # Errors
@@ -292,6 +297,11 @@ class RemoteToolResult:
 
     text: str = ""
     is_error: bool = False
+    files: list[ToolFile] = field(default_factory=list)
+    """Text resources the plugin handed back — workspace contract §3.
+    Populated by :func:`render_call_result`; ``PluginHost.call_tool`` passes
+    this straight onto the :class:`~personacore.agent.protocols.ToolResult`
+    it returns."""
 
 
 @runtime_checkable
@@ -335,8 +345,21 @@ plugin returning a megabyte is a malfunction, not a long answer, so the result
 is cut here rather than after it has been copied through four more layers."""
 
 
+def _resource_filename(uri: object) -> str | None:
+    """Workspace contract §3: the last path segment of a resource's uri, run
+    through the workspace's own filename rule. ``None`` when nothing usable
+    survives that — the resource is then omitted rather than guessed at, so
+    a plugin's malformed uri costs a file, not a made-up name.
+    """
+    raw = str(uri).rstrip("/")
+    if not raw:
+        return None
+    segment = unquote(raw.rsplit("/", 1)[-1])
+    return segment if FILENAME_PATTERN.fullmatch(segment) else None
+
+
 def render_call_result(result: object) -> RemoteToolResult:
-    """Turn an SDK ``CallToolResult`` into text.
+    """Turn an SDK ``CallToolResult`` into text, plus any files it carried.
 
     Raises:
         PluginTransportError: the server sent something that is not a tool
@@ -350,16 +373,38 @@ def render_call_result(result: object) -> RemoteToolResult:
         )
 
     parts: list[str] = []
+    files: list[ToolFile] = []
     for block in result.content:
+        if getattr(block, "type", None) == "resource":
+            # Workspace contract §3: a text resource becomes a `ToolFile`
+            # instead of the placeholder every other non-text block gets.
+            # The 64 KiB cap below does not apply to it — only to `parts`,
+            # which this never joins. A blob resource (or a resource with no
+            # text at all) still falls through to the placeholder.
+            resource = getattr(block, "resource", None)
+            resource_text = getattr(resource, "text", None) if resource is not None else None
+            if isinstance(resource_text, str):
+                name = _resource_filename(getattr(resource, "uri", ""))
+                if name is not None:
+                    mime = getattr(resource, "mime_type", None) or "text/plain"
+                    files.append(ToolFile(name=name, mime=mime, text=resource_text))
+                    continue
+                logger.warning(
+                    "mcp_resource_name_refused",
+                    uri=str(getattr(resource, "uri", "")),
+                )
+            parts.append("[resource content omitted]")
+            continue
+
         text = getattr(block, "text", None)
         if isinstance(text, str):
             parts.append(text)
         else:
-            # Images, audio and embedded resources are not something the text
-            # agent loop can use today. Say so rather than dropping silently.
+            # Images and audio are not something the text agent loop can use
+            # today. Say so rather than dropping silently.
             parts.append(f"[{getattr(block, 'type', 'unknown')} content omitted]")
 
-    if not parts and result.structured_content is not None:
+    if not parts and not files and result.structured_content is not None:
         try:
             parts.append(json.dumps(result.structured_content, ensure_ascii=False))
         except (TypeError, ValueError):
@@ -368,7 +413,7 @@ def render_call_result(result: object) -> RemoteToolResult:
     rendered = "\n".join(parts)
     if len(rendered) > MAX_RESULT_CHARS:
         rendered = rendered[:MAX_RESULT_CHARS] + "\n[truncated]"
-    return RemoteToolResult(text=rendered, is_error=bool(result.is_error))
+    return RemoteToolResult(text=rendered, is_error=bool(result.is_error), files=files)
 
 
 # ---------------------------------------------------------------------------

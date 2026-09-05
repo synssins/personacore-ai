@@ -45,9 +45,11 @@ from personacore.agent.protocols import (
     MemoryProvider,
     MemoryRecallRequest,
     PersonaLLMSource,
+    ToolFile,
     ToolProvider,
     ToolResult,
     ToolSpec,
+    WorkspaceAccess,
 )
 from personacore.agent.untrusted import UntrustedKind, wrap_untrusted
 
@@ -80,6 +82,7 @@ __all__ = [
     "PersonaInvalidError",
     "PersonaNotFoundError",
     "PersonaStore",
+    "ToolFile",
     "ToolGateDecision",
     "ToolProvider",
     "ToolResult",
@@ -87,5 +90,6 @@ __all__ = [
     "TurnContext",
     "TurnRequest",
     "UntrustedKind",
+    "WorkspaceAccess",
     "wrap_untrusted",
 ]
