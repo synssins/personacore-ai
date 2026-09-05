@@ -10,18 +10,16 @@
    tool call just left behind) — one piece of markup either way, so the live
    card and the one a reload draws can never drift apart.
 
-   Context: chips: [WorkspaceChip {name, url, kind_label}] #}
-{% from "_controls.html" import icon %}
+   Context: chips: [WorkspaceChip {name, url, kind_label, pinned, pin_url,
+            unpin_url}]
+
+   Each card is fragments/chat_workspace_card.html, which also carries the
+   Pin/Unpin control (contract §13) — split out there so the pin/unpin route
+   can hand back exactly one card without redrawing this whole row. #}
 {% if chips %}
 <div class="attach-sent-row" style="align-self:flex-start">
   {% for chip in chips %}
-  <a class="attach-card" href="{{ chip.url }}">
-    <span class="attach-card-icon">{{ icon('scroll') }}</span>
-    <span class="attach-card-text">
-      <span class="attach-card-title">{{ chip.name }}</span>
-      <span class="attach-card-sub">Workspace · {{ chip.kind_label }}</span>
-    </span>
-  </a>
+  {% include "fragments/chat_workspace_card.html" %}
   {% endfor %}
 </div>
 {% endif %}

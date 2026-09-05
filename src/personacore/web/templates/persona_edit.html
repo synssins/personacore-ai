@@ -2,12 +2,14 @@
    GET /admin/personas/new (persona=None) and GET /admin/personas/{slug}/edit.
 
    Context: persona? {slug, name, prompt, voice, voice_value, pauses, prefix,
-     memory, workspace, workspace_pins, connection_mode, connection_address,
+     memory, workspace, workspace_pins, thinking,
+     connection_mode, connection_address,
      connection_model, connection_key_secret, problem?},
      identifier_note, model_field_note, max_prompt_chars, max_prefix_chars, save_result?,
      memory_label, memory_help,
      workspace_label, workspace_help, workspace_pins_label, workspace_pins_help,
      max_workspace_pins_chars,
+     thinking_label, thinking_help,
      connection_label, connection_help, connection_default_label,
      connection_custom_label, connection_key, connection_mode_default,
      connection_mode_custom, max_connection_address_chars,
@@ -79,13 +81,16 @@
     <p class="field-help" id="p-prefix-help">Goes in front of everything this character is told, on every turn. Leave it empty and nothing is added.</p>
   </div>
 
-  {# MEMORY (memory contract §9). On by default. Always on the form, so a
-     save always knows the intended state — there is no third "said nothing"
-     state to preserve here, unlike the checkbox switches on Core settings. #}
+  {# MEMORY (memory contract §9). Always on the form, so a save always knows
+     the intended state — there is no third "said nothing" state to preserve
+     here, unlike the checkbox switches on Core settings. **Unticked by
+     default for a NEW persona** (thinking contract §13 E) — an existing
+     persona shows its own file's value, same as every other box on this
+     form. #}
   <div class="hrow" style="align-items:flex-start; gap:12px">
     <input type="checkbox" id="p-memory" name="memory" value="1"
            style="margin-top:3px"
-           {% if not persona or persona.memory %}checked{% endif %}
+           {% if persona and persona.memory %}checked{% endif %}
            aria-describedby="p-memory-help">
     <div>
       <label for="p-memory" style="font-size:14px">{{ memory_label }}</label>
@@ -116,6 +121,23 @@
            value="{{ persona.workspace_pins if persona else '' }}"
            aria-describedby="p-workspace-pins-help">
     <p class="field-help" id="p-workspace-pins-help">{{ workspace_pins_help }}</p>
+  </div>
+
+  {# THINKING (thinking contract §13 D). Directly below Workspace, same
+     shape as Memory above: absent or broken both mean on, so a save always
+     knows the intended state — ticked removes the `thinking` key, unticked
+     writes `thinking = false`. How much reasoning the model does when
+     thinking is on is set on the model server, not per persona, so there is
+     no such box here (owner decision). #}
+  <div class="hrow" style="align-items:flex-start; gap:12px">
+    <input type="checkbox" id="p-thinking" name="thinking" value="1"
+           style="margin-top:3px"
+           {% if not persona or persona.thinking %}checked{% endif %}
+           aria-describedby="p-thinking-help">
+    <div>
+      <label for="p-thinking" style="font-size:14px">{{ thinking_label }}</label>
+      <p class="field-help" id="p-thinking-help" style="margin:2px 0 0">{{ thinking_help }}</p>
+    </div>
   </div>
 
   {# THIS PERSONA'S MODEL (ADR-0036). Two radios: the system's connection, or

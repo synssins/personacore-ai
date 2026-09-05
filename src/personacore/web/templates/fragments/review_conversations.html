@@ -85,7 +85,7 @@
   <div class="stack" style="gap:4px; border-top:1px solid var(--color-divider); padding-top:var(--space-3)">
     <span class="meta">Workspace files</span>
     {% for file in opened.workspace_files %}
-    <a href="{{ file.url }}" style="font-size:13px">{{ file.name }}</a>
+    <a href="{{ file.url }}" style="font-size:13px">{{ file.name }}{% if file.pinned %} (pinned){% endif %}</a>
     {% endfor %}
   </div>
   {% endif %}

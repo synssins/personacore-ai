@@ -747,6 +747,13 @@ def register(router: APIRouter, exchange: ChatExchange) -> None:
     #: §3.1) — asked of ``chat.stream`` separately from the plain runner,
     #: for the same reason ``_tells_the_room`` is.
     _carries_conversation = _takes(getattr(chat, "stream", None), "conversation_id")
+    #: Whether the *streaming* runner can be told the conversation's own
+    #: thinking override (thinking contract §13 D) — asked of ``chat.stream``
+    #: separately from the plain runner, for the same reason
+    #: ``_tells_the_room`` is. A runner too old to take ``thinking`` still
+    #: runs a persona exactly as its own switch says (``boot.chat``'s own
+    #: resolution), so this only ever costs the *override*, never the turn.
+    _carries_thinking = _takes(getattr(chat, "stream", None), "thinking")
     _turn = exchange.turn
     _answered_by_kind = exchange.answered_by_kind
     _open_the_floor = exchange.open_the_floor
@@ -1319,6 +1326,18 @@ def register(router: APIRouter, exchange: ChatExchange) -> None:
                     workspace_ref=(
                         conversation.conversation_id if conversation is not None else None
                     ),
+                    # Thinking contract §13 D — `found.thinking`, this
+                    # conversation's own override, straight off the row.
+                    # `getattr`: a core that has not landed the ``thinking``
+                    # column yet still runs this turn, just with no override
+                    # to carry — the loop then falls back to the persona's
+                    # own switch exactly as it does with no conversation at
+                    # all.
+                    thinking=(
+                        getattr(conversation, "thinking", None)
+                        if _carries_thinking and conversation is not None
+                        else None
+                    ),
                     aloud=aloud,
                     streaming=streaming,
                     holding=holding,
@@ -1368,7 +1387,11 @@ def register(router: APIRouter, exchange: ChatExchange) -> None:
                         # attachment chips just above follow.
                         workspace_files=(
                             chat_workspace.chips_for_names(
-                                conversation.conversation_id, out.workspace_files
+                                conversation.conversation_id,
+                                out.workspace_files,
+                                pinned=chat_workspace.pinned_names_for(
+                                    ctx.layout, conversation.conversation_id
+                                ),
                             )
                             if conversation is not None and out.workspace_files
                             else ()
@@ -1472,7 +1495,11 @@ def register(router: APIRouter, exchange: ChatExchange) -> None:
                 # below).
                 workspace_chips = (
                     chat_workspace.chips_for_names(
-                        conversation.conversation_id, out.workspace_files
+                        conversation.conversation_id,
+                        out.workspace_files,
+                        pinned=chat_workspace.pinned_names_for(
+                            ctx.layout, conversation.conversation_id
+                        ),
                     )
                     if conversation is not None and out.workspace_files
                     else ()
@@ -1541,6 +1568,7 @@ def register(router: APIRouter, exchange: ChatExchange) -> None:
         image_urls: Sequence[str] = (),
         conversation_id: str | None = None,
         workspace_ref: str | None = None,
+        thinking: bool | None = None,
         aloud: bool,
         streaming: Any,
         holding: _TurnHolding,
@@ -1582,6 +1610,13 @@ def register(router: APIRouter, exchange: ChatExchange) -> None:
         card, for the one turn that truly has no conversation yet (see the
         caller's own comment on ``conversation is None``): there is nothing
         to link a card to before that exists.
+
+        ``thinking`` is this conversation's own override (thinking contract
+        §13 D) — passed to ``streaming`` only when ``_carries_thinking`` says
+        it can be, the same discovery as ``image_urls`` and
+        ``conversation_id``. ``None`` either from the caller (no override
+        set, or the runner cannot carry one) reads the same way to the loop:
+        follow the answering persona's own switch.
 
         ``stopping`` is §4a's stop, handed straight to `_kept_alive` because
         that is where the turn is actually suspended. When it fires the loop
@@ -1627,6 +1662,12 @@ def register(router: APIRouter, exchange: ChatExchange) -> None:
             **({"image_data_urls": list(image_urls)} if image_urls else {}),
             # Memory contract §3.1 — see the same call in `_turn`.
             **({"conversation_id": conversation_id} if conversation_id else {}),
+            # Thinking contract §13 D. Gated on `_carries_thinking`, not on
+            # `thinking is not None`: a runner too old for the keyword at
+            # all must never see it, whatever value it would have carried,
+            # and a runner that does take it treats `None` as "no override"
+            # on its own — the same value it already defaults to.
+            **({"thinking": thinking} if _carries_thinking else {}),
         )
         holding.events = events
         try:
@@ -1728,7 +1769,13 @@ def register(router: APIRouter, exchange: ChatExchange) -> None:
                         # not drawn rather than drawn broken.
                         if workspace_ref is not None:
                             html = _workspace_cards_html(
-                                chat_workspace.chips_for_names(workspace_ref, new_files)
+                                chat_workspace.chips_for_names(
+                                    workspace_ref,
+                                    new_files,
+                                    pinned=chat_workspace.pinned_names_for(
+                                        ctx.layout, workspace_ref
+                                    ),
+                                )
                             )
                             if html:
                                 yield _frame("workspace_files", {"html": html})

@@ -733,11 +733,23 @@ def register(router: APIRouter, ctx: UIContext) -> None:
         """
         if found is None:
             return
+        pinned = None
         for entry in built:
             names = entry.pop("workspace_files", None)
             if not names:
                 continue
-            entry["workspace_files"] = chat_workspace.chips_for_names(found.conversation_id, names)
+            # Read once for the whole reload, not once per exchange — a
+            # conversation with several tool-fetched files is the ordinary
+            # case, and the pin list does not change while this page is
+            # being drawn. Contract §13's own joint; see
+            # `chat_workspace.pinned_names_for`'s own docstring for why a
+            # core that has not landed `Workspace.pinned()` yet still
+            # answers, just with nothing pinned.
+            if pinned is None:
+                pinned = chat_workspace.pinned_names_for(ctx.layout, found.conversation_id)
+            entry["workspace_files"] = chat_workspace.chips_for_names(
+                found.conversation_id, names, pinned=pinned
+            )
 
     def _attach_replay_images(
         built: Sequence[dict[str, Any]], conversation: Conversation | None
@@ -979,6 +991,28 @@ def register(router: APIRouter, ctx: UIContext) -> None:
         except Exception:  # noqa: BLE001 - an unlabelled count beats a dead screen
             return None
 
+    def _thinking_here(conversation: Conversation | None, answering: str) -> bool:
+        """Whether the Thinking checkbox in the gear sheet reads checked —
+        thinking contract §13 D.
+
+        The conversation's own override wins when it has one; otherwise the
+        answering persona's own switch. ``getattr`` both ways: ``thinking``
+        on :class:`~personacore.conversations.models.Conversation` and
+        ``thinking_enabled`` on a loaded persona are the same core joint
+        (``working/contracts/workspace.md`` §13) this screen builds against
+        before the other half of the contract has necessarily landed either
+        one — absent means "no override" for the first and "on" for the
+        second, which is also what each already means once landed.
+        """
+        override = getattr(conversation, "thinking", None)
+        if override is not None:
+            return bool(override)
+        try:
+            loaded = personas.load(answering)
+        except Exception:  # noqa: BLE001 - an unreadable persona still gets a checkbox
+            return True
+        return getattr(loaded, "thinking_enabled", True)
+
     def _roster_view(
         request: Request, conversation: Conversation | None
     ) -> dict[str, Any]:
@@ -1013,6 +1047,11 @@ def register(router: APIRouter, ctx: UIContext) -> None:
             "speech_switchable": conversation is not None,
             "stop_label": STOP_LABEL,
             "stop_title": STOP_TITLE,
+            # Thinking contract §13 D. `here[0].name` is who answers first —
+            # the same persona the picker names — read straight off the room
+            # `_members` just built rather than a second resolution of it.
+            "thinking_here": _thinking_here(conversation, here[0].name),
+            "thinking_switchable": conversation is not None,
         }
 
     async def _screen(

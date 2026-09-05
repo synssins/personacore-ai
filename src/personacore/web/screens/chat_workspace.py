@@ -21,18 +21,20 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
+from urllib.parse import quote
 
 import structlog
 from fastapi import APIRouter, HTTPException, Request, status
-from fastapi.responses import Response
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 from personacore import workspaces as workspaces_module
 from personacore.audit.models import AuditCategory, Owner, Surface
 from personacore.conversations.service import ConversationService
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from collections.abc import Sequence
+    from collections.abc import Collection, Sequence
 
+    from personacore.config.appdata import AppdataLayout
     from personacore.web.shared import UIContext
 
 log = structlog.get_logger(__name__)
@@ -99,9 +101,20 @@ class WorkspaceChip:
     name: str
     url: str
     kind_label: str
+    pinned: bool = False
+    """Contract §13's own marker — read back through :func:`pinned_names_for`
+    (a live card) or off ``FileEntry.pinned`` (the review screen's own
+    listing). ``False`` by default, which is also what an old core that has
+    not landed ``Workspace.pinned()`` yet always answers with — a card never
+    claims a file is pinned when nothing on disk can say so."""
+    pin_url: str = ""
+    unpin_url: str = ""
+    """Where the **Pin**/**Unpin** control on the owner's own card posts —
+    empty on the review screen's own chips, which show the marker only and
+    draw no control (contract §13: "the marker only, no control")."""
 
 
-def chip_for(conversation_id: str, name: str) -> WorkspaceChip:
+def chip_for(conversation_id: str, name: str, *, pinned: bool = False) -> WorkspaceChip:
     """One workspace file, as the templates draw it.
 
     Built from a name alone — no disk read here — because a card drawn live,
@@ -109,15 +122,24 @@ def chip_for(conversation_id: str, name: str) -> WorkspaceChip:
     something :mod:`personacore.workspaces` has only just written. A name that
     no longer exists by the time the link is followed is exactly what the
     download route's own 404 is for.
+
+    ``pinned`` is the one exception to "no disk read": the caller has already
+    done that read (:func:`pinned_names_for`), once for the whole card list
+    rather than once per card, and hands the answer in here.
     """
     return WorkspaceChip(
         name=name,
         url=f"{WORKSPACE_URL_PREFIX}{conversation_id}/{name}",
         kind_label=kind_label_for(name),
+        pinned=pinned,
+        pin_url=f"{WORKSPACE_URL_PREFIX}{conversation_id}/{name}/pin",
+        unpin_url=f"{WORKSPACE_URL_PREFIX}{conversation_id}/{name}/unpin",
     )
 
 
-def chips_for_names(conversation_id: str, names: Sequence[str]) -> list[WorkspaceChip]:
+def chips_for_names(
+    conversation_id: str, names: Sequence[str], *, pinned: Collection[str] = ()
+) -> list[WorkspaceChip]:
     """Every name in ``names``, as cards — in order, nothing dropped.
 
     Unlike :func:`personacore.web.screens.chat_attachments.chips_for_ids`,
@@ -125,8 +147,45 @@ def chips_for_names(conversation_id: str, names: Sequence[str]) -> list[Workspac
     still draws a card: the turn that produced it is still true history, and
     a card whose link now 404s says so plainly rather than making the file
     disappear from a conversation that really did produce it.
+
+    ``pinned`` is every name in this workspace :func:`pinned_names_for` found
+    pinned — read once by the caller for the whole list, not once per name.
     """
-    return [chip_for(conversation_id, name) for name in names]
+    pinned_set = pinned if isinstance(pinned, (set, frozenset)) else set(pinned)
+    return [chip_for(conversation_id, name, pinned=name in pinned_set) for name in names]
+
+
+def pinned_names_for(layout: AppdataLayout, conversation_id: str) -> frozenset[str]:
+    """Every name pinned in this conversation's workspace — contract §13.
+
+    Reads :meth:`personacore.workspaces.Workspace.pinned`, the core joint
+    this screen builds against before the other half of the contract has
+    necessarily landed it: ``getattr`` degrades to "nothing is pinned" on a
+    :class:`~personacore.workspaces.Workspace` too old to have the method at
+    all, the same tolerance every other reader of an evolving core call takes
+    on this screen (see :func:`_workspace_ceilings`'s own comment on reading
+    settings that may not exist yet). The ceilings passed to
+    :class:`~personacore.workspaces.Workspace` are the defaults, never the
+    configured ones: neither is enforced by a read, only by a write (see
+    :func:`_workspace_ceilings`'s own reasoning), so this needs no request to
+    read them off.
+    """
+    try:
+        workspace = workspaces_module.Workspace(
+            layout,
+            conversation_id,
+            max_file_bytes=_DEFAULT_MAX_FILE_BYTES,
+            max_workspace_bytes=_DEFAULT_MAX_WORKSPACE_BYTES,
+        )
+    except workspaces_module.WorkspaceError:
+        return frozenset()
+    getter = getattr(workspace, "pinned", None)
+    if getter is None:
+        return frozenset()
+    try:
+        return frozenset(str(name) for name in getter())
+    except Exception:  # noqa: BLE001 - a pin list must never break the card list
+        return frozenset()
 
 
 # ---------------------------------------------------------------------------
@@ -198,6 +257,66 @@ def register(router: APIRouter, ctx: UIContext) -> None:
     layout = ctx.layout
     store = ctx.audit
     conversations = ConversationService(store, surface=Surface.ADMIN_UI)
+    _card_template = ctx.templates.get_template("fragments/chat_workspace_card.html")
+
+    def _wants_fragment(request: Request) -> bool:
+        """Whether this request came from htmx (a Pin/Unpin tap with scripts
+        on) rather than a plain form post — the same test
+        :func:`personacore.web.screens.memory._wants_fragment` makes, kept
+        as its own four lines for the same reason this module already keeps
+        its own copy of :func:`_workspace_ceilings`."""
+        return request.headers.get("hx-request", "").lower() == "true"
+
+    async def _pin_or_unpin(
+        request: Request, conversation_id: str, name: str, *, pin: bool
+    ) -> Response:
+        """**Pin**/**Unpin**, contract §13's own control beside the download
+        link. Owner-checked exactly as :func:`chat_workspace_file` above is.
+
+        Calls :meth:`personacore.workspaces.Workspace.pin`/``unpin`` — the
+        core joint this screen builds against (``working/contracts/
+        workspace.md`` §13) — which may not exist on a core that has not
+        landed the other half of the contract yet; that is a plain
+        ``AttributeError`` today; the day it lands, this needs no change.
+        """
+        user = require_user(request)
+        owner = Owner.profile(user.id)
+        conversation = await conversations.resolve(owner, conversation_id=conversation_id)
+        if conversation is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, NOT_FOUND)
+        max_file, max_total = _workspace_ceilings(request)
+        try:
+            workspace = workspaces_module.Workspace(
+                layout,
+                conversation_id,
+                max_file_bytes=max_file,
+                max_workspace_bytes=max_total,
+            )
+            if pin:
+                workspace.pin(name)
+            else:
+                workspace.unpin(name)
+        except (workspaces_module.WorkspaceError, OSError) as exc:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, NOT_FOUND) from exc
+        if _wants_fragment(request):
+            chip = chip_for(conversation_id, name, pinned=pin)
+            return HTMLResponse(_card_template.render(chip=chip))
+        marker = quote(conversation.started_at.isoformat())
+        return RedirectResponse(f"/admin/chat?c={marker}", status_code=status.HTTP_303_SEE_OTHER)
+
+    @router.post(
+        "/chat/workspace/{conversation_id}/{name}/pin",
+        summary="Pin one workspace file, to its owner only",
+    )
+    async def chat_workspace_pin(request: Request, conversation_id: str, name: str) -> Response:
+        return await _pin_or_unpin(request, conversation_id, name, pin=True)
+
+    @router.post(
+        "/chat/workspace/{conversation_id}/{name}/unpin",
+        summary="Unpin one workspace file, to its owner only",
+    )
+    async def chat_workspace_unpin(request: Request, conversation_id: str, name: str) -> Response:
+        return await _pin_or_unpin(request, conversation_id, name, pin=False)
 
     @router.get(
         "/chat/workspace/{conversation_id}/{name}",
@@ -260,6 +379,7 @@ __all__ = [
     "chip_for",
     "chips_for_names",
     "kind_label_for",
+    "pinned_names_for",
     "register",
     "workspace_files_from_detail",
 ]

@@ -111,12 +111,14 @@ PERSONA_MEMORY_LABEL = "Memory"
 PERSONA_MEMORY_HELP = (
     "This character remembers what people tell it, and what the review pass "
     "finds worth keeping. Off means no memory is read or written for it; "
-    "anything already kept is left alone."
+    "anything already kept is left alone. New personas start with memory off."
 )
 """Memory contract §9 — the persona switch. The checkbox is always on the
-form, checked by default, so a save always knows the intended state: ticked
-removes the ``memory`` key (which already means on), unticked writes
-``memory = false``."""
+form; **unticked by default for a new persona** (thinking contract §13 E —
+an existing persona still shows its own file's value), so a save always
+knows the intended state: absence of the ``memory`` key already means off
+(`Persona.memory_enabled`'s own default), so ticked writes ``memory =
+true`` explicitly and unticked removes the key."""
 
 PERSONA_WORKSPACE_LABEL = "Workspace"
 
@@ -156,6 +158,18 @@ PERSONA_WORKSPACE_PIN_INVALID = (
     "digits, '.', '_', '-', '*' or '?', up to 120 characters, and cannot "
     "start with a dot."
 )
+
+
+PERSONA_THINKING_LABEL = "Thinking"
+
+PERSONA_THINKING_HELP = (
+    "The model reasons before it answers. Off is faster and cheaper; on is "
+    "better for review and editing."
+)
+"""Thinking contract §13 D — the persona switch. Same shape as Memory's
+above it: the checkbox is always on the form, checked by default, so a save
+always knows the intended state. Ticked removes the ``thinking`` key (which
+already means on); unticked writes ``thinking = false``."""
 
 
 def parse_workspace_pins(raw: str) -> tuple[list[str], str | None]:
@@ -468,6 +482,8 @@ def register(router: APIRouter, ctx: UIContext) -> None:
             "workspace_pins_label": PERSONA_WORKSPACE_PINS_LABEL,
             "workspace_pins_help": PERSONA_WORKSPACE_PINS_HELP,
             "max_workspace_pins_chars": MAX_WORKSPACE_PINS_CHARS,
+            "thinking_label": PERSONA_THINKING_LABEL,
+            "thinking_help": PERSONA_THINKING_HELP,
             "pauses_label": PERSONA_PAUSES_LABEL,
             "pauses_help": PERSONA_PAUSES_HELP,
             "max_pauses_chars": MAX_PAUSES_CHARS,
@@ -522,6 +538,7 @@ def register(router: APIRouter, ctx: UIContext) -> None:
         memory: bool | None = None,
         workspace: bool | None = None,
         workspace_pins: str | None = None,
+        thinking: bool | None = None,
     ) -> dict[str, Any]:
         """One persona in the shape the edit form renders.
 
@@ -553,10 +570,10 @@ def register(router: APIRouter, ctx: UIContext) -> None:
                 # so the box is empty rather than wrong, for the same reason.
                 "prefix": prefix if prefix is not None else "",
                 # A persona whose metadata will not parse has no readable
-                # switch either. Defaulting to on matches what the switch
+                # switch either. Defaulting to off matches what the switch
                 # itself means when it cannot be read at all (absent or
-                # broken both mean on, per `Persona.memory_enabled`).
-                "memory": memory if memory is not None else True,
+                # broken both mean off, per `Persona.memory_enabled`).
+                "memory": memory if memory is not None else False,
                 # A persona that will not load has no readable workspace switch
                 # either. Defaulting to off matches what the switch itself
                 # means when it cannot be read at all (absent means off, per
@@ -564,6 +581,11 @@ def register(router: APIRouter, ctx: UIContext) -> None:
                 # because the two contracts made opposite decisions.
                 "workspace": workspace if workspace is not None else False,
                 "workspace_pins": workspace_pins if workspace_pins is not None else "",
+                # A persona whose metadata will not parse has no readable
+                # thinking switch either — defaulting to on for the same
+                # reason `memory` above does (contract §13 D: absent or
+                # broken both mean on).
+                "thinking": thinking if thinking is not None else True,
                 # Read off the file, not through the store that just refused it:
                 # the broken thing may be this very section, and the form has to
                 # show what is there or the next save would silently drop it.
@@ -593,6 +615,14 @@ def register(router: APIRouter, ctx: UIContext) -> None:
                 if workspace_pins is not None
                 else ", ".join(getattr(loaded, "workspace_pins", ()) or ())
             ),
+            # Same `getattr` reasoning as `workspace` above: thinking
+            # contract §13 D adds this to `Persona` as a separate change, so
+            # a store built before that lands still has a persona with no
+            # such attribute — reading as on, exactly what an absent key
+            # already means.
+            "thinking": (
+                thinking if thinking is not None else getattr(loaded, "thinking_enabled", True)
+            ),
             **connection_fields(loaded.connection),
             "problem": None,
         }
@@ -605,9 +635,10 @@ def register(router: APIRouter, ctx: UIContext) -> None:
         voice: str | None = None,
         pauses: tuple[SpeechPause, ...] | None = None,
         prefix: str | None = None,
-        memory: bool = True,
+        memory: bool = False,
         workspace: bool = False,
         workspace_pins: tuple[str, ...] = (),
+        thinking: bool = True,
         connection: LLMSettings | None = None,
         own_connection: bool = False,
         key_secret: str | None = None,
@@ -676,19 +707,20 @@ def register(router: APIRouter, ctx: UIContext) -> None:
             else:
                 existing.pop("prompt_prefix", None)
         # MEMORY (memory contract §9). The checkbox is always on the form, so
-        # every save knows the intended state. Checked writes nothing —
-        # absence already means on, the same as every persona before this box
-        # existed — and unchecked writes `memory = false` explicitly. There is
-        # no "leave alone" state to preserve here.
+        # every save knows the intended state. Absence already means off
+        # (`Persona.memory_enabled`'s own default), so a ticked box writes
+        # `memory = true` explicitly and an unticked one writes nothing —
+        # there is no "leave alone" state to preserve here, the same shape
+        # the workspace switch just below already has.
         if memory:
-            existing.pop("memory", None)
+            existing["memory"] = True
         else:
-            existing["memory"] = False
-        # WORKSPACE (workspace contract §5/§0.1). Opposite default from
-        # memory just above: absence already means off, so a ticked box
-        # writes `workspace = true` and an unticked one writes nothing —
-        # there is no "leave alone" state to preserve here either, the
-        # checkbox is always on the form.
+            existing.pop("memory", None)
+        # WORKSPACE (workspace contract §5/§0.1). Same shape as memory just
+        # above: absence already means off, so a ticked box writes
+        # `workspace = true` and an unticked one writes nothing — there is
+        # no "leave alone" state to preserve here either, the checkbox is
+        # always on the form.
         if workspace:
             existing["workspace"] = True
         else:
@@ -702,6 +734,14 @@ def register(router: APIRouter, ctx: UIContext) -> None:
             existing["workspace_pins"] = list(workspace_pins)
         else:
             existing.pop("workspace_pins", None)
+        # THINKING (thinking contract §13 D). Same shape as Memory above:
+        # the checkbox is always on the form, checked writes nothing —
+        # absence already means on — and unchecked writes `thinking = false`
+        # explicitly.
+        if thinking:
+            existing.pop("thinking", None)
+        else:
+            existing["thinking"] = False
         # The connection, written as the three fields the form has controls for
         # and nothing else; whatever else is in the section survives a save that
         # said nothing about it, because `persona.toml` is the operator's file.
@@ -752,6 +792,7 @@ def register(router: APIRouter, ctx: UIContext) -> None:
         workspace: bool
         typed_workspace_pins: str
         workspace_pins: tuple[str, ...]
+        thinking: bool
         refusal: str | None
 
     class _KeyPlan(NamedTuple):
@@ -824,9 +865,12 @@ def register(router: APIRouter, ctx: UIContext) -> None:
         # no marker field here, unlike the Core settings switches: this form
         # always renders the box, so its presence or absence already says
         # everything a save needs to know. Same rule for the workspace switch
-        # below, even though its own default is the opposite of memory's.
+        # below, whose default now matches memory's (both absent means off),
+        # and for the thinking switch, whose own default is still the
+        # opposite (absent means on).
         memory_checked = bool(str(form.get("memory") or ""))
         workspace_checked = bool(str(form.get("workspace") or ""))
+        thinking_checked = bool(str(form.get("thinking") or ""))
         connection = read_connection_form(form)
         key = read_key_form(form)
         raw_voice = str(form.get("voice") or "").strip()
@@ -849,6 +893,7 @@ def register(router: APIRouter, ctx: UIContext) -> None:
                     workspace_checked,
                     typed_workspace_pins,
                     (),
+                    thinking_checked,
                     PERSONA_VOICE_UNKNOWN,
                 )
         # Parsed before the other checks so that a refusal from this box is
@@ -870,6 +915,7 @@ def register(router: APIRouter, ctx: UIContext) -> None:
             workspace_checked,
             typed_workspace_pins,
             workspace_pins,
+            thinking_checked,
         )
         if not display_name:
             return made(PERSONA_NAME_REQUIRED)
@@ -924,6 +970,7 @@ def register(router: APIRouter, ctx: UIContext) -> None:
             "memory": sub.memory,
             "workspace": sub.workspace,
             "workspace_pins": sub.typed_workspace_pins,
+            "thinking": sub.thinking,
             "connection_mode": sub.connection.mode,
             "connection_address": sub.connection.typed_address,
             "connection_model": sub.connection.typed_model,
@@ -965,6 +1012,7 @@ def register(router: APIRouter, ctx: UIContext) -> None:
             memory=sub.memory,
             workspace=sub.workspace,
             workspace_pins=tuple(sub.workspace_pins),
+            thinking=sub.thinking,
             connection=sub.connection.connection,
             own_connection=sub.connection.mode == CONNECTION_MODE_CUSTOM,
             key_secret=plan.secret_name,
@@ -1017,6 +1065,7 @@ def register(router: APIRouter, ctx: UIContext) -> None:
                 memory=sub.memory,
                 workspace=sub.workspace,
                 workspace_pins=sub.typed_workspace_pins,
+                thinking=sub.thinking,
             )
             # The boxes keep what was typed; the key state stays whatever
             # `_persona_form` read off the file, because nothing was written.
@@ -1043,6 +1092,7 @@ def register(router: APIRouter, ctx: UIContext) -> None:
             typed["memory"] = sub.memory
             typed["workspace"] = sub.workspace
             typed["workspace_pins"] = sub.typed_workspace_pins
+            typed["thinking"] = sub.thinking
             return await _edit_page(
                 request, typed, {"kind": "invalid", "message": plan.refusal}
             )
@@ -1056,6 +1106,7 @@ def register(router: APIRouter, ctx: UIContext) -> None:
             memory=sub.memory,
             workspace=sub.workspace,
             workspace_pins=tuple(sub.workspace_pins),
+            thinking=sub.thinking,
             connection=sub.connection.connection,
             own_connection=sub.connection.mode == CONNECTION_MODE_CUSTOM,
             key_secret=plan.secret_name,

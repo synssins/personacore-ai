@@ -1,0 +1,36 @@
+{# fragments/chat_thinking_switch.html — whether this conversation's replies
+   think before they answer.
+   Context: thinking_here (bool), thinking_switchable (bool), conversation,
+            swap_roster (bool — true when this is an out-of-band replacement)
+
+   Thinking contract §13 D. Modelled on chat_speech_switch.html right above
+   it in the gear sheet: same reason it keeps its own id and its own
+   out-of-band swap — it carries the open thread in a hidden field and
+   reflects that thread's own value, so opening another conversation without
+   a page load has to replace it. It rides on `swap_roster` rather than
+   inventing a second flag, for the same reason chat_speech_switch does.
+
+   UNLIKE VOICE, THIS IS A CHECKBOX RATHER THAN A TOGGLE BUTTON: Voice can
+   only ever silence (there is nothing to turn back on once autoplay is off
+   for the person), so a button that reads its own current state is enough.
+   Thinking genuinely has two settings either way, and it changes what the
+   *next reply itself does* rather than how it is delivered — a plain
+   checkbox is the plainer shape for that. #}
+{% from "_controls.html" import icon %}
+<div id="chat-thinking" {% if swap_roster %}hx-swap-oob="true"{% endif %}>
+  {% if thinking_switchable %}
+  <form method="post" action="/admin/chat/thinking" style="margin:0">
+    <input type="hidden" name="conversation" value="{{ conversation }}">
+    <label class="sheet-row" style="cursor:pointer" title="Applies from the next reply.">
+      <input type="checkbox" name="thinking" value="1" {% if thinking_here %}checked{% endif %}
+             hx-post="/admin/chat/thinking" hx-target="#chat-thinking" hx-swap="outerHTML"
+             aria-describedby="chat-thinking-help" style="margin:0 var(--space-2) 0 0">
+      <span class="sheet-row-icon">{{ icon('spark') }}</span>
+      <span class="sheet-row-text">
+        <span class="sheet-row-name">Thinking</span>
+        <span class="sheet-row-why" id="chat-thinking-help">Applies from the next reply.</span>
+      </span>
+    </label>
+  </form>
+  {% endif %}
+</div>

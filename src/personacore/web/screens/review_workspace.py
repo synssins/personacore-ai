@@ -109,6 +109,14 @@ def workspace_files_for(
             name=entry.name,
             url=f"/admin/review/{conversation_id}/workspace/{entry.name}{query}",
             kind_label=kind_label_for(entry.name),
+            # Contract §13: "the marker only, no control" — an administrator
+            # sees whether a file is pinned and never a Pin/Unpin button, so
+            # `pin_url`/`unpin_url` are left at their own empty default.
+            # `getattr` because `FileEntry.pinned` is the other half of the
+            # same core joint `pinned_names_for` reads defensively — absent
+            # on a core that has not landed it yet, which reads as "not
+            # pinned" rather than a broken review screen.
+            pinned=getattr(entry, "pinned", False),
         )
         for entry in workspace.list()
     ]

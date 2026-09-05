@@ -37,7 +37,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 
-from fastapi import APIRouter, Request, Response, status
+from fastapi import APIRouter, HTTPException, Request, Response, status
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 
 from personacore.admin.models import AdminUser
@@ -304,6 +304,69 @@ def _chosen_persona(conversation: Conversation | None) -> str | None:
     """
     chosen = getattr(conversation, "persona", None)
     return str(chosen) if chosen else None
+
+
+def _thinking_here(
+    conversation: Conversation | None, answering: str, personas: PersonaStore
+) -> bool:
+    """Whether the Thinking checkbox reads checked — thinking contract §13 D.
+
+    The conversation's own override wins when it has one; otherwise the
+    answering persona's own switch. Own copy of
+    :mod:`personacore.web.screens.chat`'s own version of this — the same
+    "a screen module is meant to be read without following an import into
+    another one" reasoning :func:`personacore.web.screens.chat_workspace.
+    _workspace_ceilings` gives for its own small, duplicated helper.
+
+    ``getattr`` both ways: ``thinking`` on
+    :class:`~personacore.conversations.models.Conversation` and
+    ``thinking_enabled`` on a loaded persona are the same core joint
+    (``working/contracts/workspace.md`` §13) this screen builds against
+    before the other half of the contract has necessarily landed either one
+    — absent means "no override" for the first and "on" for the second,
+    which is also what each already means once landed.
+    """
+    override = getattr(conversation, "thinking", None)
+    if override is not None:
+        return bool(override)
+    try:
+        loaded = personas.load(answering)
+    except Exception:  # noqa: BLE001 - an unreadable persona still gets a checkbox
+        return True
+    return getattr(loaded, "thinking_enabled", True)
+
+
+#: What a submitted ``thinking`` field spells "on" and "off" as — a plain
+#: checkbox's own value (``value="1"``, per ``chat_thinking_switch.html``)
+#: plus the words a hand-built request might reasonably send instead.
+_THINKING_ON = frozenset({"1", "true", "on"})
+_THINKING_OFF = frozenset({"0", "false", "off"})
+
+THINKING_VALUE_INVALID = (
+    "That is not a thinking value this screen understands. Nothing was changed."
+)
+
+
+def parse_thinking_field(raw: object) -> bool:
+    """Whether the Thinking switch's POST said on or off, refused otherwise.
+
+    A field entirely **absent** follows the checkbox convention every native
+    checkbox on this form already uses (see ``memory``/``workspace`` on the
+    persona edit screen): the browser only submits a ticked box's value at
+    all, so no field means unticked, which means off. Anything present has
+    to be one of :data:`_THINKING_ON` or :data:`_THINKING_OFF` — a shaped-
+    wrong value is refused rather than silently read as off, which is what
+    :func:`personacore.web.shared.wants_collapsed` would have done here and
+    is exactly wrong for a control this contract treats as a real switch.
+    """
+    if raw is None:
+        return False
+    text = str(raw).strip().lower()
+    if text in _THINKING_ON:
+        return True
+    if text in _THINKING_OFF:
+        return False
+    raise ValueError(THINKING_VALUE_INVALID)
 
 
 # -- folding the rail away ---------------------------------------------
@@ -770,6 +833,67 @@ def register(router: APIRouter, view: ChatView) -> None:
                 user.id,
                 key,
                 wants_collapsed(form.get("muted")),
+            )
+        return RedirectResponse(
+            _back_to(request, marker), status_code=status.HTTP_303_SEE_OTHER
+        )
+
+    _thinking_template = templates.get_template("fragments/chat_thinking_switch.html")
+
+    @router.post(
+        "/chat/thinking",
+        response_class=HTMLResponse,
+        summary="Whether this conversation thinks first",
+    )
+    async def chat_thinking(request: Request) -> Response:
+        """Thinking contract §13 D — the header's own per-conversation override.
+
+        Modelled on :func:`chat_speech` just above: an ordinary form that
+        saves a preference and comes back to the conversation. It differs in
+        one way — htmx's own request gets back just the refreshed switch
+        (the same ``#chat-thinking`` id its ``hx-target`` names), not the
+        whole page, because a checkbox tapped in a sheet that is still open
+        should not redraw everything around it.
+
+        Calls :meth:`personacore.conversations.service.ConversationService.
+        set_thinking` — the core joint this screen builds against
+        (``working/contracts/workspace.md`` §13) — which may not exist on a
+        core that has not landed the other half of the contract yet; that is
+        a plain ``AttributeError`` today, and this needs no change the day
+        it lands.
+
+        "Applies from the next reply": this turn's own request already left,
+        if one is running, and the loop reads the setting fresh per round
+        (contract §13's own turn rule), so there is nothing here to stop or
+        restart.
+        """
+        user = require_user(request)
+        form = await request.form()
+        marker = str(form.get("conversation") or "") or None
+        started = conversation_start(wanted_conversation(marker))
+        owner = Owner.profile(user.id)
+        found = await _looked_at(user, started)
+        try:
+            wanted = parse_thinking_field(form.get("thinking"))
+        except ValueError as exc:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+        if found is not None:
+            await conversations.set_thinking(owner, found.conversation_id, wanted)
+        if request.headers.get("hx-request", "").lower() == "true":
+            answering = _chosen_persona(found) or personas.default_persona
+            # `wanted` is what was just written, not a stale read of `found`
+            # (fetched *before* the call above) — reading `found.thinking`
+            # here would answer with the override this same request just
+            # replaced, one post behind what is actually on disk.
+            thinking_here = (
+                wanted if found is not None else _thinking_here(found, answering, personas)
+            )
+            return HTMLResponse(
+                _thinking_template.render(
+                    conversation=marker or "",
+                    thinking_switchable=found is not None,
+                    thinking_here=thinking_here,
+                )
             )
         return RedirectResponse(
             _back_to(request, marker), status_code=status.HTTP_303_SEE_OTHER

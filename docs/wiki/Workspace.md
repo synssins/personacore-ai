@@ -56,11 +56,19 @@ A plugin's answer that is too long to hand the model whole does not simply get c
 
 A tool that hands back an actual file (see [Plugin Tools](Plugin-Tools) — "Returning a file") follows the same save-and-say pattern, one line per file. With no workspace, each file the tool tried to hand over gets its own line instead: `File NAME was not kept: this persona has no workspace.` The persona is never shown a file's contents it cannot also keep.
 
+## Pins per conversation
+
+Beside a persona's own pinned-file *patterns* above, one conversation can pin specific files by name — a hidden `.pins.json` beside the workspace's own files, never listed as a file itself. A pinned file is shown to the model whole, above the user's own message, the same way a persona-level pin is; a file a plugin hands back can arrive already pinned. Pin or unpin it from the card under the reply, or with the `workspace.pin`/`workspace.unpin` tools.
+
 ## File cards and download
 
-A file a turn's tool calls left behind — fetched or written — appears as a card under the reply, labelled `Workspace · Markdown` (or `JSON`, or `Text`, by extension). It is a link, nothing more: no in-page editor, no preview, no rename.
+A file a turn's tool calls left behind — fetched or written — appears as a card under the reply, labelled `Workspace · Markdown` (or `JSON`, or `Text`, by extension). It is a link, nothing more: no in-page editor, no preview, no rename. A pinned card says so in its own sublabel, and carries a **Pin**/**Unpin** control beside the download link; the review screen shows the same marker with no control to press.
 
 The owner downloads it from `GET /admin/chat/workspace/{conversation id}/{name}`; an administrator reviewing somebody else's conversation reaches the same file from its own route on the review screen. Both check ownership first and answer the same not-found message either for a file that is genuinely gone or one that was never that person's — telling the two apart from outside is exactly the kind of thing this is built not to leak.
+
+## Stamped copies
+
+A plugin that hands back a long document can include a stamped copy alongside the plain one — the same text with a paragraph number in front of each paragraph, meant for a reply that has to refer back to "paragraph 12" precisely. It is still an ordinary workspace file with its own card; nothing about reading or writing it differs from any other file here.
 
 ## What happens on hide
 

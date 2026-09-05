@@ -173,16 +173,57 @@ def _healthy_detail(component: ComponentHealth, human_bytes: Callable[[int], str
     return _HEALTHY_DETAIL.get(component.name, "Working.")
 
 
+#: The interactive role's own component name (ADR-0011's per-role rows) and
+#: the bare name a source that predates roles still answers with (see
+#: :func:`personacore.admin.api_health._llm_components`) — the two shapes
+#: the row the thinking-switch probe describes can take.
+_INTERACTIVE_LLM_NAMES = frozenset({"llm", "llm.interactive"})
+
+THINKING_SWITCH_IGNORED = (
+    "The model kept thinking with thinking switched off; the switch may not work for this model."
+)
+
+THINKING_SWITCH_UNSUPPORTED = "This model host does not take the thinking switch."
+
+
+def _thinking_probe_note(probe: dict[str, Any] | None) -> str:
+    """What the startup thinking-switch probe (``app.state.llm_thinking_probe``,
+    workspace contract §13 D) says on the interactive LLM's own row, or
+    nothing.
+
+    Only two of the three recorded outcomes ever say anything here: a probe
+    that never ran (no probe at all, or the interactive role has no usable
+    connection) and one that reached the host and got a plain answer both
+    have nothing to add to a row that already says whether the language
+    model is up. ``ignored`` is checked first because the two flags are
+    mutually exclusive on how :func:`personacore.server._probe_thinking_switch`
+    builds this dict — either would do.
+    """
+    if not probe:
+        return ""
+    if probe.get("ignored"):
+        return THINKING_SWITCH_IGNORED
+    if probe.get("unsupported"):
+        return THINKING_SWITCH_UNSUPPORTED
+    return ""
+
+
 def health_rows(
     health: SystemHealth,
     listing: PluginListing,
     human_bytes: Callable[[int], str],
+    thinking_probe: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """One dashboard row per component, in the design's vocabulary.
 
     ``listing`` is consulted only to tell "switched off on purpose" from "not
     running", which the API keeps as two separate fields (``enabled`` beside
     ``state``) precisely so a dashboard does not have to conflate them.
+
+    ``thinking_probe`` is ``app.state.llm_thinking_probe`` (workspace contract
+    §13 D) — folded into the interactive LLM's own row as a second sentence,
+    never a row of its own, because it is a fact about that one component, not
+    a fourth thing that could be up or down.
     """
     disabled = {plugin.name for plugin in listing.plugins if not plugin.enabled}
     rows: list[dict[str, Any]] = []
@@ -194,12 +235,17 @@ def health_rows(
             state = "off"
         else:
             state = _STATE_WORD[component.state]
+        detail = component.detail or _healthy_detail(component, human_bytes)
+        if component.name in _INTERACTIVE_LLM_NAMES:
+            note = _thinking_probe_note(thinking_probe)
+            if note:
+                detail = f"{detail} {note}"
         rows.append(
             {
                 "state": state,
                 "name": _component_name(component.name),
                 "state_label": _STATE_LABEL[state],
-                "detail": component.detail or _healthy_detail(component, human_bytes),
+                "detail": detail,
                 "facts": _component_fact_lines(component, human_bytes),
                 # Only the plugin list exists in this slice; a row with no page
                 # to open gets no "open" button rather than a link to a 404.
@@ -277,7 +323,6 @@ def register(router: APIRouter, ctx: UIContext) -> None:
     _shell = ctx.shell
     _health = ctx.health
 
-
     # -- health ------------------------------------------------------------
 
     @router.get("/health", response_class=HTMLResponse, summary="Health dashboard")
@@ -292,13 +337,16 @@ def register(router: APIRouter, ctx: UIContext) -> None:
                 "overall": _STATE_WORD[health.state],
                 "checked_ago": None,
                 "notices": health_notices(_dev_admin_user(request), degraded(request.app)),
-                "components": health_rows(health, listing, _human_bytes),
+                "components": health_rows(
+                    health,
+                    listing,
+                    _human_bytes,
+                    getattr(request.app.state, "llm_thinking_probe", None),
+                ),
             },
         )
 
-    @router.get(
-        "/health/fragment", response_class=HTMLResponse, summary="Health rows (15s poll)"
-    )
+    @router.get("/health/fragment", response_class=HTMLResponse, summary="Health rows (15s poll)")
     async def health_fragment(request: Request) -> HTMLResponse:
         """The polled body of the dashboard — notices and rows, nothing else.
 
@@ -312,6 +360,11 @@ def register(router: APIRouter, ctx: UIContext) -> None:
             name="fragments/health_body.html",
             context={
                 "notices": health_notices(_dev_admin_user(request), degraded(request.app)),
-                "components": health_rows(health, listing, _human_bytes),
+                "components": health_rows(
+                    health,
+                    listing,
+                    _human_bytes,
+                    getattr(request.app.state, "llm_thinking_probe", None),
+                ),
             },
         )

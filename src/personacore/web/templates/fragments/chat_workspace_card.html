@@ -1,0 +1,34 @@
+{# fragments/chat_workspace_card.html — one workspace file's card, with its
+   own Pin/Unpin control (workspace contract §13, the joint:
+   `Workspace.pin`/`unpin`/`pinned()`, `FileEntry.pinned`).
+
+   Split out of chat_workspace_cards.html so the pin/unpin route
+   (chat_workspace.py) can hand back exactly one card — addressed by
+   `hx-target="closest .workspace-card"` — without touching its siblings:
+   pinning one file in a turn that kept several must not re-fetch or redraw
+   the others.
+
+   Context: chip (WorkspaceChip {name, url, kind_label, pinned, pin_url,
+            unpin_url}) #}
+{% from "_controls.html" import icon %}
+<span class="workspace-card hrow" style="gap:4px; align-items:stretch">
+  <a class="attach-card" href="{{ chip.url }}">
+    <span class="attach-card-icon">{{ icon('scroll') }}</span>
+    <span class="attach-card-text">
+      <span class="attach-card-title">{{ chip.name }}</span>
+      <span class="attach-card-sub">Workspace · {{ chip.kind_label }}{% if chip.pinned %} · (pinned){% endif %}</span>
+    </span>
+  </a>
+  {% if chip.pin_url and chip.unpin_url %}
+  {# A plain form works with scripts off — it posts and the route answers
+     with a 303 back to this conversation. `hx-post` on the button itself
+     asks for exactly this one card back instead, so pinning a file that
+     shares a turn with several others swaps only its own tile. #}
+  <form method="post" action="{{ chip.unpin_url if chip.pinned else chip.pin_url }}" style="margin:0">
+    <button type="submit" class="btn btn-ghost"
+            hx-post="{{ chip.unpin_url if chip.pinned else chip.pin_url }}"
+            hx-target="closest .workspace-card" hx-swap="outerHTML"
+            style="font-size:12px; padding:4px 10px; align-self:center">{{ 'Unpin' if chip.pinned else 'Pin' }}</button>
+  </form>
+  {% endif %}
+</span>
