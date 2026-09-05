@@ -5,7 +5,8 @@
      banner (str|None), rows: [{plugin, id, title, version,
      requires: [str], installed: [str], source ('bundled'|'uploaded'), valid,
      problems: [str], verdict_ok, verdict_text, plugin_enabled, greyed,
-     grey_reason}], plugin_choices: [str], upload_result {kind, message}? #}
+     grey_reason, can_run, run_refusal}], plugin_choices: [str],
+     upload_result {kind, message}? #}
 {% extends "base.html" %}
 {% from "_controls.html" import icon %}
 {% block title %}Runbooks — PersonaCore admin{% endblock %}
@@ -104,6 +105,16 @@
         {% endif %}
       </td>
       <td>
+        {% if r.can_run %}
+        <a class="btn btn-primary outlined" href="/admin/runbooks/{{ r.plugin }}/{{ r.id }}/run">Run…</a>
+        {% else %}
+        {# Interim control (this task's own brief): greyed with the compat
+           verdict, disabled with the contract's own sentence when either
+           switch is off — `r.run_refusal` already carries whichever one
+           applies (see runbooks.py's `_run_refusal`). #}
+        <span class="btn btn-primary outlined" aria-disabled="true"
+              style="opacity:0.5; pointer-events:none" title="{{ r.run_refusal }}">Run…</span>
+        {% endif %}
         <a class="btn btn-danger outlined" href="/admin/runbooks/{{ r.plugin }}/{{ r.id }}/delete/confirm">
           {{ icon('trash') }} Delete
         </a>

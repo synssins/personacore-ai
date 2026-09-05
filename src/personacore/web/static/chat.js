@@ -1509,19 +1509,21 @@
     if (e.target && e.target.id === 'chat-input') { grow(e.target); composerButton(); }
   });
   document.addEventListener('keydown', function (e) {
-    if (!e.target || e.target.id !== 'chat-input') return;
+    if (!e.target || !e.target.hasAttribute('data-send-on-enter')) return;
     if (e.key !== 'Enter' || e.shiftKey || e.altKey || e.ctrlKey || e.metaKey) return;
     if (e.isComposing) return; // mid-IME, Enter is choosing a character
     e.preventDefault();
     // 2026-09-02: hitting enter is the same thing as clicking the button. So
     // Enter is not "send" — it is whatever the one button is offering right
-    // now, which with a turn running and an empty box is stop.
+    // now, which with a turn running and an empty box is stop. For the chat
+    // composer (chat-input) only, that is stopping the reply; for the gate
+    // question "Other" box, it is submitting its own form.
     var button = document.getElementById('chat-send');
-    if (button && button.hasAttribute('data-stopping')) {
+    if (e.target.id === 'chat-input' && button && button.hasAttribute('data-stopping')) {
       stopTheReply();
       return;
     }
-    var form = document.getElementById('chat-form');
+    var form = e.target.closest('form');
     if (form && form.requestSubmit) form.requestSubmit();
     else if (form) form.submit();
   });

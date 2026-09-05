@@ -123,6 +123,10 @@ from personacore.web.screens.chat_exchange import (
     _offer,  # noqa: F401 - kept importable from this screen; see the note below
     _takes_authorship,
 )
+from personacore.web.screens.chat_picker import (
+    runbook_picker_enabled,
+    runbook_picker_rows,
+)
 from personacore.web.screens.chat_reply import (
     AUDIO_URL_PREFIX,
     MAX_TOOL_NAME_LENGTH,  # noqa: F401 - kept importable from this screen; see the note below
@@ -165,6 +169,15 @@ from personacore.web.screens.chat_room import (
     _back_to,  # noqa: F401 - kept importable from this screen; see the note below
     _chosen_persona,
     persona_choices,
+)
+from personacore.web.screens.chat_run import (
+    RUN_LOCK_HINT,
+    TEXT_ANSWER_LABEL,
+    awaiting_text_view,
+    composer_locked,
+    conversation_link_for,
+    runbook_run_view,
+    runner_for,
 )
 from personacore.web.screens.chat_streaming import (
     _KEEPALIVE,  # noqa: F401 - kept importable from this screen; see the note below
@@ -1070,6 +1083,16 @@ def register(router: APIRouter, ctx: UIContext) -> None:
         # persona, which is the same answer the next turn will get.
         found = await _looked_at(user, started)
         chosen = _chosen_persona(found)
+        runner = runner_for(request)
+        run_cid = found.conversation_id if found is not None else None
+        runbook_locked = await composer_locked(runner, run_cid)
+        run_awaiting_text = awaiting_text_view(runner, run_cid)
+        run_view = await runbook_run_view(
+            runner, run_cid, link_for=conversation_link_for(conversations, Owner.profile(user.id))
+        )
+        runbooks_store = getattr(request.app.state, "runbooks", None)
+        picker_enabled = runbook_picker_enabled(ctx.layout) and runbooks_store is not None
+        picker_rows = runbook_picker_rows(runbooks_store) if picker_enabled else []
         built = transcript_exchanges(
             rows,
             human=mine,
@@ -1127,6 +1150,26 @@ def register(router: APIRouter, ctx: UIContext) -> None:
             "me": mine,
             "chat_available": chat is not None,
             "chat_unavailable": CHAT_UNAVAILABLE,
+            # A runbook run in this conversation (contract runbook.md §3;
+            # PLAN.md web row, alpha.19). `runbook_locked` is deliberately
+            # narrower than `run.visible`: it is what disables the composer,
+            # true only while the run's own status is "running" — an
+            # interrupted or parked run shows its own line but leaves the
+            # box open.
+            "run": run_view,
+            "runbook_locked": runbook_locked,
+            "runbook_lock_hint": RUN_LOCK_HINT,
+            # WAVE2.md's text-answer mode: the composer unlocks with this
+            # label above it instead of the run-lock hint, and the send
+            # route (chat_exchange._turn) routes that one message to
+            # `runner.answer_text` rather than starting a turn.
+            "awaiting_text": run_awaiting_text,
+            "awaiting_text_label": TEXT_ANSWER_LABEL,
+            # WAVE2.md's `picker` row: the composer's "+" gains "Run a
+            # runbook..." only when the core switch is on, listing the
+            # runbooks whose own plugin has runbooks enabled.
+            "runbook_picker_enabled": picker_enabled,
+            "runbook_picker_rows": picker_rows,
             "history_messages": CHAT_HISTORY_MESSAGES,
             "dictation_enabled": _browser_dictation_enabled(),
             "mic_disclosure": MIC_DISCLOSURE,
@@ -1316,6 +1359,11 @@ def register(router: APIRouter, ctx: UIContext) -> None:
         # this whole change exists to remove.
         found = await _looked_at(user, started)
         chosen = _chosen_persona(found)
+        run_view = await runbook_run_view(
+            runner_for(request),
+            found.conversation_id if found is not None else None,
+            link_for=conversation_link_for(conversations, Owner.profile(user.id)),
+        )
         built = transcript_exchanges(
             rows,
             human=mine,
@@ -1333,6 +1381,7 @@ def register(router: APIRouter, ctx: UIContext) -> None:
             context={
                 **_room(rail, rows, mine),
                 **_rail_view(request, rail),
+                "run": run_view,
                 # The room controls follow the thread for the same reason the
                 # picker does: who else is in this conversation, and whether it
                 # speaks, are properties of the conversation being opened.

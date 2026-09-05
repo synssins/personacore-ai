@@ -8,7 +8,14 @@
                       tool_calls: [{name, took}], duration,
                       first_token, token_rate, first_audio, token_usage,
                       audio_url (str|None), audio_report_url (str|None),
-                      voice_note, replayed}
+                      voice_note, replayed,
+                      kind ('notice'|undefined), text (for kind='notice'),
+                      runbook_prompt (bool), runbook_prompt_label (str, for
+                      runbook_prompt=True) — WAVE2.md's "Run prompt rows"}
+
+   `kind == 'notice'` is a runbook's own progress line
+   (`chat_thread._notice_entry`, contract runbook.md §3) — everything else in
+   this doc describes the ordinary shape every other exchange still has.
 
    `reply_image_url` is an image conversation's whole "text" — see
    personacore.web.screens.chat_image. Absent (the ordinary case, every
@@ -77,6 +84,17 @@
   {%- endif -%}
 {%- endmacro %}
 <div class="stack" style="gap:var(--space-3)">
+  {% if exchange.kind == 'notice' %}
+  {# ── a runbook's own progress line (contract runbook.md §3 "Progress in
+     the chat"; PLAN.md web row, alpha.19) ──
+     A `system`-role transcript row, never a side of the conversation: no
+     author, no bubble, no reply-fill. `chat_thread._notice_entry` is the
+     only thing that ever sets `exchange.kind`, so this is the one place
+     that reads it. `exchange.workspace_files` is a tool step's own output,
+     shown the same `attach-card` tile a model's own tool call draws. #}
+  <p class="chat-notice" role="status">{{ exchange.text }}</p>
+  {% with chips = exchange.workspace_files %}{% include "fragments/chat_workspace_cards.html" %}{% endwith %}
+  {% else %}
   {# ── attachments the person sent — attachments.md contract §6a ──
      Images as thumbnails in a row above the message text, aligned with the
      sender; anything else as a card — the same shape whether this is a
@@ -136,7 +154,21 @@
   {% if exchange.author %}
   <p class="chat-said" style="align-self:flex-end">{{ exchange.author }}</p>
   {% endif %}
+  {% if exchange.runbook_prompt %}
+  {# ── a run's own machine-written prompt — WAVE2.md "Run prompt rows" ──
+     Recorded as an ordinary `user` row (author kind `runbook`) so it still
+     pairs with whatever answered it; drawn collapsed rather than as a full
+     bubble, because it is the script's own words to the model and not
+     something a person said. A native <details>/<summary>, no script
+     needed to open it — the same reasoning every other disclosure on this
+     page follows. #}
+  <details class="chat-notice" style="align-self:flex-end; max-width:80%; text-align:left">
+    <summary style="cursor:pointer">{{ exchange.runbook_prompt_label }}</summary>
+    <p style="white-space:pre-wrap; margin:var(--space-2) 0 0; font-size:13px">{{ exchange.message }}</p>
+  </details>
+  {% else %}
   <p style="align-self:flex-end; max-width:80%; margin:0; padding:var(--space-3) var(--space-4); border-radius:var(--radius-md); background:var(--color-accent-900); font-size:14px; white-space:pre-wrap">{{ exchange.message }}</p>
+  {% endif %}
   {% endif %}
   {% if exchange.ok %}
   {% if exchange.reply_author %}
@@ -403,5 +435,6 @@
   <p class="banner warn" role="status" style="align-self:flex-start; max-width:85%; margin:0">
     {{ icon('warn') }} {{ exchange.error }}
   </p>
+  {% endif %}
   {% endif %}
 </div>

@@ -1,0 +1,102 @@
+{# fragments/run_status.html — a runbook run's own live status line in the
+   chat window (contract runbook.md §3 "Progress in the chat"; PLAN.md web
+   row, alpha.19).
+
+   The transcript's own `system`-role notice lines
+   (chat_thread._notice_entry, drawn by fragments/chat_exchange_body.html)
+   are the run's *history* — one line per step, written once and never
+   redrawn. This is its *now*: what `chat_run.runbook_run_view` last found
+   when this was rendered, with the one control (Stop while running, Resume
+   while interrupted or parked on a failure) that line owns. Never works
+   anything out for itself — every field comes off that one dict, so the
+   full page, the poll and a Stop/Resume's own response can never disagree
+   about what a run is doing.
+
+   POLLS ITSELF ONLY WHILE THERE IS SOMETHING LEFT TO SAY: `hx-get`/
+   `hx-trigger` are on this element only when `run.poll` is true, and an
+   `outerHTML` swap replaces the whole element — attributes included. A run
+   that has nothing left to report (no run at all, parked, stopped, done or
+   failed) renders without them, which is what stops the polling; nothing
+   else has to notice that a second time.
+
+   Context: run {visible, poll, cid, message, show_stop, show_resume,
+             stop_url, resume_url,
+             gate: {question_id, text, options: [str], other (bool),
+                    index, total}|None,
+             items: [{value, status, reason, link}]}, oob (bool — true when
+             this is an out-of-band replacement, chat_messages.html
+             switching threads) — see chat_run.runbook_run_view.
+
+   `gate` and `items` are WAVE2.md's own additions — "Gate questions in the
+   chat" and a parent run's own progress lines — and each pre-empts the
+   plain message/Stop/Resume line below; `runbook_run_view` never sets more
+   than one of the three on a single view, so this template does not have
+   to reconcile them. #}
+<div id="run-status" class="chat-notice"
+     {% if oob %}hx-swap-oob="true"{% endif %}
+     {% if not run.visible %}hidden{% endif %}
+     {% if run.poll %}hx-get="/admin/chat/run/{{ run.cid }}" hx-trigger="every 4s" hx-swap="outerHTML"{% endif %}
+     role="status" style="flex-direction:column; align-items:stretch; gap:var(--space-2)">
+  {% if run.visible %}
+  {% if run.gate %}
+  {# ── a gate's own question card — WAVE2.md "Gate questions in the chat" ──
+     One option per button, each its own tiny form so no script is needed
+     to answer with a click; "Other" is a native disclosure holding one more
+     form, so the box it opens needs no script either. Posting either kind
+     re-renders this whole element (`hx-target="#run-status"
+     hx-swap="outerHTML"`) with the next question in place, or the resumed
+     status line once every question has an answer. #}
+  <div class="hrow" style="justify-content:space-between; width:100%">
+    <strong style="font-size:12px">{{ run.gate.index }} of {{ run.gate.total }}</strong>
+  </div>
+  <p style="margin:0; font-size:13px; color:var(--color-text)">{{ run.gate.text }}</p>
+  <div class="hrow" style="flex-wrap:wrap; gap:var(--space-2)">
+    {% for option in run.gate.options %}
+    <form method="post" action="/admin/chat/run/{{ run.cid }}/answer" style="margin:0"
+          hx-post="/admin/chat/run/{{ run.cid }}/answer" hx-target="#run-status" hx-swap="outerHTML">
+      <input type="hidden" name="question_id" value="{{ run.gate.question_id }}">
+      <input type="hidden" name="choice" value="{{ option }}">
+      <button type="submit" class="btn btn-secondary">{{ option }}</button>
+    </form>
+    {% endfor %}
+    {% if run.gate.other %}
+    <details>
+      <summary class="btn btn-secondary" style="display:inline-flex; cursor:pointer">Other</summary>
+      <form method="post" action="/admin/chat/run/{{ run.cid }}/answer" class="hrow"
+            style="gap:var(--space-2); margin-top:var(--space-2)"
+            hx-post="/admin/chat/run/{{ run.cid }}/answer" hx-target="#run-status" hx-swap="outerHTML">
+        <input type="hidden" name="question_id" value="{{ run.gate.question_id }}">
+        <label for="run-gate-other" style="position:absolute; left:-9999px">Your own answer</label>
+        <textarea class="input" id="run-gate-other" name="other" placeholder="Type your own answer"
+                  rows="1" data-send-on-enter style="resize:none; overflow-y:auto"></textarea>
+        <button type="submit" class="btn btn-primary">Send</button>
+      </form>
+    </details>
+    {% endif %}
+  </div>
+  {% elif run['items'] %}
+  {# ── a parent run's own progress lines — WAVE2.md's foreach/parent runs ──
+     One line per item, in the order the parent started them, each linking
+     to its own conversation once it has one (a gate parks that item's own
+     conversation, not the parent's; the parent's own line above still
+     polls while any item is not yet finished). #}
+  {% if run.message %}<span>{{ run.message }}</span>{% endif %}
+  {% for item in run['items'] %}
+  <p class="meta" style="margin:0">
+    {{ item.value }} — {{ item.status }}{% if item.reason %}: {{ item.reason }}{% endif %}
+    {% if item.link %}<a href="{{ item.link }}">Open</a>{% endif %}
+  </p>
+  {% endfor %}
+  {% else %}
+  <span>{{ run.message }}</span>
+  {% if run.show_stop %}
+  <button type="button" class="btn btn-secondary" hx-post="{{ run.stop_url }}"
+          hx-target="#run-status" hx-swap="outerHTML">Stop</button>
+  {% endif %}
+  {% if run.show_resume %}
+  <button type="button" class="btn btn-primary" hx-post="{{ run.resume_url }}"
+          hx-target="#run-status" hx-swap="outerHTML">Resume</button>
+  {% endif %}
+  {% endif %}
+  {% endif %}
+</div>

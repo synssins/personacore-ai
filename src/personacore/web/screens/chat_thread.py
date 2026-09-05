@@ -322,10 +322,19 @@ def conversation_history(
     :data:`CHAT_TRANSCRIPT_WINDOW`), the newest ``limit`` messages are kept, and
     the result comes back oldest-first because that is the order a conversation
     is read in.
+
+    A runbook run's rows are dropped too — see the loop below.
     """
     kept: list[ChatHistoryMessage] = []
     for record in records:
         if record.role not in (MessageRole.USER, MessageRole.ASSISTANT):
+            continue
+        # A runbook run writes its scripted prompts and their replies to this
+        # conversation as ordinary user/assistant rows, because they are the
+        # record of what the run did (ADR-0004) and the page draws them. They
+        # are not *history* for the next person who types here, though: replaying
+        # a script's turns would answer them out of instructions they never saw.
+        if record.author is not None and record.author.kind == AuthorKind.RUNBOOK:
             continue
         kept.append(ChatHistoryMessage(role=record.role.value, content=record.content))
         if len(kept) >= limit:
@@ -564,13 +573,33 @@ def thread_records(
 
     ``None``, or an instant nothing was said after, is an empty conversation —
     which is a real state (the screen has just been opened) and not an error.
+
+    The anchor is the group's first **spoken** row (``_spoken``, unchanged for
+    every conversation that has one — everything before runbooks) — falling
+    back to its first ``system`` row only when it has no spoken row at all
+    yet. That fallback is for a runbook's own conversation the instant after
+    ``Runner.start`` (PLAN.md web row, alpha.19): a ``tool`` step's own
+    "running"/"done" notice can be the *only* thing posted before the first
+    model turn ever writes an assistant reply, and without it such a
+    conversation would show nothing at all until one did.
+
+    The rows returned are the whole group **except** ``tool``-role ones —
+    audit-only rows never meant to be their own line — so a runbook's own
+    ``system`` notices (contract §3 "Progress in the chat") ride along with
+    the ordinary conversation rather than being stripped before
+    :func:`transcript_exchanges` ever sees them.
     """
     if started is None:
         return []
     for group in _grouped(records):
         spoken = _spoken(group)
-        if spoken and spoken[0].timestamp >= started:
-            return spoken
+        anchor = (
+            spoken[0]
+            if spoken
+            else next((row for row in group if row.role is MessageRole.SYSTEM), None)
+        )
+        if anchor is not None and anchor.timestamp >= started:
+            return [row for row in group if row.role is not MessageRole.TOOL]
     return []
 
 
@@ -693,19 +722,44 @@ def transcript_exchanges(
     """
     reasoning = reasoning_by_correlation or {}
     exchanges: list[dict[str, Any]] = []
+    # `pending` — the exchange still waiting for its reply — is tracked
+    # separately from `exchanges[-1]` so a `system` row appended in between
+    # (a runbook's own progress line, PLAN.md web row alpha.19) never becomes
+    # the thing the next real reply is folded into. Before this existed the
+    # two were the same variable, which is exactly what made a notice safe to
+    # insert here: nothing below reads `exchanges[-1]` for pairing any more.
+    pending: dict[str, Any] | None = None
     asked_at: datetime | None = None
     for record in rows:
+        if record.role is MessageRole.SYSTEM:
+            exchanges.append(_notice_entry(record, audit_rows=audit_rows))
+            continue
         if record.role is MessageRole.USER:
-            exchanges.append(
-                _replayed(
-                    message=record.content,
-                    author=author_label(record.author, fallback=human),
-                )
+            entry = _replayed(
+                message=record.content,
+                author=author_label(record.author, fallback=human),
             )
+            # A run's own machine-written prompt (WAVE2.md's "Run prompt
+            # rows"): recorded as an ordinary `user` row, author kind
+            # `runbook`, so it still pairs with whatever answered it exactly
+            # like a person's own message does — only how it is *drawn*
+            # changes (fragments/chat_exchange_body.html reads
+            # `runbook_prompt` and collapses it). The label reuses the
+            # author's own name (the step's — "Pass p2", say) exactly as
+            # every other row on this screen is headed by it; nothing new is
+            # asked of the row to build it.
+            if record.author is not None and record.author.kind == AuthorKind.RUNBOOK:
+                step_label = _plain(record.author.name) or "Runbook"
+                entry["runbook_prompt"] = True
+                entry["runbook_prompt_label"] = (
+                    f"{step_label} prompt · {len(record.content):,} characters"
+                )
+            exchanges.append(entry)
+            pending = entry
             asked_at = record.timestamp
-        elif exchanges and not exchanges[-1]["reply"]:
+        elif pending is not None and not pending["reply"]:
             _fill_reply(
-                exchanges[-1],
+                pending,
                 record,
                 fallback=assistant,
                 audit_rows=audit_rows,
@@ -713,6 +767,7 @@ def transcript_exchanges(
                 reasoning_by_correlation=reasoning,
                 context_limit=context_limit,
             )
+            pending = None
             asked_at = None
         else:
             # No `reply_author=` here. `_fill_reply` sets it on the next line
@@ -732,7 +787,33 @@ def transcript_exchanges(
                 context_limit=context_limit,
             )
             exchanges.append(entry)
+            pending = None
     return exchanges
+
+
+def _notice_entry(record: TranscriptRecord, *, audit_rows: Sequence[AuditRecord]) -> dict[str, Any]:
+    """A ``system``-role row drawn as a quiet notice rather than a bubble.
+
+    A runbook's own progress line (contract ``working/contracts/runbook.md``
+    §3, "Progress in the chat"; PLAN.md's ``web`` row, alpha.19) — never part
+    of either side of the conversation, so it gets no author, no reply-fill
+    pairing and none of a turn's own metrics. ``fragments/chat_exchange_body.
+    html`` reads ``kind`` to draw this in place of the whole of the rest of
+    that template.
+
+    ``workspace_files`` reuses the exact read :func:`_fill_reply` gives a
+    model reply's own files (:func:`_workspace_detail_for`, keyed by this
+    row's own correlation id) — a tool step's output is shown as the same
+    card a model's own tool call draws, per the contract's "the file as a
+    card."
+    """
+    return {
+        "kind": "notice",
+        "text": record.content,
+        "workspace_files": workspace_files_from_detail(
+            _workspace_detail_for(audit_rows, record.correlation_id)
+        ),
+    }
 
 
 def _fill_reply(
@@ -965,6 +1046,11 @@ def _replayed(
         "audio_report_url": None,
         "voice_note": None,
         "replayed": True,
+        # WAVE2.md "Run prompt rows" — set true only for a `user` row whose
+        # author kind is `runbook`; every other exchange leaves these at
+        # their default so the template's plain bubble is what draws.
+        "runbook_prompt": False,
+        "runbook_prompt_label": "",
     }
 
 

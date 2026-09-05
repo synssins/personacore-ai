@@ -62,6 +62,7 @@ from personacore.web.screens import chat_attachments, chat_image
 from personacore.web.screens import chat_voices as voices
 from personacore.web.screens.chat_audio import speaker
 from personacore.web.screens.chat_reply import _refused, chat_exchange
+from personacore.web.screens.chat_run import _refusal_message, runner_for
 from personacore.web.screens.chat_thread import (
     ASSISTANT_UNATTRIBUTED,
     CHAT_HISTORY_MESSAGES,
@@ -601,6 +602,35 @@ def register(router: APIRouter, view: ChatView) -> ChatExchange:
         pressed (attachments.md contract §5).
         """
         user = require_user(request)
+
+        # WAVE2.md's text-answer mode: when a model-written gate's JSON did
+        # not parse, the run parks waiting on one typed message instead of a
+        # button press, and `Runner.awaiting_text` says so. Checked first,
+        # explicitly, and branched on here — before attachments, before the
+        # image-kind check, before anything else this route would otherwise
+        # do with the words — because a message answering a gate is not an
+        # ordinary turn at all: it never reaches the language model, it
+        # reaches `Runner.answer_text` instead. Nothing is rendered by this
+        # route for it; the run's own writes to the transcript (its usual
+        # progress rows, contract runbook.md §3) are what show the answer
+        # and whatever comes next, the same "rail catching up and nothing
+        # else" an unclaimed message already answers with
+        # (`_recorded_unanswered`'s own docstring).
+        runner = runner_for(request)
+        if runner is not None and started is not None:
+            existing = await conversations.at(Owner.profile(user.id), started, create=False)
+            cid = existing.conversation_id if existing is not None else None
+            if cid:
+                try:
+                    awaiting = bool(runner.awaiting_text(cid))
+                except Exception:  # noqa: BLE001 - an unreadable gate is not answered here
+                    awaiting = False
+                if awaiting:
+                    try:
+                        await runner.answer_text(Owner.profile(user.id), cid, message)
+                    except Exception as exc:  # noqa: BLE001 - RunRefused's sentence, never a 500
+                        return [_refused(message, _refusal_message(exc))]
+                    return []
 
         # Contract §4 (image-conversations.md). Not a check of its own — the
         # one function both send paths ask, so a kind that is not text is

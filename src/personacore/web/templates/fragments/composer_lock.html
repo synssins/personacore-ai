@@ -1,0 +1,37 @@
+{# fragments/composer_lock.html — the composer's own lock state, out of
+   band. Answered alongside `fragments/run_status.html` by every route
+   `chat_run.py` has (the status poll, Stop, Resume, and a gate's own
+   Answer) — this task's rework item 1: Stop's own response used to carry
+   only the status line, and the textarea and Send button sit outside it in
+   `chat.html`, so pressing Stop left the box disabled until the next full
+   page load. Swapping these three elements out of band alongside the
+   status line is what unlocks the box in the same response.
+
+   `hx-swap-oob="true"` finds the element already on the page by `id` and
+   replaces it in place — these do not need to sit inside `#chat-form`
+   themselves for that to work, only to carry the same three ids `chat.html`
+   gives the textarea, the Send button and the run-lock hint.
+
+   Context: locked (bool), awaiting_text (bool — WAVE2.md's text-answer
+     mode; wins over `locked`, which `chat_run.composer_locked` already
+     guarantees is false whenever this is true), hint (str —
+     chat_run.RUN_LOCK_HINT), awaiting_text_label (str —
+     chat_run.TEXT_ANSWER_LABEL), max_message_chars (int). #}
+<textarea class="input" id="chat-input" name="message" rows="1"
+          maxlength="{{ max_message_chars }}"
+          placeholder="Ask something the assistant should be able to answer"
+          hx-swap-oob="true"
+          {% if awaiting_text %}aria-describedby="chat-run-hint"{% elif locked %}aria-describedby="chat-run-hint" disabled{% endif %}></textarea>
+<button type="submit" class="chat-send" id="chat-send" data-chat-send
+        aria-label="Send" title="Send" hx-swap-oob="true"
+        {% if locked and not awaiting_text %}disabled{% endif %}>
+  <span data-send-glyph aria-hidden="true">
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8"
+         stroke-linecap="round" stroke-linejoin="round"><path d="M8 13V3M3.5 7.5L8 3l4.5 4.5"/></svg>
+  </span>
+  <span data-stop-glyph aria-hidden="true" hidden>
+    <svg viewBox="0 0 16 16" fill="currentColor"><rect x="4.5" y="4.5" width="7" height="7" rx="1"/></svg>
+  </span>
+</button>
+<p class="meta" id="chat-run-hint" hx-swap-oob="true" style="margin:0"
+   {% if not (locked or awaiting_text) %}hidden{% endif %}>{{ awaiting_text_label if awaiting_text else hint }}</p>

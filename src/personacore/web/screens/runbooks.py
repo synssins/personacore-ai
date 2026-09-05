@@ -36,16 +36,41 @@ renders, with those two columns simply empty rather than a crash.
 carries a compatibility *sentence* for the Verdict column — "Compatible." when
 ``ok``, else the reasons it is not (or "Not compatible." when a non-``ok``
 verdict carries no reasons of its own).
+
+**Run… (alpha.19, PLAN.md's ``web`` row) is interim — the Runbooks screen,
+not the ``+`` picker the contract eventually wants (contract §1.1 was
+revised to the picker the same day this alpha's own brief was written; the
+picker is a later alpha).** The same duck-typing rule extends to
+``app.state.runner``: this module never imports
+``personacore.runbooks.runner`` or ``personacore.runbooks.state`` (the
+``engine``/``state`` subtasks running in this same tree at the same time),
+only reads the attribute with ``getattr`` and calls it in the exact shape
+PLAN.md's Joints promise (``start``), catching whatever it raises for
+``RunRefused``'s own ``message`` the same tolerant way an upload's
+``ValidationError`` is read above. ``RunbookRecord`` carries no parsed
+``inputs:``/``persona:`` of its own (:mod:`personacore.runbooks.store` never
+promised the whole document, only the metadata this screen already used) —
+:func:`_load_inputs_and_persona` reads ``record.path`` itself, tolerantly,
+for exactly those two fields, rather than waiting on a new store method
+that would be somebody else's file to add mid-alpha.
 """
 
 from __future__ import annotations
 
+import inspect
 import re
+from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
+import yaml
 from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+from personacore.audit.models import Owner, Surface
+from personacore.conversations.service import ConversationService
+from personacore.web.screens.chat_room import persona_choices
+from personacore.web.screens.chat_run import GENERIC_RUN_REFUSAL, RUN_UNAVAILABLE, runner_for
 from personacore.web.screens.plugin_common import (
     plugin_name_or_404,
     plugin_supports_runbooks,
@@ -128,6 +153,277 @@ DELETE_LABEL = "Delete this runbook"
 DELETE_NOT_FOUND = "There is no such runbook."
 
 DELETE_UNAVAILABLE = "Runbooks are not available in this build, so nothing can be deleted."
+
+RUN_NOT_FOUND = "There is no such runbook."
+
+RUN_TOO_LONG_HELP = "one number, a range like 1-12, or a list like 1,3,5"
+"""Contract §1.12's own wording for a ``range``/``list`` input — this alpha's
+schema (``personacore.runbooks.schema.InputType``) does not know either type
+yet (PLAN.md: "NOT this alpha: foreach iteration"), so any ``type:`` this
+screen does not recognise gets a plain text box with this same help rather
+than being refused, which is what lets a runbook author write one ahead of
+the core catching up without the Run… form breaking on it."""
+
+RUN_INVALID_REFUSAL = "This runbook is not valid, so it cannot run."
+
+
+def _run_refusal(row: dict[str, Any], *, core_enabled: bool) -> str | None:
+    """Whether **Run…** may be pressed for one row, and the sentence to show
+    when it may not (this task's own brief: "greyed with the compat verdict,
+    and disabled with the contract's sentence when either switch is off").
+
+    Reuses :func:`runbook_row`'s own fields rather than a second read of the
+    record, so the Verdict column and the reason Run… is refused for can
+    never disagree about the same runbook.
+    """
+    if not core_enabled:
+        return RUNBOOKS_OFF_BANNER
+    if row["greyed"]:
+        # The contract's own sentence, verbatim — no formatted variant
+        # (this task's rework item 2). It used to read "Nothing was
+        # started: runbooks are off for this plugin for 'plugin'.", which
+        # is not the sentence the contract names.
+        return PLUGIN_OFF_REASON
+    if not row["valid"]:
+        return RUN_INVALID_REFUSAL
+    if not row["verdict_ok"]:
+        return row["verdict_text"] or "This runbook is not compatible."
+    return None
+
+
+def _load_inputs_and_persona(record: Any) -> tuple[list[dict[str, Any]], str | None]:
+    """The runbook's own ``inputs:`` and default ``persona:`` (contract §2),
+    read straight off its file.
+
+    Never raises: a file that has vanished, that is not readable, or that is
+    not even YAML any more comes back as "no inputs, no persona default" —
+    the same "nothing to show, not a guess" this screen's other tolerant
+    reads already practice (see the module docstring). This is a *second*
+    parse of a file the validator already proved parses (``RunbookStore``
+    would not have listed it as ``valid`` otherwise); it is not re-validated
+    here, only read for two fields no ``RunbookRecord`` carries.
+    """
+    path = getattr(record, "path", None)
+    if not path:
+        return [], None
+    try:
+        document = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, yaml.YAMLError):
+        return [], None
+    if not isinstance(document, dict):
+        return [], None
+    inputs: list[dict[str, Any]] = []
+    for item in document.get("inputs") or []:
+        if not isinstance(item, dict):
+            continue
+        name = item.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        inputs.append(
+            {
+                "name": name,
+                "type": item.get("type") if isinstance(item.get("type"), str) else "string",
+                "prompt": item.get("prompt") if isinstance(item.get("prompt"), str) else name,
+                "default": item.get("default"),
+            }
+        )
+    persona = document.get("persona")
+    return inputs, persona if isinstance(persona, str) and persona else None
+
+
+def _load_steps(record: Any) -> list[dict[str, Any]]:
+    """The runbook's own ``steps:`` — id, kind, thinking, writes (WAVE2.md's
+    picker: "the step preview: id, kind, thinking, writes") — read straight
+    off its file, the same tolerant second read
+    :func:`_load_inputs_and_persona` already gives ``inputs:``/``persona:``
+    (see that function's own docstring for why a second parse of an
+    already-validated file is fine here): a file that has vanished, is not
+    readable, or is not even YAML any more comes back as "no steps" rather
+    than raising.
+    """
+    path = getattr(record, "path", None)
+    if not path:
+        return []
+    try:
+        document = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, yaml.YAMLError):
+        return []
+    if not isinstance(document, dict):
+        return []
+    steps: list[dict[str, Any]] = []
+    for item in document.get("steps") or []:
+        if not isinstance(item, dict):
+            continue
+        step_id = item.get("id")
+        if not isinstance(step_id, str) or not step_id:
+            continue
+        # There is no literal `writes:` key in the file format (see
+        # docs/wiki/Runbooks.md) — a `tool` step names its roles in
+        # `files:` (a role -> filename mapping), and a `model` step's own
+        # `output:` is filed under the role that is simply its own step id
+        # ("its own role is the step id", same doc). Both read here as the
+        # role name(s) this preview column shows, never a filename: WAVE2.md
+        # asks for "writes", and a role is the stable thing a later step
+        # actually pins, where a filename is an implementation detail.
+        files = item.get("files")
+        if isinstance(files, dict) and files:
+            writes: str | None = ", ".join(sorted(str(role) for role in files))
+        elif isinstance(item.get("output"), str) and item.get("output"):
+            writes = step_id
+        else:
+            writes = None
+        steps.append(
+            {
+                "id": step_id,
+                "kind": item.get("kind") if isinstance(item.get("kind"), str) else "",
+                "thinking": bool(item.get("thinking", False)),
+                "writes": writes,
+            }
+        )
+    return steps
+
+
+def _dependents_of(runner: Any, record: Any, step_id: str) -> list[str]:
+    """A step's own dependents, from ``Runner.dependents_of`` (WAVE2.md's
+    Joints: ``dependents_of(self, runbook, step_id) -> list[str]``) — read
+    tolerantly: no runner, no such method, or a call that raises all answer
+    "nothing depends on it", which only ever costs a checkbox staying
+    enabled that a person could still choose not to touch; the server is
+    still where an impossible skip is actually refused (``Runner.start``'s
+    own validation).
+
+    **Assumption flagged, not confirmed** (CLAUDE.md: "open the file before
+    you write down what it does" — this is the file this module has). The
+    Joints type ``runbook`` as a parsed ``Runbook``
+    (``personacore.runbooks.schema``), which this module never imports (see
+    the module docstring) and so never holds one of. ``record`` — this
+    screen's own :class:`RunbookRecord` — is passed here instead, as the
+    closest duck-typed stand-in this module has for "the runbook the picker
+    is showing". If the real ``Runner`` requires the parsed object instead,
+    this call needs a second look once ``iteration``/``gates`` land — noted
+    here rather than guessed silently past.
+    """
+    getter = getattr(runner, "dependents_of", None) if runner is not None else None
+    if getter is None:
+        return []
+    try:
+        return [str(one) for one in (getter(record, step_id) or ())]
+    except Exception:  # noqa: BLE001 - a broken dependency read enables a box, not a 500
+        return []
+
+
+def _step_rows(
+    steps: list[dict[str, Any]],
+    runner: Any,
+    record: Any,
+    *,
+    requested_run: dict[str, bool] | None = None,
+) -> list[dict[str, Any]]:
+    """One row per step for the picker's own step preview (WAVE2.md's
+    ``picker`` row): id, kind, thinking, writes, and a "run this step"
+    checkbox, ticked by default.
+
+    A step a later un-skipped step depends on is disabled and forced to
+    run, with the hint "needed by {id}" — computed against whichever steps
+    are, right now, set to run: every step, for the form's first
+    (unposted) view, or ``requested_run``'s own reading of a form already
+    posted once (:func:`_requested_run_from_form`) when a blocked Start is
+    re-rendering the same page.
+    """
+    requested = dict(requested_run or {})
+    rows = [{**step, "running": requested.get(step["id"], True)} for step in steps]
+    for row in rows:
+        dependents = _dependents_of(runner, record, row["id"])
+        blocking = next((dep for dep in dependents if requested.get(dep, True)), None)
+        row["disabled"] = blocking is not None
+        row["hint"] = f"needed by {blocking}" if blocking else ""
+        if row["disabled"]:
+            row["running"] = True
+    return rows
+
+
+def _requested_run_from_form(form: Any, steps: list[dict[str, Any]]) -> dict[str, bool]:
+    """Which steps a posted form's own checkboxes asked to run, before
+    disabling is recomputed against it (:func:`_step_rows`) — read straight
+    off the form and never trusted for anything else; :func:`_collect_skip`
+    is what actually decides what is skipped, once disabling is known.
+    """
+    return {step["id"]: ("1" in form.getlist(f"run__{step['id']}")) for step in steps}
+
+
+def _collect_skip(rows: list[dict[str, Any]]) -> list[str]:
+    """Which step ids ``Start`` should skip, from :func:`_step_rows`'s own
+    resolved ``running`` flag — already forced ``True`` for a row this
+    screen disabled, so a ``disabled`` row is never skipped regardless of
+    what a tampered request sent for it (``_step_rows`` never even reads a
+    disabled row's own field back off the form). ``Runner.start`` is still
+    the one that refuses an impossible skip outright (WAVE2.md: "the server
+    still validates at Start and refuses with the sentence") — this is only
+    what the picker itself will ever offer.
+    """
+    return [row["id"] for row in rows if not row["running"]]
+
+
+def _accepts_skip(runner: Any) -> bool:
+    """Whether ``Runner.start`` takes a ``skip`` keyword — the same
+    discovery :func:`personacore.web.screens.chat_exchange._takes` makes for
+    a chat runner's own newer keywords, and for the same reason: a
+    ``Runner`` from before ``skip`` existed raises ``TypeError`` on it, and
+    this screen reports a refusal rather than crashing a Start it could
+    otherwise have made.
+    """
+    try:
+        return "skip" in inspect.signature(runner.start).parameters
+    except (TypeError, ValueError, AttributeError):
+        return False
+
+
+def _input_field(spec: dict[str, Any], values: dict[str, Any] | None) -> dict[str, Any]:
+    """One ``inputs:`` entry, as ``runbook_run.html`` draws it.
+
+    ``integer``/``string``/``boolean`` (the schema's own three, contract §2)
+    map onto ``number``/``text``/``checkbox``; anything else — ``range``,
+    ``list``, or a type this screen has simply never seen — is a text box
+    passed through as a string, with :data:`RUN_TOO_LONG_HELP` (this task's
+    own brief, and contract §1.12 verbatim).
+    """
+    name = spec["name"]
+    itype = spec.get("type")
+    prompt = spec.get("prompt") or name
+    default = spec.get("default")
+    posted = None if values is None else values.get(name)
+    if itype == "boolean":
+        checked = bool(posted) if posted is not None else bool(default)
+        return {"name": name, "prompt": prompt, "control": "checkbox", "checked": checked}
+    control = "number" if itype == "integer" else "text"
+    help_text = None if itype in ("integer", "string") else RUN_TOO_LONG_HELP
+    value = posted if posted is not None else ("" if default is None else default)
+    return {"name": name, "prompt": prompt, "control": control, "value": value, "help": help_text}
+
+
+def _collect_inputs(form: Any, fields: list[dict[str, Any]]) -> dict[str, Any]:
+    """Posted form values, typed per :func:`_input_field`'s own ``control``.
+
+    A number field that will not parse is passed through as the raw string
+    rather than refused here — ``Runner.start`` is where a bad input becomes
+    a plain sentence (``RunRefused``, PLAN.md's Joints), and duplicating that
+    judgement in two places is how the two end up disagreeing about what
+    "bad" means.
+    """
+    inputs: dict[str, Any] = {}
+    for field in fields:
+        name = field["name"]
+        if field["control"] == "checkbox":
+            inputs[name] = form.get(name) is not None
+        elif field["control"] == "number":
+            raw = str(form.get(name) or "").strip()
+            try:
+                inputs[name] = int(raw)
+            except ValueError:
+                inputs[name] = raw
+        else:
+            inputs[name] = str(form.get(name) or "")
+    return inputs
 
 
 def _format_requires(requires: dict[str, str]) -> list[str]:
@@ -225,11 +521,16 @@ def register(router: APIRouter, ctx: UIContext) -> None:
         return False
 
     async def _rows(request: Request, store: Any) -> list[dict[str, Any]]:
+        core_enabled = _core_runbooks_enabled()
         records = store.list()
-        return [
-            runbook_row(record, plugin_enabled=bool(store.plugin_enabled(record.plugin)))
-            for record in records
-        ]
+        rows: list[dict[str, Any]] = []
+        for record in records:
+            row = runbook_row(record, plugin_enabled=bool(store.plugin_enabled(record.plugin)))
+            refusal = _run_refusal(row, core_enabled=core_enabled)
+            row["run_refusal"] = refusal
+            row["can_run"] = refusal is None
+            rows.append(row)
+        return rows
 
     async def _page_context(
         request: Request, *, upload_result: dict[str, str] | None = None
@@ -440,6 +741,189 @@ def register(router: APIRouter, ctx: UIContext) -> None:
             )
         return RedirectResponse(RUNBOOKS_PATH, status_code=status.HTTP_303_SEE_OTHER)
 
+    # -- Run… (interim: this screen, not the + picker; contract §3 "Start") --
+
+    async def _row_or_404(request: Request, plugin: str, runbook_id: str) -> tuple[Any, dict]:
+        """The record *and* its row (``runbook_row``'s own dict, plus
+        ``run_refusal``/``can_run``) for one runbook — the run form needs
+        both: the record for its file (:func:`_load_inputs_and_persona`) and
+        the row for whether it may run at all."""
+        plugin_name_or_404(plugin)
+        _runbook_id_or_404(runbook_id)
+        store = _store(request)
+        if store is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, RUN_NOT_FOUND)
+        core_enabled = _core_runbooks_enabled()
+        for record in store.list():
+            if record.plugin == plugin and record.id == runbook_id:
+                row = runbook_row(record, plugin_enabled=bool(store.plugin_enabled(plugin)))
+                refusal = _run_refusal(row, core_enabled=core_enabled)
+                row["run_refusal"] = refusal
+                row["can_run"] = refusal is None
+                return record, row
+        raise HTTPException(status.HTTP_404_NOT_FOUND, RUN_NOT_FOUND)
+
+    async def _run_form_context(
+        request: Request,
+        plugin: str,
+        runbook_id: str,
+        *,
+        blocking_refusal: str | None = None,
+        runtime_refusal: str | None = None,
+        values: dict[str, Any] | None = None,
+        posted_persona: str | None = None,
+        requested_run: dict[str, bool] | None = None,
+    ) -> dict[str, Any]:
+        """The form's context — twice a refusal can happen, and only one of
+        them hides the form.
+
+        ``blocking_refusal`` (or ``row["run_refusal"]`` itself: an off
+        switch, an incompatible or invalid runbook) means nothing here could
+        ever start, so the form is gone and only the sentence remains.
+        ``runtime_refusal`` — ``Runner.start`` raising ``RunRefused`` over
+        these particular inputs — is this task's own brief's "renders its
+        sentence *on* the form": the sentence appears above a form that is
+        still there, because different inputs might not be refused.
+        """
+        record, row = await _row_or_404(request, plugin, runbook_id)
+        inputs, persona_default = _load_inputs_and_persona(record)
+        fields = [_input_field(spec, values) for spec in inputs]
+        default_persona = posted_persona or persona_default or ctx.personas.default_persona
+        blocking = blocking_refusal or row["run_refusal"]
+        steps = _load_steps(record)
+        step_rows = _step_rows(steps, runner_for(request), record, requested_run=requested_run)
+        return {
+            **await _shell(request, "runbooks"),
+            "plugin": plugin,
+            "id": runbook_id,
+            "title": row["title"],
+            "refusal": blocking or runtime_refusal,
+            "runnable": blocking is None,
+            "steps": step_rows,
+            "fields": fields,
+            "personas": persona_choices(ctx.personas, default=default_persona),
+        }
+
+    @router.get(
+        "/runbooks/{plugin}/{runbook_id}/run",
+        response_class=HTMLResponse,
+        summary="Run a runbook: the inputs form",
+    )
+    async def runbook_run_form(request: Request, plugin: str, runbook_id: str) -> HTMLResponse:
+        return templates.TemplateResponse(
+            request=request,
+            name="runbook_run.html",
+            context=await _run_form_context(request, plugin, runbook_id),
+        )
+
+    @router.post(
+        "/runbooks/{plugin}/{runbook_id}/run",
+        response_class=HTMLResponse,
+        response_model=None,
+        summary="Start a run",
+    )
+    async def runbook_run_start(
+        request: Request, plugin: str, runbook_id: str
+    ) -> HTMLResponse | RedirectResponse:
+        """Contract §3 "Start" (interim: this screen's own form, not the +
+        picker — see the module docstring). ``RunRefused`` — read the same
+        tolerant way an upload's ``ValidationError`` is above — renders its
+        sentence back on this same form (200), never a 500 and never a
+        redirect that pretends something started."""
+        record, row = await _row_or_404(request, plugin, runbook_id)
+        form = await request.form()
+        try:
+            inputs_raw, persona_default = _load_inputs_and_persona(record)
+            fields = [_input_field(spec, None) for spec in inputs_raw]
+            inputs = _collect_inputs(form, fields)
+            posted_persona = str(form.get("persona") or "").strip() or None
+            steps = _load_steps(record)
+            requested_run = _requested_run_from_form(form, steps)
+        finally:
+            await form.close()
+
+        runner = runner_for(request)
+        step_rows = _step_rows(steps, runner, record, requested_run=requested_run)
+        skip = _collect_skip(step_rows)
+
+        if row["run_refusal"] is not None:
+            return templates.TemplateResponse(
+                request=request,
+                name="runbook_run.html",
+                context=await _run_form_context(
+                    request,
+                    plugin,
+                    runbook_id,
+                    values=inputs,
+                    posted_persona=posted_persona,
+                    requested_run=requested_run,
+                ),
+            )
+
+        user = ctx.require_user(request)
+        owner = Owner.profile(user.id)
+        if runner is None:
+            return templates.TemplateResponse(
+                request=request,
+                name="runbook_run.html",
+                context=await _run_form_context(
+                    request,
+                    plugin,
+                    runbook_id,
+                    blocking_refusal=RUN_UNAVAILABLE,
+                    values=inputs,
+                    posted_persona=posted_persona,
+                    requested_run=requested_run,
+                ),
+            )
+        try:
+            start_kwargs: dict[str, Any] = {
+                "owner": owner,
+                "plugin": plugin,
+                "runbook_id": runbook_id,
+                "inputs": inputs,
+                "persona": posted_persona,
+            }
+            # A runner from before `skip` existed (WAVE2.md's `state2`/
+            # `iteration` subtasks, landing in this same tree) raises
+            # `TypeError` on a keyword it does not know — see `_accepts_skip`
+            # — so this is only ever sent to a runner that has it, and never
+            # sent at all otherwise (an older runner simply cannot skip a
+            # step, which is this feature's own honest starting state).
+            if _accepts_skip(runner):
+                start_kwargs["skip"] = skip
+            state = await runner.start(**start_kwargs)
+        except Exception as exc:  # noqa: BLE001 - RunRefused's sentence, never a 500
+            message = getattr(exc, "message", None)
+            if not isinstance(message, str) or not message.strip():
+                message = str(exc).strip() or GENERIC_RUN_REFUSAL
+            return templates.TemplateResponse(
+                request=request,
+                name="runbook_run.html",
+                context=await _run_form_context(
+                    request,
+                    plugin,
+                    runbook_id,
+                    runtime_refusal=message,
+                    values=inputs,
+                    posted_persona=posted_persona,
+                    requested_run=requested_run,
+                ),
+            )
+
+        # `state.conversation_id` is this module's own assumption about a
+        # Joint PLAN.md does not name — see chat_run.py's module docstring.
+        # Missing or unresolvable, this still starts the run; it only fails
+        # to know which chat to send the operator straight to.
+        target = "/admin/chat"
+        conversation_id = getattr(state, "conversation_id", "") or ""
+        if conversation_id:
+            conversations = ConversationService(ctx.audit, surface=Surface.ADMIN_UI)
+            conversation = await conversations.resolve(owner, conversation_id=conversation_id)
+            if conversation is not None:
+                target = f"/admin/chat?c={quote(conversation.started_at.isoformat())}"
+        return RedirectResponse(target, status_code=status.HTTP_303_SEE_OTHER)
+
 
 __all__ = [
     "DELETE_BODY",
@@ -456,6 +940,9 @@ __all__ = [
     "RUNBOOKS_ROUTE",
     "RUNBOOKS_UNAVAILABLE",
     "RUNBOOK_ID_PATTERN",
+    "RUN_INVALID_REFUSAL",
+    "RUN_NOT_FOUND",
+    "RUN_TOO_LONG_HELP",
     "SOURCE_BUNDLED",
     "SOURCE_UPLOADED",
     "UPLOAD_EXTENSIONS",

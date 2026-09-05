@@ -358,6 +358,25 @@
     opacity: 0; margin: 0; padding: 0; border: 0; cursor: pointer;
   }
 
+  /* ── a runbook's progress line, and its own live status — contract
+     runbook.md §3 "Progress in the chat"; PLAN.md web row, alpha.19 ──
+     Quiet: it reports, it does not converse, so it takes neither bubble's
+     side and neither bubble's weight — a dashed pill in the middle of the
+     column rather than a filled one against either edge. `#run-status`
+     reuses the same look for the run's own live line (Running/Interrupted/
+     parked), with its Stop or Resume control inline — "a Stop control on
+     the running line" is this line's own button, not a bar of its own. */
+  .chat-notice {
+    align-self: center; max-width: 90%; margin: 0; display: flex;
+    align-items: center; flex-wrap: wrap; gap: var(--space-2); font-size: 12px;
+    color: color-mix(in srgb, var(--color-text) 60%, transparent);
+    background: var(--color-surface); border: 1px dashed var(--color-divider);
+    border-radius: var(--radius-md); padding: var(--space-2) var(--space-3);
+  }
+  #run-status { margin: 0 var(--space-6) var(--space-2); }
+  #run-status[hidden] { display: none; }
+  #run-status .btn { font-size: 12px; padding: 2px var(--space-2); }
+
   /* ── a message waiting its turn — composer.md contract §3 ──
      A send while a reply is being written queues; only stop stops. The person
      has to be able to see that it is waiting and take it back before it goes,
@@ -545,6 +564,12 @@
       {% include "fragments/chat_body.html" %}
     </div>
 
+    {# ── a runbook run's own live line — contract runbook.md §3, PLAN.md
+       web row alpha.19. Polls itself (see fragments/run_status.html) only
+       while there is something left to say; nothing else on this page has
+       to notice when that stops. #}
+    {% include "fragments/run_status.html" %}
+
     {# ── the composer, pinned ── #}
     <div class="chat-foot">
       {% if note %}
@@ -634,6 +659,43 @@
               </span>
             </button>
           </form>
+
+          {# ── "Run a runbook…" — WAVE2.md's `picker` row ──
+             Shown only when the core switch is on (contract's own
+             acceptance line: "The + entry shows only when the core switch
+             is on"). A flat list, one row per runbook whose own plugin has
+             runbooks enabled — a plugin with the switch off is left out of
+             this list entirely rather than greyed (the acceptance line:
+             "the list shows no plugin whose runbooks are off"); greying
+             here is only for a runbook that is itself invalid or
+             incompatible, same wording the Runbooks screen's own table
+             uses. Choosing one is a plain link to the Run… form (the same
+             one the Runbooks screen offers, now carrying the step preview
+             and skip checkboxes below), reachable with no script at all. #}
+          {% if runbook_picker_enabled %}
+          <div class="sheet-section">
+            <p class="sheet-section-title">Run a runbook…</p>
+            <div class="sheet-rows">
+              {% if not runbook_picker_rows %}
+              <p class="meta" style="margin:0; padding:0 var(--space-3)">No runbooks are available to run.</p>
+              {% endif %}
+              {% for row in runbook_picker_rows %}
+              {% if row.greyed or row.invalid %}
+              <span class="sheet-row" aria-disabled="true" style="opacity:0.6; cursor:default" title="{{ row.verdict_text }}">
+                <span class="sheet-row-text">
+                  <span class="sheet-row-name">{{ row.label }}</span>
+                  {% if row.verdict_text %}<span class="sheet-row-why">{{ row.verdict_text }}</span>{% endif %}
+                </span>
+              </span>
+              {% else %}
+              <a class="sheet-row" href="{{ row.run_url }}">
+                <span class="sheet-row-text"><span class="sheet-row-name">{{ row.label }}</span></span>
+              </a>
+              {% endif %}
+              {% endfor %}
+            </div>
+          </div>
+          {% endif %}
         </details>
         {% endif %}
 
@@ -791,7 +853,9 @@
           <textarea class="input" id="chat-input" name="message" rows="1"
                     maxlength="{{ max_message_chars }}"
                     placeholder="Ask something the assistant should be able to answer"
-                    {% if not chat_available %}disabled{% endif %}></textarea>
+                    data-send-on-enter
+                    {% if runbook_locked or awaiting_text %}aria-describedby="chat-run-hint"{% endif %}
+                    {% if not chat_available or (runbook_locked and not awaiting_text) %}disabled{% endif %}></textarea>
 
           {# ── the one send/stop button (contract §4a) ──
              One control, two states, in one place: idle and while there is
@@ -810,7 +874,7 @@
              else on the surface draws a filled square. #}
           <button type="submit" class="chat-send" id="chat-send" data-chat-send
                   aria-label="Send" title="Send"
-                  {% if not chat_available %}disabled{% endif %}>
+                  {% if not chat_available or (runbook_locked and not awaiting_text) %}disabled{% endif %}>
             <span data-send-glyph aria-hidden="true">
               <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8"
                    stroke-linecap="round" stroke-linejoin="round"><path d="M8 13V3M3.5 7.5L8 3l4.5 4.5"/></svg>
@@ -820,6 +884,12 @@
             </span>
           </button>
         </div>
+
+        {# ── the runbook lock's own hint — contract runbook.md §3 "The chat
+           box is locked while a run is active": the disabled textarea above
+           says nothing on its own, so this line says why (composer.md's own
+           "the honest line" reasoning, just below, for the same shape). #}
+        <p class="meta" id="chat-run-hint" {% if not (runbook_locked or awaiting_text) %}hidden{% endif %} style="margin:0">{{ awaiting_text_label if awaiting_text else runbook_lock_hint }}</p>
 
         {# ── the microphone ──
            Server-side gated on the admin's browser-dictation switch

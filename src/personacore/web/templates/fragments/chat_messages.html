@@ -2,7 +2,9 @@
    Context: exchanges [dict], conversation, conversations [ConversationRow],
             conversation_groups [RailGroup], conversations_shown,
             swap_rail (true), swap_room (true), personas [PersonaChoice],
-            title, group, groups, participants, manages_rooms
+            title, group, groups, participants, manages_rooms,
+            run {visible, poll, cid, message, show_stop, show_resume,
+                 stop_url, resume_url} — chat_run.runbook_run_view
 
    The messages replace #chat-messages and nothing else happens: no navigation,
    no page render, the composer keeps its focus and whatever was half-typed in
@@ -36,3 +38,6 @@
    the same `swap_roster` flag because it is replaced by the same responses. #}
 {% include "fragments/chat_speech_switch.html" %}
 {% include "fragments/chat_markers.html" %}
+{# The run line names the conversation it belongs to, exactly like the
+   controls above it — contract runbook.md §3, PLAN.md web row alpha.19. #}
+{% with oob = True %}{% include "fragments/run_status.html" %}{% endwith %}

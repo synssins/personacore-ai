@@ -90,6 +90,7 @@ from personacore.web.auth_pages import create_account_router
 from personacore.web.screens import chat as chat_screen
 from personacore.web.screens import chat_attachments as chat_attachments_screen
 from personacore.web.screens import chat_audio as chat_audio_screen
+from personacore.web.screens import chat_run as chat_run_screen
 from personacore.web.screens import chat_workspace as chat_workspace_screen
 from personacore.web.screens import core as core_screen
 from personacore.web.screens import health as health_screen
@@ -628,6 +629,7 @@ def create_admin_ui_router(
     # file, never a fragment, and is under `/admin/chat/` so
     # `MEMBER_PREFIXES` already covers it.
     chat_workspace_screen.register(router, ctx)
+    chat_run_screen.register(router, ctx)
     health_screen.register(router, ctx)
     plugins_screen.register(router, ctx)
     plugin_install_screen.register(router, ctx)

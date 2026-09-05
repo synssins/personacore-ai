@@ -1,0 +1,99 @@
+{# runbook_run.html — Run a runbook: the step preview and the inputs form
+   (contract runbook.md §3 "Start"; WAVE2.md's `picker` row — this same
+   form is reached both from this screen's own Run… link and from the
+   composer's "+ -> Run a runbook..." picker, so there is one form and one
+   set of skip semantics rather than two).
+   Context: plugin, id, title, refusal (str|None), runnable (bool),
+     steps: [{id, kind, thinking, writes, running, disabled, hint}],
+     fields: [{name, prompt, control ('number'|'text'|'checkbox'), value,
+               checked, help}], personas: [PersonaChoice] #}
+{% extends "base.html" %}
+{% from "_controls.html" import icon %}
+{% block title %}Run {{ title }} — PersonaCore admin{% endblock %}
+{% block content %}
+<header>
+  <p class="meta" style="margin:0 0 4px"><a href="/admin/runbooks">← Runbooks</a></p>
+  <h3 style="margin:0 0 6px">Run {{ title }}</h3>
+</header>
+
+{% if refusal %}
+<div class="banner warn" role="status">
+  {{ icon('warn') }}
+  <div class="grow">{{ refusal }}</div>
+</div>
+{% endif %}
+
+{% if runnable %}
+<form class="card elev-sm" method="post" action="/admin/runbooks/{{ plugin }}/{{ id }}/run"
+      style="gap:var(--space-3)">
+  {# ── the step preview and its skip checkboxes — WAVE2.md's `picker` row ──
+     Ticked by default: everything runs unless somebody unticks it. A step a
+     later, still-ticked step depends on is disabled and forced to run — its
+     own checkbox cannot be unticked at all — with the hint naming which
+     later step needs it; the server still refuses an impossible skip on its
+     own account (`Runner.start`'s own validation), this is only what the
+     form itself will ever offer. The hidden field ahead of each checkbox is
+     the standard trick for telling "unticked" from "never submitted at
+     all": a browser omits an unchecked (or disabled) checkbox from the
+     post entirely, so without it there would be no way to tell "run" from
+     "skip" for a step whose box came back unchecked. #}
+  {% if steps %}
+  <div class="field">
+    <label style="margin:0">Steps</label>
+    <div style="overflow-x:auto">
+    <table class="table" aria-label="Steps">
+      <thead><tr><th>Run</th><th>Step</th><th>Kind</th><th>Thinking</th><th>Writes</th></tr></thead>
+      <tbody>
+        {% for step in steps %}
+        <tr>
+          <td>
+            <input type="hidden" name="run__{{ step.id }}" value="0">
+            <input type="checkbox" name="run__{{ step.id }}" value="1"
+                   id="run-step-{{ step.id }}"
+                   {% if step.running %}checked{% endif %}
+                   {% if step.disabled %}disabled{% endif %}
+                   {% if step.hint %}aria-describedby="hint-{{ step.id }}"{% endif %}>
+            {% if step.hint %}<div class="meta" id="hint-{{ step.id }}">{{ step.hint }}</div>{% endif %}
+          </td>
+          <td><label for="run-step-{{ step.id }}">{{ step.id }}</label></td>
+          <td>{{ step.kind }}</td>
+          <td>{{ 'yes' if step.thinking else 'no' }}</td>
+          <td>{{ step.writes or '' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+  </div>
+  {% endif %}
+  {% for field in fields %}
+  <div class="field">
+    {% if field.control == 'checkbox' %}
+    <label style="display:flex; align-items:center; gap:var(--space-2); cursor:pointer">
+      <input type="checkbox" id="input-{{ field.name }}" name="{{ field.name }}" value="1"
+             {% if field.checked %}checked{% endif %}>
+      <span>{{ field.prompt }}</span>
+    </label>
+    {% else %}
+    <label for="input-{{ field.name }}">{{ field.prompt }}</label>
+    <input class="input" type="{{ 'number' if field.control == 'number' else 'text' }}"
+           id="input-{{ field.name }}" name="{{ field.name }}" value="{{ field.value }}"
+           {% if field.help %}aria-describedby="help-{{ field.name }}"{% endif %}>
+    {% if field.help %}
+    <p class="meta" id="help-{{ field.name }}" style="margin:2px 0 0">{{ field.help }}</p>
+    {% endif %}
+    {% endif %}
+  </div>
+  {% endfor %}
+  <div class="field" style="min-width:220px">
+    <label for="run-persona">Persona</label>
+    <select class="input" id="run-persona" name="persona">
+      {% for choice in personas %}
+      <option value="{{ choice.name }}" {% if choice.selected %}selected{% endif %}>{{ choice.label }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <button type="submit" class="btn btn-primary" style="align-self:flex-start">Start</button>
+</form>
+{% endif %}
+{% endblock %}

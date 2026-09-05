@@ -104,6 +104,7 @@ from personacore.web.screens.chat_reply import (
     _refused,
     chat_exchange,
 )
+from personacore.web.screens.chat_run import _refusal_message, runner_for
 from personacore.web.screens.chat_thread import (
     ChatHistoryMessage,
     conversation_start,
@@ -1108,6 +1109,38 @@ def register(router: APIRouter, exchange: ChatExchange) -> None:
         to be asked whether somebody has pressed stop.
         """
         holding = turn.holding
+
+        # WAVE2.md's text-answer mode, asked before anything else this
+        # function does — the same explicit branch `chat_exchange._turn`
+        # makes for the serial path, mirrored here because a browser that
+        # can stream never reaches that function at all (see the
+        # `streaming is None` fallback below, which does). A message
+        # answering a gate never reaches the language model either way: it
+        # goes to `Runner.answer_text`, and the run's own writes to the
+        # transcript are what show the answer and whatever comes next —
+        # this yields only the two frames every other early return here
+        # yields, `markers` then `done`, with nothing new rendered into the
+        # exchange itself.
+        runner = runner_for(request)
+        if runner is not None and started is not None:
+            existing = await conversations.at(Owner.profile(user.id), started, create=False)
+            cid = existing.conversation_id if existing is not None else None
+            if cid:
+                try:
+                    awaiting = bool(runner.awaiting_text(cid))
+                except Exception:  # noqa: BLE001 - an unreadable gate is not answered here
+                    awaiting = False
+                if awaiting:
+                    yield _frame("markers", {"html": _markers_html(started.isoformat())})
+                    try:
+                        await runner.answer_text(Owner.profile(user.id), cid, message)
+                        answered_spoken: list[dict[str, Any]] = []
+                    except Exception as exc:  # noqa: BLE001 - RunRefused's sentence, never a 500
+                        answered_spoken = [_refused(message, _refusal_message(exc))]
+                    yield _frame(
+                        "done", {"html": await _rendered(request, user, answered_spoken, started)}
+                    )
+                    return
 
         # image-conversations.md contract §4, asked before anything else this
         # function does. **The same function `_turn` asks** — the contract's
