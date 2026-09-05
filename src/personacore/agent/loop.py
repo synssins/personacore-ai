@@ -47,7 +47,7 @@ from __future__ import annotations
 import json
 import re
 import time
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -779,9 +779,22 @@ class AgentLoop:
         workspace: WorkspaceAccess | None = None,
         persona_llm: PersonaLLMSource | None = None,
         config: AgentLoopConfig | None = None,
+        thinking_probe: Callable[[], None] | None = None,
     ) -> None:
         self._llm = llm
         self._persona_llm = persona_llm
+        # Workspace contract §13, D's boot probe (see `server.py`'s own
+        # `_probe_thinking_switch`) used to run as an awaited step in
+        # startup, which spent one real LLM request before the port ever
+        # opened. It now runs at most once per *process*, off the request
+        # path, the first time a turn actually sends
+        # `chat_template_kwargs: {enable_thinking: False}` — see
+        # `_stream_round`. `server.py` owns the LLM client and the probe
+        # logic; this is the seam that tells it "the switch was just used",
+        # nothing more. `None` on every caller that does not care (every
+        # test fixture, the console), which behaves exactly as before: no
+        # probe, ever.
+        self._thinking_probe = thinking_probe
         self._personas = personas
         self._audit_sink = audit
         self._tools = tools
@@ -1792,6 +1805,7 @@ class AgentLoop:
         parts: list[str],
         result: _RoundResult,
         seen: list[int],
+        probe: Callable[[], None] | None = None,
     ) -> AsyncIterator[AgentEvent]:
         """The body of one streamed call, factored out of :meth:`_stream_round`
         so it can be run a second time — unchanged — on the plain retry
@@ -1799,9 +1813,21 @@ class AgentLoop:
         how the retry knows whether anything from the *first* attempt already
         reached the caller, which is the one case a retry must never be
         allowed to happen (see :meth:`_stream_round`).
+
+        ``probe`` — when given — is called once, on the first chunk this
+        call (or a prior call sharing the same ``seen`` counter) receives,
+        never before. That is what keeps the boot probe's own request behind
+        the turn's: the turn's `stream_chat_completion` call has to already
+        be in flight and have produced something before the probe is even
+        scheduled. Fires on the first chunk of *either* attempt — including
+        one that carries only reasoning — because it is not "used" in the
+        sense of a successful field, only in the sense of the round having
+        actually started.
         """
         async for chunk in stream:
             seen[0] += 1
+            if seen[0] == 1 and probe is not None:
+                probe()
             accumulator.add_chunk(chunk)
             if chunk.model:
                 result.model = chunk.model
@@ -1855,17 +1881,39 @@ class AgentLoop:
         request the host may have partially acted on, so at that point the
         error is left to fall through to the ordinary ``LLMClientError``
         handling below instead.
+
+        Workspace contract §13, D also names the boot probe's trigger: "the
+        switch was just used". That is `fields` being non-empty here — but
+        the probe itself is not fired at that point. It is handed to
+        :meth:`_consume_stream` as a callback and fired from *inside* the
+        chunk loop, on the first chunk either attempt below receives, never
+        before. `asyncio.create_task` inside `self._thinking_probe` would
+        otherwise queue the probe's own request the instant it's called;
+        firing it before this round's `stream_chat_completion` had even been
+        awaited once let the probe's request reach the host first — stealing
+        a scripted reply out from under the turn in tests, and in
+        production delaying the turn's first token behind an unrelated
+        request. Deferring the call to "first chunk in" guarantees the
+        turn's request is already on the wire, and already answering, before
+        the probe's is even scheduled. A host that rejects the field still
+        counts as "used" (see the retry below), so the callback is offered
+        to both attempts sharing the same `seen` counter; `self._thinking_probe`
+        itself is responsible for running at most once per process and
+        never blocking this turn.
         """
         accumulator = ToolCallAccumulator()
         parts: list[str] = []
         seen = [0]
         fields = self._thinking_fields(ctx, after_tool_result=after_tool_result)
+        probe = self._thinking_probe if fields and self._thinking_probe is not None else None
         try:
             try:
                 stream = self._streamer_for(ctx).stream_chat_completion(
                     messages, tools=tool_schemas, **fields
                 )
-                async for event in self._consume_stream(stream, accumulator, parts, result, seen):
+                async for event in self._consume_stream(
+                    stream, accumulator, parts, result, seen, probe=probe
+                ):
                     yield event
             except LLMResponseError as exc:
                 rejected = exc.status_code is not None and 400 <= exc.status_code < 500
@@ -1875,7 +1923,9 @@ class AgentLoop:
                 stream = self._streamer_for(ctx).stream_chat_completion(
                     messages, tools=tool_schemas
                 )
-                async for event in self._consume_stream(stream, accumulator, parts, result, seen):
+                async for event in self._consume_stream(
+                    stream, accumulator, parts, result, seen, probe=probe
+                ):
                     yield event
         except LLMClientError as exc:
             # Section 10: the LLM host is down, timed out, or the breaker is

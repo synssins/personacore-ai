@@ -86,6 +86,8 @@ Then continue with [Scenario: First Run](Scenario-First-Run).
 
 The whole point of publishing images from CI is that the server never builds anything. Tagged releases are built by GitHub Actions and pushed to `ghcr.io/synssins/personacore-ai`, with an SBOM generated per release.
 
+Before it is pushed, the release workflow boots the image itself — a throwaway appdata volume, no LLM host — and waits for `/health` to answer within 90 seconds. A tag that cannot start publishes nothing.
+
 Edit the tag in `compose.yaml`, then:
 
 ```bash

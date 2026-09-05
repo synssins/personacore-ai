@@ -439,8 +439,10 @@ def create_app(appdata: Path | str | None = None) -> FastAPI:
     # Workspace contract §13, D: the boot probe's own finding about whether
     # the interactive model actually honours `chat_template_kwargs:
     # {enable_thinking: false}` — read by the Health screen's LLM row.
-    # `None` until `_startup` runs the probe (or forever, on a build with no
-    # LLM configured at all); see `_probe_thinking_switch` below.
+    # `None` until the probe has actually run, which is no longer at boot:
+    # see `_start_thinking_probe` and `_probe_thinking_switch` below. Stays
+    # `None` forever on a build with no LLM configured at all, or one whose
+    # persona never turns thinking off.
     app.state.llm_thinking_probe = None
     app.state.bus_password_degraded = bus_password_error
     app.state.voice_registry = voice_registry
@@ -695,6 +697,90 @@ def create_app(appdata: Path | str | None = None) -> FastAPI:
     # handle passed as `llm` is still what answers for every persona that has
     # no connection, which is all of them until somebody says otherwise.
     interactive_llm = roster.for_role(LLMRole.INTERACTIVE)
+
+    async def _probe_thinking_switch() -> None:
+        """Workspace contract §13, D's own check: does the interactive
+        model actually stop reasoning when asked to?
+
+        One non-streaming request, `chat_template_kwargs: {enable_thinking:
+        false}`, `max_tokens=8`. Three outcomes, each recorded on
+        `app.state.llm_thinking_probe` for the Health screen's LLM row —
+        this function never builds UI, only the fact:
+
+        * The reply still carries a non-empty `reasoning_content` — the
+          switch is ignored by this backend. Logged at `warning`.
+        * The host answers with a 4xx — it does not know the field at all.
+          Logged at `info`; not a warning, because "never heard of this"
+          is a plainer, less alarming fact than "heard it and ignored it".
+        * Anything else that goes wrong (timeout, connection refused, a
+          5xx) — recorded as unreached and never raised. This is a
+          courtesy, not a gate: nothing here may fail a turn, and it is
+          skipped outright when the interactive role has no usable
+          connection at all (no API key supplied, contract §13 note).
+
+        No longer run at boot (see `_start_thinking_probe`): this coroutine
+        itself is unchanged, only when it runs has moved.
+        """
+        if interactive_llm.unusable is not None:
+            return
+        try:
+            response = await interactive_llm.chat_completion(
+                [{"role": "user", "content": "Say hi."}],
+                max_tokens=8,
+                chat_template_kwargs={"enable_thinking": False},
+            )
+        except LLMResponseError as exc:
+            rejected = exc.status_code is not None and 400 <= exc.status_code < 500
+            if rejected:
+                log.info("thinking_switch_unsupported", model=interactive_llm.facts.get("model"))
+                app.state.llm_thinking_probe = {
+                    "checked": True,
+                    "ignored": False,
+                    "unsupported": True,
+                    "model": interactive_llm.facts.get("model"),
+                }
+            else:
+                log.info("thinking_switch_probe_failed", error=repr(exc))
+            return
+        except Exception as exc:  # noqa: BLE001 - a courtesy, never fatal
+            log.info("thinking_switch_probe_failed", error=repr(exc))
+            return
+        reasoning = response.choices[0].message.reasoning_content if response.choices else None
+        ignored = bool(reasoning)
+        if ignored:
+            log.warning("thinking_switch_ignored", model=response.model)
+        app.state.llm_thinking_probe = {
+            "checked": True,
+            "ignored": ignored,
+            "unsupported": False,
+            "model": response.model,
+        }
+
+    #: Whether `_probe_thinking_switch` has already been scheduled this
+    #: process. A plain closure flag rather than something on `app.state`,
+    #: because nothing outside this function needs to read it — only
+    #: `_start_thinking_probe` below ever touches it.
+    _thinking_probe_scheduled = False
+
+    def _start_thinking_probe() -> None:
+        """The loop's own trigger, handed to `AgentLoop` as `thinking_probe`
+        (workspace contract §13, D).
+
+        Called from `agent/loop.py`'s `_stream_round` the moment a turn
+        actually sends `chat_template_kwargs: {enable_thinking: False}` —
+        i.e. the first time the switch is used, not at boot. Runs the probe
+        at most once per process, in the background: `create_task` returns
+        immediately, so this never delays the turn that triggered it, and
+        the probe's own request never competes with — or is mistaken for —
+        that turn's request against the fake host in tests or a real one in
+        production.
+        """
+        nonlocal _thinking_probe_scheduled
+        if _thinking_probe_scheduled:
+            return
+        _thinking_probe_scheduled = True
+        asyncio.create_task(_probe_thinking_switch(), name="thinking-switch-probe")
+
     agent = AgentLoop(
         llm=interactive_llm,
         personas=personas,
@@ -714,6 +800,10 @@ def create_app(appdata: Path | str | None = None) -> FastAPI:
         # tool's own files and composing the manifest/pins happen in the loop
         # directly rather than through a tool call.
         workspace=workspace_tools,
+        # Workspace contract §13, D: fires on the first turn that actually
+        # sends thinking off — see `_start_thinking_probe` above and
+        # `AgentLoop._stream_round`'s own call site.
+        thinking_probe=_start_thinking_probe,
     )
     app.state.agent = agent
 
@@ -996,61 +1086,6 @@ def create_app(appdata: Path | str | None = None) -> FastAPI:
             await asyncio.shield(purge)
             await asyncio.sleep(RETENTION_PURGE_INTERVAL_SECONDS)
 
-    async def _probe_thinking_switch() -> None:
-        """Workspace contract §13, D's own boot check: does the interactive
-        model actually stop reasoning when asked to?
-
-        One non-streaming request, `chat_template_kwargs: {enable_thinking:
-        false}`, `max_tokens=8`. Three outcomes, each recorded on
-        `app.state.llm_thinking_probe` for the Health screen's LLM row —
-        this function never builds UI, only the fact:
-
-        * The reply still carries a non-empty `reasoning_content` — the
-          switch is ignored by this backend. Logged at `warning`.
-        * The host answers with a 4xx — it does not know the field at all.
-          Logged at `info`; not a warning, because "never heard of this"
-          is a plainer, less alarming fact than "heard it and ignored it".
-        * Anything else that goes wrong (timeout, connection refused, a
-          5xx) — recorded as unreached and never raised. This is a boot
-          courtesy, not a gate: nothing here may fail the boot, and it is
-          skipped outright when the interactive role has no usable
-          connection at all (no API key supplied, contract §13 note).
-        """
-        if interactive_llm.unusable is not None:
-            return
-        try:
-            response = await interactive_llm.chat_completion(
-                [{"role": "user", "content": "Say hi."}],
-                max_tokens=8,
-                chat_template_kwargs={"enable_thinking": False},
-            )
-        except LLMResponseError as exc:
-            rejected = exc.status_code is not None and 400 <= exc.status_code < 500
-            if rejected:
-                log.info("thinking_switch_unsupported", model=interactive_llm.facts.get("model"))
-                app.state.llm_thinking_probe = {
-                    "checked": True,
-                    "ignored": False,
-                    "unsupported": True,
-                    "model": interactive_llm.facts.get("model"),
-                }
-            else:
-                log.info("thinking_switch_probe_failed", error=repr(exc))
-            return
-        except Exception as exc:  # noqa: BLE001 - a boot courtesy, never fatal
-            log.info("thinking_switch_probe_failed", error=repr(exc))
-            return
-        reasoning = response.choices[0].message.reasoning_content if response.choices else None
-        ignored = bool(reasoning)
-        if ignored:
-            log.warning("thinking_switch_ignored", model=response.model)
-        app.state.llm_thinking_probe = {
-            "checked": True,
-            "ignored": ignored,
-            "unsupported": False,
-            "model": response.model,
-        }
-
     @app.on_event("startup")
     async def _startup() -> None:
         # The bus is a degradable dependency (spec §10): if no broker is reachable
@@ -1133,13 +1168,17 @@ def create_app(appdata: Path | str | None = None) -> FastAPI:
             await apply_wyoming_settings(
                 app, hearing_registry, voices, app.state.settings.wyoming
             )
-        # Workspace contract §13, D: awaited, not backgrounded — it is one
-        # bounded request (the LLM client's own timeout) and the release
-        # note (ADR-style discipline this build follows) is "boot the core
-        # before every tag", which means knowing the answer before the port
-        # opens, not finding out later from a Health screen nobody is
-        # looking at yet. `_probe_thinking_switch` never raises.
-        await _probe_thinking_switch()
+        # Workspace contract §13, D's boot check no longer runs here. It used
+        # to be awaited at this exact point — one bounded request, on the
+        # reasoning that the release note "boot the core before every tag"
+        # meant knowing the answer before the port opened. That reasoning
+        # was wrong in practice: it spent one real LLM request on *every*
+        # boot, whether or not thinking was ever turned off, and on a test
+        # host it silently ate the first scripted reply meant for the
+        # request under test. The probe now runs off the request path, at
+        # most once per process, the first time a turn actually sends
+        # `chat_template_kwargs: {enable_thinking: False}` — see
+        # `_start_thinking_probe` and `AgentLoop._stream_round`.
         log.info(
             "personacore_started",
             version=__version__,

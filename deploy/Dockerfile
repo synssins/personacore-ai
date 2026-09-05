@@ -59,9 +59,26 @@ COPY --from=embeddings /minilm/model_quint8_avx2.onnx /minilm/vocab.txt src/pers
 # git-ignored (src/personacore/memory/models/.gitignore) so a working tree's
 # own build would otherwise drop them the same way hatchling drops anything
 # else VCS-ignored.
+#
+# 2026-09-05, alpha.17: the container died at import with
+# "ModuleNotFoundError: No module named 'packaging'", even though
+# pyproject.toml declares packaging>=24,<27 as a runtime dependency. Cause:
+# `pip install --prefix=/install <wheel>` resolves against THIS stage's own
+# environment, not against what is already inside /install. `pip install
+# build` two lines up pulls in packaging as build's own dependency, so by the
+# time the wheel is installed, pip sees packaging already satisfied here and
+# never copies it into /install. The runtime stage then gets a prefix that is
+# missing whatever the build stage happened to have pre-installed for its own
+# purposes — packaging today, silently something else tomorrow.
+#
+# Fix: --ignore-installed makes pip disregard what this stage's own
+# environment already has and resolve/install the wheel's full dependency set
+# into --prefix from scratch, so /install is self-contained regardless of what
+# pip/build/setuptools dragged in above. (Plain --no-deps was considered and
+# rejected: it would skip packaging entirely rather than install it.)
 RUN python -m pip install --upgrade pip build \
  && python -m build --wheel --outdir /dist \
- && python -m pip install --prefix=/install /dist/*.whl
+ && python -m pip install --prefix=/install --ignore-installed /dist/*.whl
 
 # ---- model stage -----------------------------------------------------------
 # The speech-to-text weights, fetched once and pinned by commit.

@@ -135,6 +135,62 @@ jobs:
         # approximately correct is the kind nobody questions until it matters.
         run: echo "built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
 
+      - name: Build a native-platform image for the smoke test
+        # alpha.17 died at import with "No module named 'packaging'" (see
+        # deploy/Dockerfile's --ignore-installed fix, 2026-09-05). ci.yml
+        # already boots an image on every push, but that workflow never runs
+        # on a tag — it proved nothing about the image this job actually
+        # publishes. And the "Build and push" step below is a multi-platform
+        # (linux/amd64,linux/arm64) buildx build pushed straight to ghcr.io;
+        # buildx cannot `load` a multi-platform result locally, so there was
+        # never anywhere in THIS workflow to run the image before it shipped.
+        #
+        # Fix: build the runner's native platform only, load it into the
+        # local docker daemon, and boot it for real before the real
+        # build-and-push step is allowed to run. Same Dockerfile, same
+        # dependency-resolution bug either image would have, so this catches
+        # it. cache-from/cache-to means the multi-platform step below mostly
+        # hits cache rather than rebuilding.
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile
+          push: false
+          load: true
+          tags: personacore:smoke
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test — the image actually boots
+        # Gates on "the container starts and answers /health", not the test
+        # suite (CLAUDE.md: tests do not gate the build). Throwaway appdata
+        # dir, no LLM host configured — /health is unauthenticated and always
+        # served even with other surfaces unmounted (spec), so it needs
+        # neither. On failure this step fails the job and the publish step
+        # below never runs, so a tag that cannot boot publishes nothing.
+        run: |
+          set -e
+          mkdir -p "${RUNNER_TEMP}/smoke-appdata"
+          docker run -d --name personacore-smoke \
+            -e PERSONACORE_PORT=8053 \
+            -v "${RUNNER_TEMP}/smoke-appdata:/appdata" \
+            -p 8053:8053 personacore:smoke
+          ok=""
+          for i in $(seq 1 90); do
+            if curl -fsS "http://127.0.0.1:8053/health" >/dev/null 2>&1; then
+              echo "healthy after ${i}s"
+              ok=1
+              break
+            fi
+            sleep 1
+          done
+          docker logs personacore-smoke || true
+          docker rm -f personacore-smoke
+          if [ -z "$ok" ]; then
+            echo "::error::image never answered /health within 90s; refusing to publish"
+            exit 1
+          fi
+
       - name: Build and push
         id: build
         uses: docker/build-push-action@v6
