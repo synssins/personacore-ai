@@ -162,6 +162,7 @@ from personacore.config.appdata import AppdataLayout
 from personacore.plugins.discovery import PluginDiscovery
 from personacore.plugins.packages import DEFAULT_PACKAGE_LIMITS, PackageLimits
 from personacore.preferences import PreferenceStore
+from personacore.runbooks import RunbookStore
 
 # Every name above that this file no longer uses itself is re-exported on
 # purpose. Moving code must not move a name: `ruff check --fix` would delete an
@@ -214,6 +215,7 @@ def create_admin_router(
     secrets: SecretNameSource | None = None,
     disk_warning_bytes: int = DEFAULT_DISK_WARNING_BYTES,
     package_limits: PackageLimits = DEFAULT_PACKAGE_LIMITS,
+    runbooks: RunbookStore | None = None,
 ) -> APIRouter:
     """Build the admin router — the JSON API and the designed admin UI on it.
 
@@ -296,6 +298,10 @@ def create_admin_router(
         disk_warning_bytes: Appdata free-space floor for the dashboard.
         package_limits: Ceilings on an uploaded plugin package — archive size,
             uncompressed total and entry count (ADR-0013's zip-bomb refusals).
+        runbooks: The runbook file store (``working/contracts/runbook.md``
+            §6). ``None`` means this assembly never built one, in which case
+            installing a plugin that bundles ``runbooks/`` simply does not
+            copy them in — there is nowhere to put them.
     """
     # PC-294: one call, one decision, one seam. Everything below — the JSON
     # API, the designed UI and its static assets — hangs off this one object.
@@ -371,6 +377,7 @@ def create_admin_router(
         package_limits=package_limits,
         read_config=_read_config,
         save_config=_save_config,
+        runbooks=runbooks,
     )
 
     api = APIRouter(

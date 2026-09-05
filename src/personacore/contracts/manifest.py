@@ -348,6 +348,22 @@ class Permissions(BaseModel):
         return [request.name for request in self.secrets if request.required]
 
 
+class RunbooksDeclaration(BaseModel):
+    """``[runbooks]`` in the manifest — ``working/contracts/runbook.md`` §1.10.
+
+    A plugin opts in to the runbooks feature by declaring this, and only
+    then does its plugin page grow a **Runbooks enabled** checkbox and does
+    it appear as a group in the runbook picker. Absent is the same as
+    ``supported = false``: a plugin written before runbooks existed keeps
+    loading unchanged and simply is not one of them.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    supported: bool = False
+    """Whether this plugin may carry, and be the target of, a runbook."""
+
+
 class EventDeclaration(BaseModel):
     """What the plugin puts on, and takes off, the bus. Spec section 5.2."""
 
@@ -445,6 +461,7 @@ class PluginManifest(BaseModel):
     permissions: Permissions = Field(default_factory=Permissions)
     tools: dict[str, ToolDeclaration] = Field(default_factory=dict)
     events: EventDeclaration = Field(default_factory=EventDeclaration)
+    runbooks: RunbooksDeclaration = Field(default_factory=RunbooksDeclaration)
 
     @field_validator("tools")
     @classmethod

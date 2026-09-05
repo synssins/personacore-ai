@@ -16,6 +16,7 @@ is inherited by the next plugin installed under it.
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Query, Request, status
@@ -158,6 +159,7 @@ def register(router: APIRouter, ctx: AdminApiContext) -> None:
     plugin_health = ctx.plugin_health
     secrets = ctx.secrets
     live_toggle = ctx.live_toggle
+    runbooks = ctx.runbooks
 
     @api.get("/plugins", response_model=PluginListing, summary="Installed plugins")
     async def list_plugins() -> PluginListing:
@@ -196,6 +198,33 @@ def register(router: APIRouter, ctx: AdminApiContext) -> None:
         return ReloadResult(reloaded=True, listing=listing, message=message)
 
     # -- plugin packages (ADR-0013) ----------------------------------------
+
+    async def _install_bundled_runbooks(name: str, directory: Path) -> None:
+        """Copy a freshly-installed plugin's ``runbooks/`` in, if it has any.
+
+        ``working/contracts/runbook.md`` §6: "A plugin's bundled runbooks are
+        validated on plugin install the same way [as an upload]; a failure is
+        a warning, not a refusal." :meth:`RunbookStore.install_bundled`
+        already never raises for a bad runbook file; this wrapper only
+        guards against there being no store at all (an assembly built with
+        ``runbooks=None``) and against a filesystem surprise, neither of
+        which may be allowed to turn a plugin install that has already
+        succeeded into a failure response.
+        """
+        if runbooks is None:
+            return
+        try:
+            records = await asyncio.to_thread(runbooks.install_bundled, name, directory)
+        except Exception as exc:  # noqa: BLE001 - the plugin is already installed
+            logger.warning("runbooks_bundled_install_failed", plugin=name, error=repr(exc))
+            return
+        if records:
+            logger.info(
+                "runbooks_bundled_installed",
+                plugin=name,
+                runbooks=[record.id for record in records],
+                invalid=[record.id for record in records if not record.valid],
+            )
 
     async def _install_plugin(
         data: bytes, user: AdminUser, *, replace: bool, label: str
@@ -236,6 +265,8 @@ def register(router: APIRouter, ctx: AdminApiContext) -> None:
                 detail={"filename": label, "bytes": len(data), "replace": replace},
             )
             raise _fail(status.HTTP_500_INTERNAL_SERVER_ERROR, str(exc)) from exc
+
+        await _install_bundled_runbooks(installed.name, installed.directory)
 
         listing = await scans.reload()
         personas.invalidate()

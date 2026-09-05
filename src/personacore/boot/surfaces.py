@@ -73,6 +73,7 @@ def _mount_admin(
     chat: Any,
     plugin_health: Any,
     plugin_toggle: Any,
+    runbooks: Any = None,
 ) -> None:
     # No guard, on purpose (ADR-0040 §3). An ImportError here means a build
     # without its own front door, and a mount that raises means one whose front
@@ -109,6 +110,12 @@ def _mount_admin(
             chat=chat,
             plugin_health=plugin_health,
             plugin_toggle=plugin_toggle,
+            # working/contracts/runbook.md §6: the plugin-install hook that
+            # copies a plugin's bundled runbooks in lives on this surface,
+            # beside the rest of plugin installation (`admin/api_plugins.py`).
+            # `None` on an assembly that never built one — the routes still
+            # mount, `install_bundled` just never runs.
+            runbooks=runbooks,
         )
     )
     app.state.surfaces.add("admin")

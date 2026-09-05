@@ -31,6 +31,7 @@ STATE_DIRNAME = "state"
 CONFIG_DIRNAME = "config"
 ATTACHMENTS_DIRNAME = "attachments"
 WORKSPACES_DIRNAME = "workspaces"
+RUNBOOKS_DIRNAME = "runbooks"
 
 CORE_CONFIG_FILENAME = "core.toml"
 
@@ -126,6 +127,18 @@ class AppdataLayout:
         """
         return self.root / WORKSPACES_DIRNAME
 
+    @property
+    def runbooks(self) -> Path:
+        """``working/contracts/runbook.md`` §6 — one folder per plugin,
+        holding that plugin's runbooks (uploaded and bundled alike), their
+        stored validation results, their shared prompt files and the
+        per-plugin runbooks-enabled switch.
+
+        See :mod:`personacore.runbooks.store` for the shape inside each
+        plugin's folder; this module only owns where the whole tree starts.
+        """
+        return self.root / RUNBOOKS_DIRNAME
+
     # -- containment ------------------------------------------------------
 
     def _resolve(self, candidate: Path | str) -> Path:
@@ -206,6 +219,7 @@ class AppdataLayout:
             self.config,
             self.attachments,
             self.workspaces,
+            self.runbooks,
         ):
             try:
                 directory.mkdir(parents=True, exist_ok=True)

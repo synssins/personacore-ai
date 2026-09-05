@@ -36,6 +36,7 @@ from personacore.config.appdata import AppdataLayout
 from personacore.config.hearing import HearingSettings
 from personacore.config.image import ImageSettings
 from personacore.config.memory import MemorySettings
+from personacore.config.runbooks import RunbooksSettings
 from personacore.config.voice import VoiceSettings
 from personacore.config.workspace import WorkspaceSettings
 from personacore.config.wyoming import WyomingSettings
@@ -611,6 +612,13 @@ class CoreSettings(BaseModel):
     threshold, and the per-file and per-workspace size ceilings. The
     workspace root itself is not here: it is fixed at
     ``<appdata>/workspaces`` (contract §9), not a setting.
+    """
+
+    runbooks: RunbooksSettings = Field(default_factory=RunbooksSettings)
+    """``working/contracts/runbook.md`` §1.9 — the one household-wide switch
+    a runbook run checks before it may start. Default off. Per-plugin
+    switches are not here; they live in appdata beside each plugin's own
+    runbooks (``personacore.runbooks.store.RunbookStore``).
     """
 
     def llm_for(self, role: LLMRole | str) -> LLMSettings:

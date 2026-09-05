@@ -56,6 +56,7 @@ from personacore.audit import (
 )
 from personacore.config.appdata import AppdataLayout
 from personacore.plugins.packages import PackageLimits
+from personacore.runbooks import RunbookStore
 
 logger = get_logger(__name__)
 
@@ -120,6 +121,10 @@ class AdminApiContext:
     #: Validate, write, apply live and audit — the one path, shared with the
     #: designed UI so that "saved" cannot come to mean two things.
     save_config: Callable[..., Awaitable[ConfigResponse]]
+    #: The runbook file store (``working/contracts/runbook.md`` §6). ``None``
+    #: on an assembly that never built one — see
+    #: :func:`personacore.admin.routes.create_admin_router`'s own docstring.
+    runbooks: RunbookStore | None
 
 
 # ---------------------------------------------------------------------------

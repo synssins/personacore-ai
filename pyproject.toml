@@ -45,6 +45,15 @@ dependencies = [
     # extension rather than a separate database. CPU only, no GPU build
     # exists for it to acquire by mistake.
     "sqlite-vec>=0.1.6,<0.2",  # Apache-2.0 / MIT.
+    # Runbooks (working/contracts/runbook.md §2): a runbook file is YAML, and
+    # its `requires.plugins` versions are PEP 440 specifiers checked against
+    # an installed plugin's own version.
+    "PyYAML>=6.0,<7",  # MIT. Already an indirect dependency of uvicorn[standard];
+    # made direct because personacore.runbooks parses runbook files itself.
+    "packaging>=24,<27",  # Apache-2.0 OR BSD-2-Clause. `packaging.specifiers`
+    # is the one correct implementation of a PEP 440 version specifier; hand
+    # rolling one for `>=1.4.3` is exactly the kind of "this one's easy"
+    # dependency that is never actually easy.
 ]
 
 [project.optional-dependencies]

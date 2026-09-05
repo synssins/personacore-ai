@@ -141,6 +141,8 @@ from personacore.plugins.discovery import PluginDiscovery
 from personacore.plugins.host import PluginHost
 from personacore.plugins.packages import read_disabled_plugins
 from personacore.preferences import PREFERENCES_FILENAME, PreferenceStore
+from personacore.runbooks import RunbookStore
+from personacore.runbooks.compat import PluginFacts
 from personacore.voice.library import VoiceLibrary, voice_health
 from personacore.voice.registry import VoiceRegistry, builtin_engines
 from personacore.voice.reply import SPEAKER_ATTRIBUTE, ReplySpeaker
@@ -213,6 +215,54 @@ RETENTION_PURGE_INTERVAL_SECONDS = 6 * 60 * 60
 started, in seconds. Not a config field: CLAUDE.md's brief for this fix is
 explicit that how often the sweep runs is an operational detail, and adding
 one here would be an out-of-scope contract change."""
+
+
+class _DiscoveredPluginFacts:
+    """The production :class:`~personacore.runbooks.compat.PluginFacts`, built
+    from a fresh plugin scan and the on/off state file.
+
+    Deliberately independent of :class:`~personacore.plugins.host.PluginHost`
+    rather than a thin wrapper around it — the whole point of ``PluginFacts``
+    being a narrow protocol (see its docstring) is that a runbook's
+    compatibility check needs no idea what a plugin host is. A discovery scan
+    is also the thing ``plugins/packages.py`` already treats as "the one idea
+    of what a valid, currently-installed plugin is" (its own docstring: "There
+    is therefore exactly one idea in the core of what a valid plugin folder
+    is"), so answering from it rather than from whatever the live host happens
+    to have running avoids inventing a second one.
+
+    Read fresh on every call rather than cached: this is asked at most once
+    per plugin per Runbooks-screen render, which is nowhere near the request
+    volume ``PluginHost`` itself has to sustain, and a cache here is a cache
+    that could tell an operator a plugin is still the old version after they
+    just upgraded it.
+    """
+
+    def __init__(self, layout: AppdataLayout) -> None:
+        self._layout = layout
+
+    def _manifest(self, name: str):  # noqa: ANN202 - PluginManifest, imported lazily below
+        result = PluginDiscovery(self._layout.root).scan()
+        record = result.by_name().get(name)
+        return record.manifest if record is not None else None
+
+    def installed(self, name: str) -> str | None:
+        manifest = self._manifest(name)
+        return manifest.plugin.version if manifest is not None else None
+
+    def enabled(self, name: str) -> bool:
+        manifest = self._manifest(name)
+        if manifest is None:
+            return False
+        return name not in read_disabled_plugins(self._layout)
+
+    def declares_tool(self, name: str, tool: str) -> bool:
+        manifest = self._manifest(name)
+        return manifest is not None and tool in manifest.tools
+
+    def supports_runbooks(self, name: str) -> bool:
+        manifest = self._manifest(name)
+        return manifest is not None and manifest.runbooks.supported
 
 
 def create_app(appdata: Path | str | None = None) -> FastAPI:
@@ -547,6 +597,13 @@ def create_app(appdata: Path | str | None = None) -> FastAPI:
     )
     app.state.plugin_host = host
 
+    # Runbooks (``working/contracts/runbook.md``). No runner yet (alpha.17):
+    # a runbook can be uploaded, listed, validated and deleted, and the two
+    # switches exist. `facts` is independent of `host` on purpose — see
+    # `_DiscoveredPluginFacts`.
+    facts: PluginFacts = _DiscoveredPluginFacts(layout)
+    app.state.runbooks = RunbookStore(layout, facts, lambda: app.state.settings.runbooks.enabled)
+
     # Memory (``working/contracts/memory.md``, ADR-0045): a bundled ONNX
     # embedder if this image carries one, else no memory at all rather than a
     # core that refuses to start over an optional feature. `MemoryTools` is
@@ -831,6 +888,7 @@ def create_app(appdata: Path | str | None = None) -> FastAPI:
         chat_runner,
         _PluginHealthView(host),
         host,
+        runbooks=app.state.runbooks,
     )
     _mount_openai(app, layout, agent, audit)
 
