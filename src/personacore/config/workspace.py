@@ -22,7 +22,7 @@ class WorkspaceSettings(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    tool_result_chars: int = Field(default=32000, ge=256)
+    tool_result_chars: int = Field(default=64000, ge=256)
     """The most characters of one tool result the model receives in a single
     turn. Past this the text is cut and the cut is marked, so the model is
     never quietly handed less than it thinks it has (contract §4)."""

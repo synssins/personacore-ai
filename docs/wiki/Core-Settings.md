@@ -183,7 +183,7 @@ The per-conversation scratch folder a tool result can be saved into, and the cap
 
 | Key | Type | Default | Range | Notes |
 |---|---|---|---|---|
-| `tool_result_chars` | int | `32000` | ≥ 256 | The most characters of one tool result the model receives in a turn; past this the text is cut and the cut is marked. Read once at startup, the same as `[memory] recall_limit` — a saved change needs a restart to take effect. |
+| `tool_result_chars` | int | `64000` | ≥ 256 | The most characters of one tool result the model receives in a turn; past this the text is cut and the cut is marked. Read once at startup, the same as `[memory] recall_limit` — a saved change needs a restart to take effect. |
 | `long_item_chars` | int | `8000` | ≥ 256 | With a workspace turned on, a plain-text tool result longer than this is saved to the conversation's workspace as a file instead of being handed over whole. Must be no greater than `tool_result_chars`; a document that breaks that rule is refused with a plain-English message. |
 | `max_file_bytes` | int | `2000000` | ≥ 1024 | The largest a single workspace file may grow. A write past this limit is refused, naming the limit. |
 | `max_workspace_bytes` | int | `50000000` | ≥ 1024 | The largest one conversation's whole workspace folder may grow, all its files together. A write that would push the folder past this limit is refused the same way. |

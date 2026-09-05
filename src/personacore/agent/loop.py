@@ -1901,7 +1901,7 @@ class AgentLoop:
             kind=UntrustedKind.TOOL_RESULT,
             source=name,
             token=ctx.fence_token,
-            max_content_chars=self._config.max_untrusted_chars,
+            max_content_chars=self._result_cap(),
         )
         await self._transcript(ctx, MessageRole.TOOL, fenced)
         messages.append(_tool_message(call.id, name, fenced))
@@ -1919,6 +1919,19 @@ class AgentLoop:
             # when nothing was written.
             detail={"ok": tool_result.ok, "duration_ms": duration_ms, "files": files_written},
         )
+
+    def _result_cap(self) -> int:
+        """The fence cap for one tool result.
+
+        The workspace's ``tool_result_chars`` when this loop has a workspace,
+        else the loop's own ``max_untrusted_chars``. In production both are the
+        same ``[workspace]`` setting; taking the workspace's here means a loop
+        built without settings still hands the model a whole file rather than
+        the fence's 8,000-character fallback (workspace contract §4).
+        """
+        if self._workspace is not None:
+            return max(self._config.max_untrusted_chars, self._workspace.settings.tool_result_chars)
+        return self._config.max_untrusted_chars
 
     def _apply_workspace(
         self, name: str, payload: str, tool_result: ToolResult, ctx: TurnContext
@@ -1978,7 +1991,17 @@ class AgentLoop:
                 payload = f"{payload}\n{lines}" if payload else lines
             return payload, files_written
 
-        if workspace is not None and len(payload) > workspace_tools.settings.long_item_chars:
+        # The workspace's own tools are exempt from the spill: a `read_file`
+        # that comes back as `workspace.read_file.txt` plus its first thousand
+        # characters is the cut this whole design exists to remove, and it
+        # shipped that way once (alpha.14). Those tools page by
+        # `tool_result_chars` themselves.
+        spillable = not name.startswith("workspace.")
+        if (
+            spillable
+            and workspace is not None
+            and len(payload) > workspace_tools.settings.long_item_chars
+        ):
             try:
                 final_name = workspace.write(f"{name}.txt", payload, source=name)
             except WorkspaceError as exc:

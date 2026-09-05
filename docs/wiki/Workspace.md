@@ -80,7 +80,7 @@ Household-wide, in `core.toml`'s `[workspace]` section — see [Core Settings](C
 
 | Key | Default | What it does |
 |---|---|---|
-| `tool_result_chars` | 32,000 | The most characters of one tool result, or one file read, the model receives in a turn before it is cut. |
+| `tool_result_chars` | 64,000 | The most characters of one tool result, or one file read, the model receives in a turn before it is cut. |
 | `long_item_chars` | 8,000 | With a workspace on, a plain-text tool result longer than this is saved as a file instead of being cut — see "The long-result rule" above. |
 | `max_file_bytes` | 2,000,000 | The largest a single workspace file may grow. A write past this is refused, naming the limit. |
 | (fixed) | 200 files | A workspace holds at most 200 files. Appending to an existing file never counts against it. |
