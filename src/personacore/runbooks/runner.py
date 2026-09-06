@@ -33,7 +33,11 @@ one after another, waiting for each. That is contract §1.12 read the way the
 plan settled it — a single conversation looping twelve chapters would carry
 every earlier chapter in the prompt of the last one. A **step**-level
 ``foreach`` is the other shape and stays inside one run: one tool step,
-repeated per item, its roles holding a list.
+repeated per item, its roles holding a list. **One item is not a parent**
+(owner, 2026-09-06): when the ``foreach`` input resolves to exactly one
+value, :meth:`Runner.start` runs it as an ordinary single run in the
+conversation the person is already in, with no parent, no item line and no
+Open link.
 
 **A run's scripted turn is a person's turn** (owner's decision, 2026-09-05).
 It used to be a thinner thing: this module drove the chat runner itself and
@@ -315,7 +319,10 @@ class Runner:
         A runbook with ``foreach:`` (contract §1.12) starts a **parent run**
         instead: this conversation holds the item list and one progress row
         per item, and each item gets an ordinary run of its own in its own
-        conversation. See :meth:`_start_parent`.
+        conversation. See :meth:`_start_parent`. **Except when the input
+        resolves to exactly one item** (owner, 2026-09-06): that is an
+        ordinary single run in this conversation, with no parent, no item
+        line and no Open link — a parent exists only for two items or more.
         """
         self._require_switches(plugin)
         runbook, folder = self._loaded(plugin, runbook_id)
@@ -323,6 +330,27 @@ class Runner:
         skipped = _checked_skip(runbook, skip)
 
         if runbook.foreach is not None:
+            name = runbook.foreach
+            values = checked.get(name)
+            if isinstance(values, list) and len(values) == 1:
+                # One item is not a foreach in anything a person can see: no
+                # parent, no item row, no second conversation to link to. The
+                # value is folded into `inputs` exactly as `_start_item` folds
+                # it for a parent's own children, and the run proceeds in this
+                # same conversation as if `foreach:` had never been there —
+                # except that the conversation still carries the runbook's
+                # title, the way a parent's would, since this is the
+                # conversation the person landed in from the picker.
+                return await self._start_one(
+                    owner=owner,
+                    plugin=plugin,
+                    runbook=runbook,
+                    folder=folder,
+                    inputs={**checked, name: values[0]},
+                    persona=persona,
+                    skip=skipped,
+                    title=runbook.title,
+                )
             return await self._start_parent(
                 owner=owner,
                 plugin=plugin,
