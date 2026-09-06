@@ -427,6 +427,14 @@ class Runner:
         self._live[live.conversation_id] = live
         if title is not None:
             await self._retitled(owner, live.conversation_id, title)
+        if live.state.current is None and live.state.status == "running":
+            # Every step was skipped (`_mark_skipped`): there is nothing for
+            # the step loop to do, so this finishes the run itself rather
+            # than leaving it "running" with nothing pending until the task
+            # below gets its first turn — a caller reading the `RunState`
+            # this method returns should see a done run, not one that will
+            # become done shortly.
+            await self._finish_live(live)
         live.task = asyncio.create_task(
             self._drive(live), name=f"runbook-{runbook.runbook}-{live.conversation_id}"
         )
@@ -923,7 +931,16 @@ class Runner:
                 self._write(live)
                 return
             step_id = live.state.current
-            if step_id is None or live.state.status != "running":
+            if step_id is None:
+                if live.state.status == "running":
+                    # Reached with nothing run at all — every step was
+                    # skipped at start (`_mark_skipped`), or the runbook has
+                    # no steps at all — since the ordinary way a run finishes
+                    # calls :meth:`_finish` itself, from inside this loop,
+                    # below.
+                    await self._finish_live(live)
+                return
+            if live.state.status != "running":
                 return
             step = by_id.get(step_id)
             if step is None:
@@ -969,6 +986,8 @@ class Runner:
             self._write(live)
             await self._say(live, f"{label}: done, {_took(started)}, {self._sizes(live, outputs)}")
             if live.state.status != "running":
+                if live.state.status == "done":
+                    await self._finish_live(live)
                 return
 
     # -- a tool step, once or once per item ---------------------------------
@@ -1527,6 +1546,8 @@ class Runner:
         live.state = run_state.advance(live.state, step.id, {step.id: name})
         self._write(live)
         await self._say(live, f"{_label(step)}: resolved: no questions, continuing")
+        if live.state.status == "done":
+            await self._finish_live(live)
         return live.state.status == "running"
 
     async def _questions_turn(self, live: _Live, step: GateStep, name: str, text: str) -> str:
@@ -1593,6 +1614,8 @@ class Runner:
             live.state.status = "running"
         self._write(live)
         await self._say(live, f"{_label(step)}: answered, {self._sizes(live, {step.id: name})}")
+        if live.state.status == "done":
+            await self._finish_live(live)
 
     # -- an auto gate ------------------------------------------------------
 
@@ -1620,6 +1643,8 @@ class Runner:
             live.state = run_state.advance(live.state, step.id, {})
             self._write(live)
             await self._say(live, f"{_label(step)}: passed on {name}")
+            if live.state.status == "done":
+                await self._finish_live(live)
             return live.state.status == "running"
 
         gate.loops += 1
@@ -1841,6 +1866,214 @@ class Runner:
                 parts.append(f"{value} {by_name.get(value, 0):,} bytes")
         return ", ".join(parts)
 
+    def _leaf_outputs(
+        self, runbook: Runbook, state: RunState
+    ) -> list[tuple[run_state.StepState, str, str | list[str]]]:
+        """The run's own leaf outputs — owner finding 2026-09-06: a run ended
+        and he could not find the result, because the run's own last steps
+        are a review and a gate, and the actual finished chapter is an
+        earlier step's file.
+
+        A leaf is every role a non-skipped step produced that no later,
+        non-skipped step went on to consume — pinned, read through
+        ``{{ files.role }}``, or named as a gate's ``from:``.
+        :func:`_roles_needed` already answers "what does this step ask of
+        the steps before it"; this only adds the ordering, checking each
+        role against the steps that come **after** the one that made it,
+        since nothing later can consume a role its own maker has not
+        produced yet.
+
+        Takes the parsed runbook and the run's own state directly, rather
+        than a live run, so a finished run — no longer held in ``self._live``
+        once its task ends — can still be asked about, the same way
+        :meth:`result_groups` needs to for a screen that opens long after
+        the run itself is gone.
+
+        When every output was consumed by something later — the ordinary
+        shape, and why this is usually one file — the leaf set is empty and
+        the **last produced file** stands in instead, so a finished run
+        always has something to point a person at.
+        """
+        order = [step.id for step in runbook.steps]
+        schema_by_id = {step.id: step for step in runbook.steps}
+
+        def position(step_id: str) -> int:
+            try:
+                return order.index(step_id)
+            except ValueError:
+                return -1
+
+        done_steps = [
+            s
+            for s in state.steps
+            if s.status == StepStatus.DONE and s.reason != SKIPPED and s.outputs
+        ]
+        produced = [(s, role, value) for s in done_steps for role, value in s.outputs.items()]
+        if not produced:
+            return []
+
+        leaves: list[tuple[run_state.StepState, str, str | list[str]]] = []
+        for step, role, value in produced:
+            pos = position(step.id)
+            consumed_later = any(
+                position(other.id) > pos and role in _roles_needed(schema_by_id[other.id])
+                for other in done_steps
+                if other.id in schema_by_id
+            )
+            if not consumed_later:
+                leaves.append((step, role, value))
+        return leaves or [produced[-1]]
+
+    def _grouped_leaf_files(
+        self, runbook: Runbook, state: RunState
+    ) -> list[tuple[run_state.StepState, list[str]]]:
+        """:meth:`_leaf_outputs`, folded into one filename list per step, in
+        step order — shared by :meth:`_result_summary` (the transcript's own
+        sentence) and :meth:`result_groups` (what a screen draws instead)."""
+        groups: list[tuple[run_state.StepState, list[str]]] = []
+        for step, _role, value in self._leaf_outputs(runbook, state):
+            names = list(value) if isinstance(value, list) else [value]
+            if groups and groups[-1][0] is step:
+                groups[-1][1].extend(names)
+            else:
+                groups.append((step, names))
+        return groups
+
+    def _result_summary(
+        self, runbook: Runbook, state: RunState, workspace: Workspace
+    ) -> dict[str, Any]:
+        """A finished run's own result: the exact sentence its last progress
+        row carries, plus its leaf files (:meth:`_leaf_outputs`) as plain
+        dicts (``{"name": "ch.p6.md", "size": 23401}``) a screen can draw a
+        download link per file from.
+
+        **Pure** — no side effects, no memory of having been called before.
+        It may be called any number of times for the same finished run and
+        answer exactly the same thing every time, which is what lets
+        :meth:`done_summary` be a plain read and :meth:`_finish` say the
+        message this builds without either one having to guess whether the
+        other already has.
+
+        A single step behind the whole leaf set gets the titled message form,
+        ``Done. Result of p6 · Enhance: ...`` (:func:`_label`), when that
+        step names one — the bare ``Done. Result: ...`` otherwise, which is
+        every runbook already written. More than one step contributing
+        leaves (a review step and a step it did not fully supersede, say)
+        gets each step named beside its own files. A file the workspace no
+        longer has is tolerated — its size is reported as 0 rather than
+        raising, the same tolerance :meth:`_sizes` already gives a listing
+        that may be stale by the time it is read.
+        """
+        groups = self._grouped_leaf_files(runbook, state)
+        by_name = {entry.name: entry.size_bytes for entry in workspace.list()}
+
+        def sized(name: str) -> str:
+            return f"{name} ({by_name.get(name, 0):,} bytes)"
+
+        if not groups:
+            message = "Done."
+        elif len(groups) == 1:
+            step, names = groups[0]
+            files = ", ".join(sized(name) for name in names)
+            if step.title:
+                message = f"Done. Result of {_label(step)}: {files}"
+            else:
+                message = f"Done. Result: {files}"
+        else:
+            parts = [
+                f"{_label(step)}: {', '.join(sized(name) for name in names)}"
+                for step, names in groups
+            ]
+            message = "Done. Result: " + "; ".join(parts)
+
+        files = [
+            {"name": name, "size": by_name.get(name, 0)}
+            for _step, names in groups
+            for name in names
+        ]
+        return {"message": message, "files": files}
+
+    async def done_summary(self, conversation_id: str) -> dict[str, Any] | None:
+        """A finished run's own status line — see :meth:`_result_summary`,
+        which is the whole of what this does: read the state and the
+        runbook, then hand them to that pure function. Read once, together,
+        so the run-status box and the transcript's own row can never
+        disagree about how a run ended.
+
+        ``None`` for a run that is not ``done``, or one this build cannot
+        even read any more (its plugin removed, its runbook file gone) —
+        the same tolerance every other read here gives a screen that has
+        nothing to show, never a raise.
+
+        Duck-typed on purpose: ``web/screens/chat_run.py`` reads only
+        ``app.state.runner`` (its own module boundary) and never
+        :mod:`personacore.runbooks.state`, the same as :meth:`state` and
+        :meth:`is_running` already are.
+        """
+        state = await self.state(conversation_id)
+        if state is None or state.status != "done":
+            return None
+        try:
+            runbook, _folder = self._loaded(state.plugin, state.runbook)
+        except RunRefused:
+            return None
+        workspace = self._workspaces.workspace_for(conversation_id)
+        return self._result_summary(runbook, state, workspace)
+
+    async def _finish_live(self, live: _Live) -> None:
+        """:meth:`_finish`, for a run this process is still holding — the
+        pieces are all on ``live`` already, so this only unpacks them."""
+        await self._finish(
+            owner=live.owner,
+            conversation_id=live.conversation_id,
+            runbook=live.runbook,
+            state=live.state,
+            workspace=self._workspaces.workspace_for(live.conversation_id),
+        )
+
+    async def _finish(
+        self,
+        *,
+        owner: Owner,
+        conversation_id: str,
+        runbook: Runbook,
+        state: RunState,
+        workspace: Workspace,
+    ) -> None:
+        """The one place a run's status becomes ``"done"``.
+
+        Every path that can finish a run — the ordinary end of :meth:`_steps`,
+        a gate with nothing left after it (:meth:`_pass_no_questions`,
+        :meth:`_finish_gate`), an auto gate that passes on its last loop
+        (:meth:`_auto_gate`), and a run with nothing to do at all because
+        every step was skipped at start (:func:`_mark_skipped`) — calls this
+        instead of setting ``status`` itself. It sets the status, writes
+        ``.run.json``, and says the result row, in that order, exactly once
+        per call — and every call site above calls it exactly once per real
+        completion, so a run never gets two "Done." rows regardless of which
+        of those paths finished it.
+
+        Takes the pieces a finish needs rather than a :class:`_Live`, so a
+        run this process has forgotten — parked at a gate, answered through
+        :meth:`answer`, which rebuilds a fresh, unregistered ``_Live`` off
+        ``.run.json`` — finishes exactly the same way a live one does.
+
+        Idempotent on the status itself (a state already ``"done"`` is left
+        as it found it) so a defensive second call costs a rewrite and a
+        repeated row rather than a wrong one — but no call site here makes a
+        second call, by construction.
+        """
+        if state.status != "done":
+            state.status = "done"
+            state.current = None
+            state.updated = datetime.now(UTC).isoformat()
+        try:
+            run_state.write_state(self._workspace_dir(conversation_id), state)
+        except OSError as exc:
+            log.error("runbook_state_write_failed", error=repr(exc))
+        row = self._result_summary(runbook, state, workspace)["message"]
+        await self._say_to(owner, conversation_id, runbook.runbook, row)
+
     def _begin(self, live: _Live, step_id: str) -> None:
         """Mark one step ``running``. Not in :mod:`.state` because every
         transition there answers "what happened"; this one only says "starting
@@ -1897,6 +2130,14 @@ class Runner:
             )
 
     async def _say(self, live: _Live, text: str) -> None:
+        """One progress line, as a ``system`` transcript row — see
+        :meth:`_say_to`, which is the whole of what this does once the
+        pieces are unpacked off ``live``."""
+        await self._say_to(live.owner, live.conversation_id, live.runbook.runbook, text)
+
+    async def _say_to(
+        self, owner: Owner, conversation_id: str, runbook_name: str, text: str
+    ) -> None:
         """One progress line, as a ``system`` transcript row.
 
         ``system`` because it was not said by anybody: the chat draws these as
@@ -1910,6 +2151,11 @@ class Runner:
         with one answer rather than two rules that could drift apart. The role
         filter and the author filter both already drop this row; agreeing is
         the point.
+
+        Takes ``owner``/``conversation_id``/``runbook_name`` directly rather
+        than a :class:`_Live` so :meth:`_finish` can say a run's result row
+        for a run this process never held live at all — one answered from
+        ``.run.json`` after this process forgot it, in particular.
         """
         if self._audit is None:
             return
@@ -1917,11 +2163,11 @@ class Runner:
             correlation_id=uuid.uuid4().hex,
             timestamp=datetime.now(UTC),
             surface=Surface.ADMIN_UI,
-            owner=live.owner,
+            owner=owner,
             role=MessageRole.SYSTEM,
             content=text,
-            conversation_id=live.conversation_id,
-            author=Author(name=live.runbook.runbook, kind=AuthorKind.RUNBOOK),
+            conversation_id=conversation_id,
+            author=Author(name=runbook_name, kind=AuthorKind.RUNBOOK),
         )
         try:
             await self._audit.record_transcript(record)
@@ -2380,8 +2626,11 @@ def _mark_skipped(state: RunState, skip: Sequence[str]) -> None:
     Done *before* the run starts and written into ``.run.json`` with it, so
     the step loop needs to know nothing about skipping at all: it asks for the
     next pending step, and a step marked done is not one. A run with every
-    step skipped is a run with nothing to do, and is done on arrival rather
-    than left pointing at a step it will never take.
+    step skipped is a run with nothing to do — ``current`` is left ``None``
+    and ``status`` is left ``"running"``; :meth:`Runner._steps` reads that
+    combination, on the loop's first turn, as its cue to call
+    :meth:`Runner._finish` itself, the one place a run's status becomes
+    ``"done"``.
     """
     if not skip:
         return
@@ -2393,8 +2642,6 @@ def _mark_skipped(state: RunState, skip: Sequence[str]) -> None:
             step.reason = SKIPPED
     first = next((step for step in state.steps if step.status == StepStatus.PENDING), None)
     state.current = first.id if first is not None else None
-    if first is None:
-        state.status = "done"
     state.updated = datetime.now(UTC).isoformat()
 
 

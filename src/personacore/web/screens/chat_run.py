@@ -111,6 +111,7 @@ _EMPTY_RUN_VIEW: dict[str, Any] = {
     "resume_url": "",
     "gate": None,
     "items": [],
+    "results": [],
     "turn_running": False,
 }
 """Nothing to show — no run, no runner, or a run that has already ended.
@@ -121,6 +122,13 @@ run's own progress lines) are the two things this view can show *instead of*
 the plain message/Stop/Resume line — never alongside it, because the current
 step is either running plainly, waiting on a question, or the run is a
 parent watching its own children; it is never two of those at once.
+
+``results`` (owner finding 2026-09-06: a run ended and he could not find the
+result) is the ``done`` branch's own addition to that same plain line — a
+download link per file :meth:`~personacore.runbooks.runner.Runner.
+done_summary` names as this run's leaf output, shown beside the same sentence
+the transcript's own last row carries. Empty for every other status, and for
+a ``done`` run this build can no longer read the runbook of.
 
 ``turn_running`` is never set here — :func:`runbook_run_view` knows nothing
 of :mod:`chat_turns` (the module docstring's own boundary: this file reads
@@ -516,6 +524,13 @@ async def runbook_run_view(
     below — checked first, and returned from, regardless of ``status``: a
     gate can park the run while it waits on a person, and a parent run's own
     "current step" is a fiction the plain branches below know nothing about.
+
+    A ``done`` run's own line (owner finding 2026-09-06) reads
+    :meth:`~personacore.runbooks.runner.Runner.done_summary` for the same
+    sentence the transcript's own last progress row carries, plus a
+    ``results`` list — ``[{"name", "size", "size_label", "url"}]`` — one
+    download link per leaf file, through the same workspace route every
+    other file card in Chat already uses.
     """
     if runner is None or not cid:
         return dict(_EMPTY_RUN_VIEW)
@@ -597,7 +612,39 @@ async def runbook_run_view(
             "show_resume": True,
             "resume_url": resume_url,
         }
-    # stopped / done / failed / anything this module does not recognise yet:
+    if run_status == "done":
+        # Owner finding 2026-09-06: a run ended and he could not find the
+        # result — the run's own last steps were a review and a gate, and
+        # the finished chapter was an earlier step's file, shown only as a
+        # card somewhere up the thread. `done_summary` names the same leaf
+        # files the transcript's own last row does, so this box says exactly
+        # what that row says and adds a click to each — never a raise, the
+        # same tolerance every other read in this module gives a runner.
+        summary: dict[str, Any] | None = None
+        try:
+            summary = await runner.done_summary(cid)
+        except Exception:  # noqa: BLE001 - nothing to show beats a 500
+            summary = None
+        if summary is None:
+            return dict(_EMPTY_RUN_VIEW)
+        results = [
+            {
+                "name": file["name"],
+                "size": file["size"],
+                "size_label": f"{int(file['size']):,} bytes",
+                "url": f"{WORKSPACE_URL_PREFIX}{cid}/{file['name']}",
+            }
+            for file in summary.get("files", ())
+        ]
+        return {
+            **_EMPTY_RUN_VIEW,
+            "visible": True,
+            "poll": False,
+            "cid": cid,
+            "message": str(summary.get("message") or ""),
+            "results": results,
+        }
+    # stopped / failed / anything this module does not recognise yet:
     # terminal, nothing left to say here — the transcript's own notice lines
     # already say how it ended (contract §3's per-step progress rows).
     return dict(_EMPTY_RUN_VIEW)

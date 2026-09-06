@@ -31,9 +31,16 @@
                     compare: {left: {role, label, text},
                               right: {role, label, text}}|None}|None,
              items: [{value, status, reason, link}],
+             results: [{name, size, size_label, url}],
              turn_running (bool)}, oob (bool — true when this is an
              out-of-band replacement, chat_messages.html switching threads)
              — see chat_run.runbook_run_view.
+
+   `results` (owner finding 2026-09-06: a run ended and he could not find the
+   result) is the `done` branch's own addition — one download link per leaf
+   file, named the same as the sentence in `run.message` above it
+   (`chat_run.done_summary`), through the same workspace route every other
+   file card in Chat already uses.
 
    `gate.title`/`description` (the gate step's own) and `source_role`/
    `source_title`/`source_description` (the `from:` step's own) are SPEC
@@ -235,6 +242,18 @@
   {% endfor %}
   {% else %}
   <span>{{ run.message }}</span>
+  {% if run.results %}
+  {# ── a finished run's own result files — owner finding 2026-09-06 ──
+     The run ended and its result was findable only as a card somewhere up
+     the thread; this names the same leaf files `run.message` already does
+     (`chat_run.done_summary`) with a click on each, through the same
+     workspace download route every other file card in Chat already uses. #}
+  <div class="hrow" style="flex-wrap:wrap; gap:var(--space-2)">
+    {% for file in run.results %}
+    <a class="btn btn-secondary" href="{{ file.url }}">{{ file.name }} ({{ file.size_label }})</a>
+    {% endfor %}
+  </div>
+  {% endif %}
   {% if run.show_stop %}
   <button type="button" class="btn btn-secondary" hx-post="{{ run.stop_url }}"
           hx-target="#run-status" hx-swap="outerHTML">Stop</button>

@@ -240,6 +240,8 @@ A run's own machine-written prompts — the exact words sent to the model for a 
 
 **While a step is actually running**, the message box is disabled with *"A runbook is running here; Stop it to type."* — a person's own message can never land in the middle of a run's turns. A **Stop** control sits right on that running line; pressing it stops the current turn the same way stopping an ordinary reply does, and keeps every file the run has produced so far, and unlocks the box the moment it is pressed.
 
+**A run ends with one last line naming its result** — *"Done. Result of p6 · Enhance: ch.p6.md (23,401 bytes)"* — the file (or files) no later step went on to read, with a download link, so a finished run says where its output landed instead of leaving you to find it in a card further up the thread.
+
 ### Restarting the core mid-run
 
 A run that was still going when the core stopped is found again at the next boot and shown as **"Interrupted at p3. Resume?"** in its own conversation, with a **Resume** control right there. Nothing restarts on its own — pressing Resume restarts the interrupted step from its predecessor's own files; anything the dead attempt had half-written is kept, renamed out of the way, never deleted.
