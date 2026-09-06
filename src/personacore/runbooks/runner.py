@@ -1536,14 +1536,19 @@ class Runner:
         and no room for invention (contract §4: "one extra model turn,
         thinking off"). The file is pinned as well as quoted, so a model that
         would rather read the pinned block than the prompt is reading the same
-        bytes either way.
+        bytes either way. The ``from_`` step's own pins are also pinned, so a
+        model quoting a passage from one of those files knows which role to
+        name on the context entry.
         """
+        # Build pins_by_role: the from_ file FIRST, then the from_ step's own pinned files
+        source = _source_pins(live, step, name, self._known_files(live))
+        pins_by_role = {step.from_: name, **{r: f for r, f in source.items() if r != step.from_}}
         streamed, _tripped = await self._streamed(
             live,
             message=gate_tools.questions_prompt(text),
             thinking=False,
             temperature=0.0,
-            pins_by_role={step.from_: name},
+            pins_by_role=pins_by_role,
         )
         return streamed.strip()
 

@@ -239,9 +239,10 @@ of their own to type in; do not offer it again as a choice.
 - Quote every passage the question is about, word for word, as a "context" \
 entry naming its paragraph mark, or its first three words when the file has \
 none. Name the role you quoted it from — the pinned blocks below are each \
-headed "pinned as [role] (file)" — as that entry's "role". For a question \
-comparing two versions of one passage, quote it once from each role, as two \
-separate "context" entries.
+headed "pinned as [role] (file)" — as that entry's "role": the role names \
+the pinned file the quoted passage appears in, not the role of the flags \
+file itself. For a question comparing two versions of one passage, quote it \
+once from each role, as two separate "context" entries.
 - No question for a flag that already says it is consistent, clean, \
 verified or needs no change. If none needs a decision, reply \
 {"questions": []}.
