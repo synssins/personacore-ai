@@ -491,6 +491,53 @@ def _spoken(group: Sequence[TranscriptRecord]) -> list[TranscriptRecord]:
     return [record for record in group if record.role in (MessageRole.USER, MessageRole.ASSISTANT)]
 
 
+def _run_notices(group: Sequence[TranscriptRecord]) -> list[TranscriptRecord]:
+    """A run's own progress rows out of a group (contract ``runbook.md`` §3).
+
+    ``system``-role rows a runbook wrote — the per-step and per-item notices
+    :meth:`personacore.runbooks.runner.Runner._say` posts. They are not
+    messages and are never counted as any, but they *are* the whole content
+    of a conversation a run made and nobody typed in: a runbook-level
+    ``foreach`` parent (§1.12) holds nothing else for its whole life.
+    """
+    return [
+        record
+        for record in group
+        if record.role is MessageRole.SYSTEM
+        and record.author is not None
+        # `==`, not `is` — WAVE2.md's rework item 3, and the same comparison
+        # `conversation_history` above makes for the same reason: a row read
+        # back from a store that does not validate carries the raw string,
+        # which equals `AuthorKind.RUNBOOK` (a `StrEnum`) without being it.
+        and record.author.kind == AuthorKind.RUNBOOK
+    ]
+
+
+def anchor_row(group: Sequence[TranscriptRecord]) -> TranscriptRecord | None:
+    """The row a conversation is identified and dated by, or ``None`` when the
+    group is not one the rail shows.
+
+    The first **spoken** row, unchanged for every conversation that has one —
+    everything before runbooks. Falling back to the first row a *run* wrote,
+    so a conversation whose only content is a run's own progress lines is a
+    conversation rather than nothing: without it a parent run's conversation
+    (contract §1.12) has no rail row, and the heading over its messages —
+    read off that row by :func:`_room` — falls back to "Untitled
+    conversation" while the store holds the runbook's own title.
+
+    One function because the rail (:func:`conversation_rows`), the open
+    thread (:func:`thread_identity`) and the thread lookup
+    (:func:`thread_records`) all have to pick the *same* row: they agree on
+    which row that is by asking here, rather than by three rules that can
+    drift apart and leave a row in the list that nothing ever lights.
+    """
+    spoken = _spoken(group)
+    if spoken:
+        return spoken[0]
+    notices = _run_notices(group)
+    return notices[0] if notices else None
+
+
 def conversation_rows(
     records: Sequence[TranscriptRecord],
     *,
@@ -501,9 +548,13 @@ def conversation_rows(
 ) -> list[ConversationRow]:
     """The rail, newest activity first.
 
-    Rows the operator cannot see the point of are left out: a group with no
-    user or assistant message in it is tool traffic, not a conversation, and a
-    list padded with untitled empty rows is a list nobody trusts.
+    Rows the operator cannot see the point of are left out: a group with
+    neither a spoken message nor a run's own progress line in it is tool
+    traffic, not a conversation, and a list padded with untitled empty rows is
+    a list nobody trusts. **A run's rows count as activity** — see
+    :func:`anchor_row`. A conversation a runbook made and nobody typed in is
+    still one the operator has to be able to reach, and a parent run's
+    (contract §1.12) holds nothing but those lines from start to finish.
 
     ``known`` is what the store says about these threads, keyed by
     conversation id — the title somebody typed (§5.5) and the group they filed
@@ -514,22 +565,31 @@ def conversation_rows(
     """
     rows: list[ConversationRow] = []
     for group in _grouped(records):
-        spoken = _spoken(group)
-        if not spoken:
+        anchor = anchor_row(group)
+        if anchor is None:
             continue
-        started = spoken[0].timestamp
+        spoken = _spoken(group)
+        # A run's own conversation is dated by its last progress line, an
+        # ordinary one by its last message — `group[-1]` for the first and
+        # `spoken[-1]` for the second, which is the same row whenever there
+        # is a spoken one at all.
+        latest = spoken[-1] if spoken else group[-1]
+        started = anchor.timestamp
         identity = started.isoformat()
         opening = next(
             (record.content for record in spoken if record.role is MessageRole.USER),
             None,
         )
-        conversation_id = spoken[0].conversation_id
+        conversation_id = anchor.conversation_id
         room = (known or {}).get(conversation_id) if conversation_id else None
         rows.append(
             ConversationRow(
                 id=identity,
                 title=(room.title if room and room.title else derive_title(opening)),
-                when=_local_day(spoken[-1].timestamp, now=now),
+                when=_local_day(latest.timestamp, now=now),
+                # A progress line is not a message and is never counted as
+                # one: a parent run's conversation honestly reads "0
+                # messages" until somebody types in it.
                 messages=len(spoken),
                 active=identity == active,
                 group=getattr(room, "group_name", None),
@@ -567,21 +627,41 @@ def railed(rows: Sequence[ConversationRow]) -> list[RailGroup]:
 
 
 def thread_records(
-    records: Sequence[TranscriptRecord], started: datetime | None
+    records: Sequence[TranscriptRecord],
+    started: datetime | None,
+    *,
+    conversation_id: str | None = None,
 ) -> list[TranscriptRecord]:
-    """The rows belonging to the conversation that began at ``started``.
+    """The rows belonging to the conversation the screen is showing.
 
-    ``None``, or an instant nothing was said after, is an empty conversation —
-    which is a real state (the screen has just been opened) and not an error.
+    ``conversation_id`` is **the answer whenever the screen has one, full
+    stop.** The caller has already resolved the address it was given to a
+    conversation (``ConversationService.at``); asking here for the group that
+    names it is then a lookup rather than an inference. **When an id is given
+    and no group carries it, the answer is an empty list — the instant
+    fallback below is never reached.** A conversation the id names but that
+    has written no row yet is indistinguishable, from here, from one that
+    never will; both are the real, ordinary "nothing said yet" state
+    :func:`thread_identity` and the screen already render as empty, so
+    guessing at a row is not needed and is exactly the mistake this rule
+    exists to rule out (next paragraph).
 
-    The anchor is the group's first **spoken** row (``_spoken``, unchanged for
-    every conversation that has one — everything before runbooks) — falling
-    back to its first ``system`` row only when it has no spoken row at all
-    yet. That fallback is for a runbook's own conversation the instant after
-    ``Runner.start`` (PLAN.md web row, alpha.19): a ``tool`` step's own
-    "running"/"done" notice can be the *only* thing posted before the first
-    model turn ever writes an assistant reply, and without it such a
-    conversation would show nothing at all until one did.
+    **The instant is only for a caller with no id at all.** It is the first
+    group whose own :func:`anchor_row` is at or after ``started``. ``None``,
+    or an instant nothing was said after, is an empty conversation, which is
+    a real state (the screen has just been opened) and not an error.
+
+    **The instant must never be asked to stand in for an id that named
+    nothing.** A parent run (contract §1.12) creates its item's conversation
+    *before* it writes its own "chapter 1: running" line, so the item
+    conversation's own start instant is earlier than the parent's first row.
+    The item's conversation id is known — it is what the item line's "Open"
+    link carries — so falling through to the instant for it, the moment it
+    has zero rows of its own, hands back the parent's transcript instead:
+    that is what put a parent's progress row on a page whose run status,
+    composer and persona were all the item's. Returning ``[]`` for an id that
+    names nothing, rather than searching by instant, is what keeps a
+    zero-row child conversation from ever being answered with a sibling's.
 
     The rows returned are the whole group **except** ``tool``-role ones —
     audit-only rows never meant to be their own line — so a runbook's own
@@ -589,14 +669,20 @@ def thread_records(
     the ordinary conversation rather than being stripped before
     :func:`transcript_exchanges` ever sees them.
     """
+    groups = _grouped(records)
+    if conversation_id:
+        for group in groups:
+            if any(row.conversation_id == conversation_id for row in group):
+                return [row for row in group if row.role is not MessageRole.TOOL]
+        return []
     if started is None:
         return []
-    for group in _grouped(records):
-        spoken = _spoken(group)
-        anchor = (
-            spoken[0]
-            if spoken
-            else next((row for row in group if row.role is MessageRole.SYSTEM), None)
+    for group in groups:
+        # `anchor_row`, widened to *any* ``system`` row: this fallback has
+        # always accepted one, and narrowing it to a run's own rows here
+        # would drop a thread off the screen rather than off the rail.
+        anchor = anchor_row(group) or next(
+            (row for row in group if row.role is MessageRole.SYSTEM), None
         )
         if anchor is not None and anchor.timestamp >= started:
             return [row for row in group if row.role is not MessageRole.TOOL]
@@ -659,8 +745,16 @@ def thread_identity(rows: Sequence[TranscriptRecord], fallback: str) -> str:
     composer by the opening. This resolves the first to the second so exactly
     one row is highlighted, and falls back to the composer's own value while
     nothing has been said yet.
+
+    Read through :func:`anchor_row`, the same row :func:`conversation_rows`
+    builds its ``id`` from, so "which row is lit" and "which row exists" can
+    never name two different instants. That matters for a conversation a run
+    made: its rows open with a progress line and not with a message, so
+    ``rows[0]`` and the rail's own anchor are the same row there only because
+    both ask the same question.
     """
-    return rows[0].timestamp.isoformat() if rows else fallback
+    anchor = anchor_row(rows)
+    return anchor.timestamp.isoformat() if anchor is not None else fallback
 
 
 def transcript_exchanges(
@@ -720,6 +814,16 @@ def transcript_exchanges(
     ``None`` when it cannot be known, which prints every turn's own token count
     with no denominator rather than a guessed one.
     """
+    # Local, not a module-level import: another builder is in this same file's
+    # `loop.py`/store neighbourhood at the same time this alpha's gate-context
+    # task is landing, so this function's own edit stays inside this function
+    # rather than touching the shared import block above. `QUESTIONS_PROMPT`
+    # is the fixed core prompt every `questions: model` gate turn is built
+    # from (`personacore.runbooks.gates.questions_prompt`) — a runbook's own
+    # prompt file can never coincidentally start with it, so it identifies
+    # that one turn's own user row precisely.
+    from personacore.runbooks.gates import QUESTIONS_PROMPT, GateError, parse_questions
+
     reasoning = reasoning_by_correlation or {}
     exchanges: list[dict[str, Any]] = []
     # `pending` — the exchange still waiting for its reply — is tracked
@@ -754,6 +858,14 @@ def transcript_exchanges(
                 entry["runbook_prompt_label"] = (
                     f"{step_label} prompt · {len(record.content):,} characters"
                 )
+                # This alpha's own finding: a gate's own questions turn and an
+                # ordinary model step's turn both write author kind `runbook`
+                # on every row they leave, so the reply is indistinguishable
+                # from a model step's own (the flags, the edited text) by
+                # author alone — and a model step's own reply must stay
+                # visible. The fixed prompt text is what tells them apart.
+                if record.content.startswith(QUESTIONS_PROMPT):
+                    entry["gate_questions_turn"] = True
             exchanges.append(entry)
             pending = entry
             asked_at = record.timestamp
@@ -767,6 +879,17 @@ def transcript_exchanges(
                 reasoning_by_correlation=reasoning,
                 context_limit=context_limit,
             )
+            if pending.pop("gate_questions_turn", False):
+                # Fold the reply away like the run's own prompt row above it
+                # — the raw questions JSON is not something a person reads,
+                # it is what the gate card was built from.
+                try:
+                    count = len(parse_questions(record.content).questions)
+                    summary = f"questions · {count}"
+                except GateError:
+                    summary = "questions"
+                pending["gate_questions_reply"] = True
+                pending["gate_questions_summary"] = summary
             pending = None
             asked_at = None
         else:

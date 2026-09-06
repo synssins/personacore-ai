@@ -2551,6 +2551,18 @@ class AgentLoop:
         make the transcript claim a character wrote its own instructions.
         Rows written before this existed keep ``None``, which reads as a name
         with no model beside it rather than as an error.
+
+        ``conversation_id`` is stamped straight from ``ctx`` when the turn has
+        one, rather than left for :meth:`~personacore.audit.store.AuditStore.
+        attach_to_conversation` to claim afterwards. A caller that already
+        knows the thread has no reason to hand back an orphan row for
+        somebody else to find and file — the row belongs to this conversation
+        the instant it exists, and every reader that lists, groups or counts
+        by conversation sees that a turn sooner rather than only once it ends.
+        ``None`` here (``ask_persona``'s turn, a plugin call, anything with no
+        conversation of its own) writes the same unattached row this always
+        wrote, still eligible for the startup backfill and still claimable
+        later.
         """
         author = _author_for(ctx, role)
         record = TranscriptRecord(
@@ -2561,6 +2573,7 @@ class AgentLoop:
             role=role,
             content=content,
             author=author,
+            conversation_id=ctx.conversation_id,
         )
         try:
             await self._audit_sink.record_transcript(record)

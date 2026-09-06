@@ -41,3 +41,11 @@
 {# The run line names the conversation it belongs to, exactly like the
    controls above it — contract runbook.md §3, PLAN.md web row alpha.19. #}
 {% with oob = True %}{% include "fragments/run_status.html" %}{% endwith %}
+{# And so does the lock on the composer. It used to be left behind by this
+   response: the run line was swapped and the box was not, so switching from
+   a conversation with a run in it to one without left "A runbook is running
+   here; Stop it to type." over a box nothing was running in — and switching
+   the other way left a box somebody could type into mid-run. The fragment
+   is already out-of-band by itself (every `chat_run.py` route answers with
+   it), so it needs no `oob` flag of its own. #}
+{% include "fragments/composer_lock.html" %}

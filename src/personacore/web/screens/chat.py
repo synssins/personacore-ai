@@ -171,11 +171,11 @@ from personacore.web.screens.chat_room import (
     persona_choices,
 )
 from personacore.web.screens.chat_run import (
-    RUN_LOCK_HINT,
     TEXT_ANSWER_LABEL,
     awaiting_text_view,
     composer_locked,
     conversation_link_for,
+    lock_hint,
     runbook_run_view,
     runner_for,
 )
@@ -1073,22 +1073,34 @@ def register(router: APIRouter, ctx: UIContext) -> None:
         started = conversation_start(wanted_conversation(wanted))
         opened = started or now
         records, known = await _visible(user)
-        rows = thread_records(records, opened)
-        identity = thread_identity(rows, opened.isoformat())
-        mine = _my_name(records, user)
-        rail = conversation_rows(records, active=identity, now=now, known=known)
         # The picker shows this *conversation's* persona, falling back to the
         # core's default for a thread that has not chosen one. Reopening
         # yesterday's thread with a chosen persona therefore shows that same
         # persona, which is the same answer the next turn will get.
+        #
+        # Resolved *before* the rows are picked, because it is what picks
+        # them: an address that names a conversation names its rows, and
+        # the instant-only rule underneath can hand back a different
+        # conversation's transcript entirely once a run has made two of them
+        # (see `thread_records`).
         found = await _looked_at(user, started)
+        rows = thread_records(
+            records, opened, conversation_id=found.conversation_id if found else None
+        )
+        identity = thread_identity(rows, opened.isoformat())
+        mine = _my_name(records, user)
+        rail = conversation_rows(records, active=identity, now=now, known=known)
         chosen = _chosen_persona(found)
         runner = runner_for(request)
         run_cid = found.conversation_id if found is not None else None
         runbook_locked = await composer_locked(runner, run_cid)
+        runbook_hint = await lock_hint(runner, run_cid)
         run_awaiting_text = awaiting_text_view(runner, run_cid)
         run_view = await runbook_run_view(
-            runner, run_cid, link_for=conversation_link_for(conversations, Owner.profile(user.id))
+            runner,
+            run_cid,
+            link_for=conversation_link_for(conversations, Owner.profile(user.id)),
+            layout=ctx.layout,
         )
         runbooks_store = getattr(request.app.state, "runbooks", None)
         picker_enabled = runbook_picker_enabled(ctx.layout) and runbooks_store is not None
@@ -1158,7 +1170,7 @@ def register(router: APIRouter, ctx: UIContext) -> None:
             # box open.
             "run": run_view,
             "runbook_locked": runbook_locked,
-            "runbook_lock_hint": RUN_LOCK_HINT,
+            "runbook_lock_hint": runbook_hint,
             # WAVE2.md's text-answer mode: the composer unlocks with this
             # label above it instead of the run-lock hint, and the send
             # route (chat_exchange._turn) routes that one message to
@@ -1348,21 +1360,27 @@ def register(router: APIRouter, ctx: UIContext) -> None:
         started = conversation_start(wanted_conversation(c))
         opened = started or now
         records, known = await _visible(user)
-        rows = thread_records(records, opened)
-        identity = thread_identity(rows, opened.isoformat())
-        mine = _my_name(records, user)
-        rail = conversation_rows(records, active=identity, now=now, known=known)
         # The picker comes along too. The persona belongs to the thread, so
         # switching to yesterday's conversation without a page load has
         # to move the control as well — otherwise the screen names one persona
         # while the next turn is answered by another, which is the confusion
-        # this whole change exists to remove.
+        # this whole change exists to remove. Resolved first, for the reason
+        # `_screen` resolves it first: it is what picks the rows.
         found = await _looked_at(user, started)
+        rows = thread_records(
+            records, opened, conversation_id=found.conversation_id if found else None
+        )
+        identity = thread_identity(rows, opened.isoformat())
+        mine = _my_name(records, user)
+        rail = conversation_rows(records, active=identity, now=now, known=known)
         chosen = _chosen_persona(found)
+        runner = runner_for(request)
+        run_cid = found.conversation_id if found is not None else None
         run_view = await runbook_run_view(
-            runner_for(request),
-            found.conversation_id if found is not None else None,
+            runner,
+            run_cid,
             link_for=conversation_link_for(conversations, Owner.profile(user.id)),
+            layout=ctx.layout,
         )
         built = transcript_exchanges(
             rows,
@@ -1382,6 +1400,16 @@ def register(router: APIRouter, ctx: UIContext) -> None:
                 **_room(rail, rows, mine),
                 **_rail_view(request, rail),
                 "run": run_view,
+                # The composer's own lock, out of band beside the run line —
+                # `fragments/composer_lock.html`, the same context every
+                # `chat_run.py` route builds for it. Switching threads has to
+                # carry it or the box keeps the lock state of the thread it
+                # was on.
+                "locked": await composer_locked(runner, run_cid),
+                "awaiting_text": awaiting_text_view(runner, run_cid),
+                "hint": await lock_hint(runner, run_cid),
+                "awaiting_text_label": TEXT_ANSWER_LABEL,
+                "max_message_chars": MAX_MESSAGE_CHARS,
                 # The room controls follow the thread for the same reason the
                 # picker does: who else is in this conversation, and whether it
                 # speaks, are properties of the conversation being opened.
