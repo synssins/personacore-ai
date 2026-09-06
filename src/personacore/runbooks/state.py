@@ -94,6 +94,15 @@ class GateState:
     """question id -> answer line."""
     loops: int = 0
     """Auto-gate loop count."""
+    source_file: str | None = None
+    """The ``from:`` step's own output filename, added contract §4
+    2026-09-05 — what the chat's gate card reads to show the flag line a
+    question came from and to link the file. ``None`` for a gate this build
+    parked before the field existed, or for an auto gate, which has no card."""
+    source_role: str | None = None
+    """The ``from:`` role :attr:`source_file` was pinned under — kept beside
+    the filename because a role is what a runbook author reads and a
+    filename is what the workspace reads, and the card needs to say both."""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -101,6 +110,8 @@ class GateState:
             "questions": list(self.questions),
             "answers": dict(self.answers),
             "loops": self.loops,
+            "source_file": self.source_file,
+            "source_role": self.source_role,
         }
 
     @classmethod
@@ -110,6 +121,11 @@ class GateState:
             questions=list(data.get("questions", [])),
             answers={str(k): str(v) for k, v in dict(data.get("answers", {})).items()},
             loops=int(data.get("loops", 0)),
+            # `.get(..., None)` rather than `["source_file"]`: contract §5,
+            # "keep old files readable" — a `.run.json` written before this
+            # field existed has neither key at all.
+            source_file=data.get("source_file"),
+            source_role=data.get("source_role"),
         )
 
 
@@ -500,6 +516,8 @@ def _clone(state: RunState) -> RunState:
                     questions=list(s.gate.questions),
                     answers=dict(s.gate.answers),
                     loops=s.gate.loops,
+                    source_file=s.gate.source_file,
+                    source_role=s.gate.source_role,
                 )
                 if s.gate
                 else None,

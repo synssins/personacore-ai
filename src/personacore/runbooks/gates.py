@@ -57,6 +57,14 @@ MAX_OPTIONS = 4
 question; four, because the Other box is always there for the answer the
 model did not think of."""
 
+MAX_REF_CHARS = 40
+MAX_QUOTE_CHARS = 600
+"""Contract §4, added 2026-09-05: a passage's ``ref`` and ``quote`` are each
+capped rather than refused — a model that quotes a paragraph a little too
+generously is still handing over the evidence a person needs to answer, and
+refusing it would fall the gate back to the raw-file card the whole change
+exists to avoid."""
+
 OTHER = "Other"
 """How a typed answer is labelled in the answer file — contract §4's own
 example line, ``q1: Other — the visitor is the neighbour's cousin; they have only just met.``"""
@@ -81,6 +89,35 @@ class GateError(Exception):
 # ---------------------------------------------------------------------------
 
 
+def _capped(text: str, limit: int) -> str:
+    """``text``, cut to ``limit`` characters with a trailing ellipsis when it
+    was longer. Never refused — see :data:`MAX_QUOTE_CHARS`."""
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 1)] + "…"
+
+
+class Passage(BaseModel):
+    """One passage a question is about — contract §4, added 2026-09-05:
+    "every question carries the passages it is about, quoted word for word
+    from the file the gate reads." ``ref`` is a ``¶N`` mark or, for a file
+    with none, the passage's first three words; both fields are capped
+    rather than refused (:func:`_capped`)."""
+
+    ref: str
+    quote: str
+
+    @field_validator("ref")
+    @classmethod
+    def _cap_ref(cls, value: str) -> str:
+        return _capped(value, MAX_REF_CHARS)
+
+    @field_validator("quote")
+    @classmethod
+    def _cap_quote(cls, value: str) -> str:
+        return _capped(value, MAX_QUOTE_CHARS)
+
+
 class Question(BaseModel):
     """One question at a gate — contract §4's own JSON, field for field."""
 
@@ -88,6 +125,10 @@ class Question(BaseModel):
     text: str
     options: list[str] = Field(min_length=MIN_OPTIONS, max_length=MAX_OPTIONS)
     other: bool = True
+    context: list[Passage] = Field(default_factory=list)
+    """The passages this question is about, added 2026-09-05 so a question
+    never asks about evidence the card does not show. Optional — a question
+    with none renders exactly as before."""
 
     @field_validator("id", "text")
     @classmethod
@@ -105,9 +146,14 @@ class Question(BaseModel):
 
 
 class GateQuestions(BaseModel):
-    """Every question one gate asks, in the order they are asked."""
+    """Every question one gate asks, in the order they are asked.
 
-    questions: list[Question] = Field(min_length=1, max_length=MAX_QUESTIONS)
+    ``questions`` may be **empty** (contract §4, added 2026-09-05): a flag
+    file where nothing needs a decision is a pass, not a malformed reply, so
+    the gate itself decides what an empty list means rather than this shape
+    refusing it before that choice can be made."""
+
+    questions: list[Question] = Field(max_length=MAX_QUESTIONS)
 
     @model_validator(mode="after")
     def _ids_are_unique(self) -> GateQuestions:
@@ -120,30 +166,36 @@ class GateQuestions(BaseModel):
 
 
 QUESTIONS_PROMPT = """\
-Below is a file of flags raised about a piece of work. Turn every flag it \
-raises into one question for the person who has to decide it.
+Below is a file of flags raised about a piece of work. Turn each flag that \
+needs a decision into one question for the person who decides it.
 
 Reply with JSON and nothing else. No explanation, no code fence, no heading:
 
-{"questions": [{"id": "q1", "text": "Is this deliberate?", \
-"options": ["Yes, leave it", "No, fix it"], "other": true}]}
+{"questions": [{"id": "q1", "text": "Is this deliberate?", "options": \
+["Keep as written", "Change it"], "other": true, "context": \
+[{"ref": "¶24", "quote": "the passage, quoted word for word"}]}]}
 
-- One question per flag, in the order the file raises them, at most 20.
-- Ids are q1, q2, q3 and so on, in that order.
-- Each question's text is one plain sentence a person can answer without \
-reading the file.
-- Each question has two to four options: the answers this file actually makes \
-possible, written the way a person would say them.
+- One decision per question, in the order raised, at most 20; ids q1, q2, ...
+- Two to four options: the actions this file makes possible, in the \
+author's own words ("Keep as written", "Change to ..."), never a bare \
+Yes/No pair.
+- Quote every passage the question is about, word for word, as a "context" \
+entry naming its paragraph mark, or its first three words when the file has \
+none.
+- No question for a flag that already says it is consistent, clean, \
+verified or needs no change. If none needs a decision, reply \
+{"questions": []}.
 - Set "other" to true on every question, so a person can type an answer of \
 their own.
 
-Ask about nothing the file does not raise, and do not answer any of the \
-questions yourself.
+Ask about nothing the file does not raise, and answer none of it yourself.
 
 The file:
 """
-"""The fixed core prompt of contract §4: "a fixed core prompt: turn each flag
-into one question with two to four options and an Other, as JSON."
+"""The fixed core prompt of contract §4, rewritten 2026-09-05 so a question
+never arrives without the evidence it is about: one decision per question,
+options in the author's own words, every passage quoted word for word, and
+no question for a flag that needs no decision.
 
 Fixed in the core and not in the runbook on purpose. A gate's questions are
 the one turn in a run whose *output shape* the core has to be able to rely on
@@ -331,12 +383,15 @@ def _content_lines(text: str) -> int:
 __all__ = [
     "MAX_OPTIONS",
     "MAX_QUESTIONS",
+    "MAX_QUOTE_CHARS",
+    "MAX_REF_CHARS",
     "MIN_OPTIONS",
     "OTHER",
     "PASS_WHEN_CONDITIONS",
     "QUESTIONS_PROMPT",
     "GateError",
     "GateQuestions",
+    "Passage",
     "Question",
     "answer_line",
     "check_pass_when",

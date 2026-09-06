@@ -155,6 +155,40 @@ def chips_for_names(
     return [chip_for(conversation_id, name, pinned=name in pinned_set) for name in names]
 
 
+def read_workspace_text(
+    layout: AppdataLayout,
+    conversation_id: str,
+    name: str,
+    *,
+    max_file_bytes: int | None = None,
+    max_workspace_bytes: int | None = None,
+) -> str | None:
+    """One workspace file's text, or ``None`` — the jailed read
+    :func:`chat_workspace_file` serves over HTTP, exposed for a caller (the
+    gate card's own flag-line match, WAVE2.md contract §4's 2026-09-05
+    addition) that needs the bytes rather than a response.
+
+    **Never opens a path directly.** :class:`~personacore.workspaces.
+    Workspace` is what checks ``name`` against the filename rule and the
+    conversation's own folder, the same object every other read in this
+    module goes through — this is that read, factored out rather than
+    duplicated, so "how a workspace file is read" stays answered in one
+    place. ``None`` for a name that is not there, is shaped wrong, or is not
+    valid text — every failure this can have is one a caller with no HTTP
+    response to raise into only needs to treat as "nothing to show".
+    """
+    try:
+        workspace = workspaces_module.Workspace(
+            layout,
+            conversation_id,
+            max_file_bytes=max_file_bytes or _DEFAULT_MAX_FILE_BYTES,
+            max_workspace_bytes=max_workspace_bytes or _DEFAULT_MAX_WORKSPACE_BYTES,
+        )
+        return workspace.read(name)
+    except (workspaces_module.WorkspaceError, OSError, UnicodeDecodeError):
+        return None
+
+
 def pinned_names_for(layout: AppdataLayout, conversation_id: str) -> frozenset[str]:
     """Every name pinned in this conversation's workspace — contract §13.
 
@@ -380,6 +414,7 @@ __all__ = [
     "chips_for_names",
     "kind_label_for",
     "pinned_names_for",
+    "read_workspace_text",
     "register",
     "workspace_files_from_detail",
 ]

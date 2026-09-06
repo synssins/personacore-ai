@@ -375,6 +375,10 @@
   }
   #run-status { margin: 0 var(--space-6) var(--space-2); }
   #run-status[hidden] { display: none; }
+  /* contract runbook.md §4, added 2026-09-05: a gate's own question card is
+     a form with evidence to show, not a quiet progress pill, so it is
+     allowed the chat's own full width instead of `.chat-notice`'s 90%. */
+  .chat-notice.run-status-gate { max-width: none; align-self: stretch; }
   #run-status .btn { font-size: 12px; padding: 2px var(--space-2); }
 
   /* ── a message waiting its turn — composer.md contract §3 ──

@@ -1248,11 +1248,35 @@ class Runner:
             gate = GateState(mode="text")
             row = f"{step.id}: waiting for you — {exc.message} Answer in the box below; {name}"
             return await self._park_at_gate(live, step, gate, row)
+        if not asked.questions:
+            # Contract §4, added 2026-09-05: every flag said "consistent" —
+            # nothing here needs a person, so this is a pass rather than a
+            # park.
+            return await self._pass_no_questions(live, step)
         gate = GateState(
             mode="questions",
             questions=[question.model_dump() for question in asked.questions],
+            source_file=name,
+            source_role=step.from_,
         )
         return await self._park_at_gate(live, step, gate, _gate_row(step.id, gate))
+
+    async def _pass_no_questions(self, live: _Live, step: GateStep) -> bool:
+        """Contract §4, added 2026-09-05: an empty ``questions`` list is a
+        pass, not a park. The gate's own role still gets a file — the fixed
+        single line ``"No questions."`` — so a later step's ``pins:
+        [<gate id>]`` resolves to something real rather than needing a
+        special case for the gate nobody had to answer.
+        """
+        workspace = self._workspaces.workspace_for(live.conversation_id)
+        wanted = self._substituted(live, step.answer or f"{step.id}.md")
+        name = self._written(workspace, live, wanted, "No questions.\n")
+        if name is None:
+            raise _StepFailed(f"{wanted} could not be written to the workspace.")
+        live.state = run_state.advance(live.state, step.id, {step.id: name})
+        self._write(live)
+        await self._say(live, f"{step.id}: resolved: no questions, continuing")
+        return live.state.status == "running"
 
     async def _questions_turn(self, live: _Live, step: GateStep, name: str, text: str) -> str:
         """One extra scripted turn, asking for the questions as JSON.

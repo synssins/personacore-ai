@@ -48,6 +48,7 @@ from fastapi.responses import HTMLResponse
 
 from personacore.audit.models import Owner, Surface
 from personacore.conversations.service import ConversationService
+from personacore.web.screens.chat_workspace import WORKSPACE_URL_PREFIX, read_workspace_text
 from personacore.web.shared import UIContext
 
 RUN_UNAVAILABLE = "Runbook runs are not available in this build."
@@ -57,7 +58,19 @@ verbatim."""
 
 RUN_LOCK_HINT = "A runbook is running here; Stop it to type."
 """Contract §3: "The chat box is locked while a run is active." Shown next
-to the disabled composer, and nowhere else."""
+to the disabled composer while it is locked for that reason — a running
+step, or an interrupted/parked run with nothing left for a person to answer.
+"""
+
+GATE_LOCK_HINT = "A runbook is waiting for your answers above."
+"""This task's own finding 7 (the same live run that found "Editor in chief"
+above): the composer is also locked while a **questions** gate's card is
+showing, and :data:`RUN_LOCK_HINT` is a wrong sentence for that moment —
+there is no Stop button on a parked run, only the Answer buttons already on
+screen. Shown instead of :data:`RUN_LOCK_HINT` whenever :func:`lock_hint`
+finds a pending gate; never shown at the same time as
+:data:`TEXT_ANSWER_LABEL`, which unlocks the box rather than explaining why
+it is locked."""
 
 RUN_NOT_FOUND = "There is no run there."
 """One sentence for a conversation that is not this operator's own and one
@@ -142,7 +155,51 @@ def _field(obj: Any, key: str, default: Any = None) -> Any:
     return getattr(obj, key, default)
 
 
-def _gate_view(state: Any) -> dict[str, Any] | None:
+def _context_rows(question: Any) -> list[dict[str, str]]:
+    """A question's own ``context`` passages, as the card draws them —
+    contract §4, added 2026-09-05: "every question carries the passages it
+    is about." Read the same tolerant, dict-or-attribute way :func:`_field`
+    reads everything else about a question, since a passage is one more
+    thing ``gates.py`` may hand back as either shape."""
+    rows: list[dict[str, str]] = []
+    for passage in _field(question, "context", None) or ():
+        ref = str(_field(passage, "ref", "") or "")
+        quote = str(_field(passage, "quote", "") or "")
+        if ref or quote:
+            rows.append({"ref": ref, "quote": quote})
+    return rows
+
+
+def _matched_flag_line(text: str, context: list[dict[str, str]]) -> str | None:
+    """The line in the gate's own ``from:`` file this question came from —
+    contract §4, added 2026-09-05: "the flag line the question came from",
+    matched by the first context passage's ``ref``, else by the first 20
+    characters of any context passage's ``quote``, else nothing.
+
+    A whole-line substring match, the same rule :func:`~personacore.
+    runbooks.gates.evaluate`'s own line conditions use, and for the same
+    reason: a flag file is prose or a Markdown table, not something a person
+    writing one is matching a pattern against.
+    """
+    lines = text.splitlines()
+    first_ref = context[0]["ref"] if context and context[0]["ref"] else None
+    if first_ref:
+        for line in lines:
+            if first_ref in line:
+                return line.strip()
+    for passage in context:
+        needle = passage["quote"][:20]
+        if not needle:
+            continue
+        for line in lines:
+            if needle in line:
+                return line.strip()
+    return None
+
+
+def _gate_view(
+    state: Any, *, layout: Any | None = None, cid: str = ""
+) -> dict[str, Any] | None:
     """The chat's own gate-question card (WAVE2.md "Gate questions in the
     chat"), or ``None``.
 
@@ -156,6 +213,16 @@ def _gate_view(state: Any) -> dict[str, Any] | None:
     with no questions at all, or one every question of which
     ``gate.answers`` already covers — the run has moved on and there is
     nothing left to ask.
+
+    ``layout``/``cid`` are contract §4's 2026-09-05 addition: with both
+    given, the current question's own passages are matched against the
+    gate's ``source_file`` (read through :func:`~personacore.web.screens.
+    chat_workspace.read_workspace_text` — the jailed reader, never a path
+    opened from state directly) to find the flag line it came from, and a
+    link to open that file is built from the same route
+    :mod:`personacore.web.screens.chat_workspace` already serves it on.
+    Omitted (the default) for :func:`composer_locked`'s own call, which only
+    ever asks "is there a gate" and reads neither.
     """
     step = _current_step(state)
     if step is None:
@@ -173,6 +240,15 @@ def _gate_view(state: Any) -> dict[str, Any] | None:
         if qid is None or qid in answers:
             continue
         other = _field(question, "other", True)
+        context = _context_rows(question)
+        source_file = getattr(gate, "source_file", None)
+        source_url: str | None = None
+        flag_line: str | None = None
+        if isinstance(source_file, str) and source_file and layout is not None and cid:
+            source_url = f"{WORKSPACE_URL_PREFIX}{cid}/{source_file}"
+            text = read_workspace_text(layout, cid, source_file)
+            if text is not None:
+                flag_line = _matched_flag_line(text, context)
         return {
             "question_id": qid,
             "text": str(_field(question, "text") or ""),
@@ -180,6 +256,10 @@ def _gate_view(state: Any) -> dict[str, Any] | None:
             "other": True if other is None else bool(other),
             "index": index,
             "total": total,
+            "context": context,
+            "flag_line": flag_line,
+            "source_file": source_file if isinstance(source_file, str) else None,
+            "source_url": source_url,
         }
     return None
 
@@ -242,6 +322,7 @@ async def runbook_run_view(
     cid: str | None,
     *,
     link_for: Callable[[str], Awaitable[str | None]] | None = None,
+    layout: Any | None = None,
 ) -> dict[str, Any]:
     """The chat window's own small account of a runbook run in this
     conversation — the full page load and the polled fragment build the
@@ -256,6 +337,12 @@ async def runbook_run_view(
     conversations (:func:`_items_view`) — pass :func:`conversation_link_for`
     to resolve them, or leave it ``None`` (every item then carries no link,
     which is still an honest — if incomplete — row rather than a raise).
+
+    ``layout`` is contract §4's 2026-09-05 addition, passed straight to
+    :func:`_gate_view` so a pending gate's own card can read the flag line
+    and file it came from. ``None`` (the default) draws the card with
+    neither — a caller that has not been given a layout, or a test that does
+    not care about that half of the card.
 
     A pending **gate** (WAVE2.md "Gate questions in the chat") and a
     parent's own **items** each pre-empt the plain message/Stop/Resume line
@@ -278,7 +365,7 @@ async def runbook_run_view(
     stop_url = f"/admin/chat/run/{cid}/stop"
     resume_url = f"/admin/chat/run/{cid}/resume"
 
-    gate = _gate_view(state)
+    gate = _gate_view(state, layout=layout, cid=cid)
     if gate is not None:
         return {
             **_EMPTY_RUN_VIEW,
@@ -388,6 +475,30 @@ async def composer_locked(runner: Any | None, cid: str | None) -> bool:
     return _gate_view(state) is not None
 
 
+async def lock_hint(runner: Any | None, cid: str | None) -> str:
+    """Which sentence explains a locked composer — this task's own finding
+    7: :data:`RUN_LOCK_HINT` (a run in flight) or :data:`GATE_LOCK_HINT` (a
+    gate's own questions are showing above the box). Read off the same state
+    :func:`composer_locked` already reads for its own last branch, so the two
+    can never disagree about *why* the box is disabled — only
+    :func:`composer_locked` says *whether*.
+
+    Never raises, the same tolerance every other read in this module gives a
+    runner: :data:`RUN_LOCK_HINT` is the answer for no runner, no
+    conversation, or a broken read, exactly as it always was before this
+    function existed.
+    """
+    if runner is None or not cid:
+        return RUN_LOCK_HINT
+    try:
+        state = await runner.state(cid)
+    except Exception:  # noqa: BLE001 - never a 500 for a composer's own label
+        return RUN_LOCK_HINT
+    if state is not None and _gate_view(state) is not None:
+        return GATE_LOCK_HINT
+    return RUN_LOCK_HINT
+
+
 def _refusal_message(exc: Exception) -> str:
     """``RunRefused.message`` (PLAN.md's Joints), read with ``getattr``
     rather than an ``isinstance`` check — this module never imports the
@@ -411,6 +522,7 @@ def register(router: APIRouter, ctx: UIContext) -> None:
     templates = ctx.templates
     require_user = ctx.require_user
     store = ctx.audit
+    layout = ctx.layout
     conversations = ConversationService(store, surface=Surface.ADMIN_UI)
 
     async def _fragment(request: Request, view: dict[str, Any], *, cid: str) -> HTMLResponse:
@@ -431,7 +543,7 @@ def register(router: APIRouter, ctx: UIContext) -> None:
             context={
                 "locked": await composer_locked(runner, cid),
                 "awaiting_text": awaiting_text_view(runner, cid),
-                "hint": RUN_LOCK_HINT,
+                "hint": await lock_hint(runner, cid),
                 "awaiting_text_label": TEXT_ANSWER_LABEL,
                 "max_message_chars": COMPOSER_MAX_MESSAGE_CHARS,
             },
@@ -474,7 +586,7 @@ def register(router: APIRouter, ctx: UIContext) -> None:
         runner = runner_for(request)
         if runner is None:
             return await _unavailable(request, owned)
-        view = await runbook_run_view(runner, owned, link_for=_link_for(request))
+        view = await runbook_run_view(runner, owned, link_for=_link_for(request), layout=layout)
         return await _fragment(request, view, cid=owned)
 
     @router.post(
@@ -501,7 +613,7 @@ def register(router: APIRouter, ctx: UIContext) -> None:
                 },
                 cid=owned,
             )
-        view = await runbook_run_view(runner, owned, link_for=_link_for(request))
+        view = await runbook_run_view(runner, owned, link_for=_link_for(request), layout=layout)
         return await _fragment(request, view, cid=owned)
 
     @router.post(
@@ -528,7 +640,7 @@ def register(router: APIRouter, ctx: UIContext) -> None:
                 },
                 cid=owned,
             )
-        view = await runbook_run_view(runner, owned, link_for=_link_for(request))
+        view = await runbook_run_view(runner, owned, link_for=_link_for(request), layout=layout)
         return await _fragment(request, view, cid=owned)
 
     @router.post(
@@ -573,12 +685,13 @@ def register(router: APIRouter, ctx: UIContext) -> None:
                 },
                 cid=owned,
             )
-        view = await runbook_run_view(runner, owned, link_for=_link_for(request))
+        view = await runbook_run_view(runner, owned, link_for=_link_for(request), layout=layout)
         return await _fragment(request, view, cid=owned)
 
 
 __all__ = [
     "COMPOSER_MAX_MESSAGE_CHARS",
+    "GATE_LOCK_HINT",
     "GENERIC_RUN_REFUSAL",
     "RUN_LOCK_HINT",
     "RUN_NOT_FOUND",
@@ -587,6 +700,7 @@ __all__ = [
     "awaiting_text_view",
     "composer_locked",
     "conversation_link_for",
+    "lock_hint",
     "register",
     "runbook_run_view",
     "runner_for",

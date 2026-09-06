@@ -11,7 +11,10 @@
                       voice_note, replayed,
                       kind ('notice'|undefined), text (for kind='notice'),
                       runbook_prompt (bool), runbook_prompt_label (str, for
-                      runbook_prompt=True) — WAVE2.md's "Run prompt rows"}
+                      runbook_prompt=True) — WAVE2.md's "Run prompt rows",
+                      gate_questions_reply (bool), gate_questions_summary
+                      (str, for gate_questions_reply=True) — alpha.20
+                      finding 6, folding a gate's own questions turn}
 
    `kind == 'notice'` is a runbook's own progress line
    (`chat_thread._notice_entry`, contract runbook.md §3) — everything else in
@@ -193,7 +196,18 @@
     <div class="chat-thinking-body">{{ exchange.reasoning }}</div>
   </details>
   {% endif %}
-  {% if exchange.reply_image_url %}
+  {% if exchange.gate_questions_reply %}
+  {# ── a gate's own questions turn, folded — WAVE2.md/alpha.20 finding 6 ──
+     The raw questions JSON, shown the same collapsed way the run's own
+     prompt row above it is (`exchange.runbook_prompt`): it is what the gate
+     card upstream was already built from, not something a person reads. A
+     model step's own reply (the flags, the edited text) never sets this
+     flag and still draws the ordinary bubble below. #}
+  <details class="chat-notice" style="align-self:flex-start; max-width:80%; text-align:left">
+    <summary style="cursor:pointer">{{ exchange.gate_questions_summary }}</summary>
+    <p style="white-space:pre-wrap; margin:var(--space-2) 0 0; font-size:13px">{{ exchange.reply }}</p>
+  </details>
+  {% elif exchange.reply_image_url %}
   {# An image conversation's reply — image-conversations.md contract §7. Not
      `reply_html`: personacore.web.markdown deliberately emits no `<img>`
      tag at all (a chat reply is untrusted model output, and that module's
