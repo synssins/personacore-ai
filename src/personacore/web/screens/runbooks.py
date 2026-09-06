@@ -233,13 +233,14 @@ def _load_inputs_and_persona(record: Any) -> tuple[list[dict[str, Any]], str | N
 
 def _load_steps(record: Any) -> list[dict[str, Any]]:
     """The runbook's own ``steps:`` — id, kind, thinking, writes (WAVE2.md's
-    picker: "the step preview: id, kind, thinking, writes") — read straight
-    off its file, the same tolerant second read
-    :func:`_load_inputs_and_persona` already gives ``inputs:``/``persona:``
-    (see that function's own docstring for why a second parse of an
-    already-validated file is fine here): a file that has vanished, is not
-    readable, or is not even YAML any more comes back as "no steps" rather
-    than raising.
+    picker: "the step preview: id, kind, thinking, writes"), plus each
+    step's own ``description:`` when it has one (SPEC alpha.22, "every step
+    says what it is for") — read straight off its file, the same tolerant
+    second read :func:`_load_inputs_and_persona` already gives
+    ``inputs:``/``persona:`` (see that function's own docstring for why a
+    second parse of an already-validated file is fine here): a file that has
+    vanished, is not readable, or is not even YAML any more comes back as
+    "no steps" rather than raising.
     """
     path = getattr(record, "path", None)
     if not path:
@@ -272,12 +273,19 @@ def _load_steps(record: Any) -> list[dict[str, Any]]:
             writes = step_id
         else:
             writes = None
+        description = item.get("description")
+        has_description = isinstance(description, str) and description
         steps.append(
             {
                 "id": step_id,
                 "kind": item.get("kind") if isinstance(item.get("kind"), str) else "",
                 "thinking": bool(item.get("thinking", False)),
                 "writes": writes,
+                # SPEC alpha.22: a step's own `description:`, shown under its
+                # id in the run form's step preview when present — "every
+                # step says what it is for" applies to the picker too, not
+                # only to progress rows and the gate card.
+                "description": description if has_description else None,
             }
         )
     return steps

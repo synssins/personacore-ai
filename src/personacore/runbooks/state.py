@@ -103,6 +103,28 @@ class GateState:
     """The ``from:`` role :attr:`source_file` was pinned under — kept beside
     the filename because a role is what a runbook author reads and a
     filename is what the workspace reads, and the card needs to say both."""
+    title: str | None = None
+    """This gate step's own ``title:`` (SPEC alpha.22), copied off the
+    runbook at the moment the gate parks so the web never has to re-parse
+    the runbook file to draw the card's heading. ``None`` for a gate with no
+    title, or one this build parked before the field existed."""
+    description: str | None = None
+    """This gate step's own ``description:`` — the rest of the card's
+    heading, alongside :attr:`title`."""
+    source_title: str | None = None
+    """The ``from:`` step's own ``title:`` — what the card's "Questions
+    from …" line names the step by, alongside :attr:`source_role`."""
+    source_description: str | None = None
+    """The ``from:`` step's own ``description:`` — the rest of the
+    "Questions from …" line."""
+    source_pins: dict[str, str] = field(default_factory=dict)
+    """The ``from:`` step's own resolved pins, role -> filename, plus its
+    own output under its own role (SPEC alpha.22, contract §4 2026-09-06) —
+    what the chat's comparison card opens the right file per role from,
+    without re-reading the runbook. Ordered by which step produced each
+    role, so the web can tell which of two roles came first in the run.
+    ``{}`` for a gate this build parked before the field existed, or for
+    one whose ``from:`` step pins nothing."""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -112,6 +134,11 @@ class GateState:
             "loops": self.loops,
             "source_file": self.source_file,
             "source_role": self.source_role,
+            "title": self.title,
+            "description": self.description,
+            "source_title": self.source_title,
+            "source_description": self.source_description,
+            "source_pins": dict(self.source_pins),
         }
 
     @classmethod
@@ -123,9 +150,17 @@ class GateState:
             loops=int(data.get("loops", 0)),
             # `.get(..., None)` rather than `["source_file"]`: contract §5,
             # "keep old files readable" — a `.run.json` written before this
-            # field existed has neither key at all.
+            # field (or the five below, SPEC alpha.22) existed has none of
+            # these keys at all.
             source_file=data.get("source_file"),
             source_role=data.get("source_role"),
+            title=data.get("title"),
+            description=data.get("description"),
+            source_title=data.get("source_title"),
+            source_description=data.get("source_description"),
+            source_pins={
+                str(k): str(v) for k, v in dict(data.get("source_pins", {}) or {}).items()
+            },
         )
 
 
@@ -144,6 +179,15 @@ class StepState:
     reason: str | None
     gate: GateState | None = None
     """Gate progress if this step has one, otherwise None."""
+    title: str | None = None
+    """This step's own ``title:`` (SPEC alpha.22), copied off the runbook by
+    :func:`new_state` at the moment the run starts — so a run's own "Running
+    p5 · Audit…" line (``web/screens/chat_run.py``) reads it here rather
+    than re-parsing the runbook file. ``None`` for a step with no title, or
+    a ``.run.json`` written before this field existed."""
+    description: str | None = None
+    """This step's own ``description:`` — kept alongside :attr:`title` for
+    the same reason."""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -155,6 +199,8 @@ class StepState:
             "finished": self.finished,
             "reason": self.reason,
             "gate": self.gate.to_dict() if self.gate else None,
+            "title": self.title,
+            "description": self.description,
         }
 
     @classmethod
@@ -179,6 +225,8 @@ class StepState:
             finished=data.get("finished"),
             reason=data.get("reason"),
             gate=gate,
+            title=data.get("title"),
+            description=data.get("description"),
         )
 
 
@@ -368,7 +416,13 @@ def new_state(
     """The state for a brand-new run: every step ``pending``, the run
     ``running``, ``current`` pointing at the first step. Nothing has
     actually started yet — the runner marks the first step ``running``
-    itself, once it has begun."""
+    itself, once it has begun.
+
+    Each step's own ``title``/``description`` (SPEC alpha.22) are copied
+    onto its :class:`StepState` here, once, rather than read off the runbook
+    file again wherever a screen wants to show one — the same reasoning
+    :class:`GateState`'s own ``title``/``source_title`` already follow.
+    """
     now = _now_iso()
     steps = [
         StepState(
@@ -379,6 +433,8 @@ def new_state(
             started=None,
             finished=None,
             reason=None,
+            title=getattr(step, "title", None),
+            description=getattr(step, "description", None),
         )
         for step in runbook.steps
     ]
@@ -518,9 +574,16 @@ def _clone(state: RunState) -> RunState:
                     loops=s.gate.loops,
                     source_file=s.gate.source_file,
                     source_role=s.gate.source_role,
+                    title=s.gate.title,
+                    description=s.gate.description,
+                    source_title=s.gate.source_title,
+                    source_description=s.gate.source_description,
+                    source_pins=dict(s.gate.source_pins),
                 )
                 if s.gate
                 else None,
+                title=s.title,
+                description=s.description,
             )
             for s in state.steps
         ],

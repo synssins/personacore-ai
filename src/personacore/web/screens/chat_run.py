@@ -39,7 +39,8 @@ without raising when it is not — flagged here, loudly, for whoever lands
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+import re
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 from urllib.parse import quote
 
@@ -166,6 +167,25 @@ def _current_step(state: Any) -> Any | None:
     return None
 
 
+def _step_label(state: Any, step_id: str | None) -> str | None:
+    """``step_id``, or ``"id · title"`` when the current step's own
+    :class:`~personacore.runbooks.state.StepState` carries a ``title``
+    (SPEC alpha.22, "every step says what it is for") — what the "Running
+    p5…" status line names the step by.
+
+    A local twin of ``runbooks.runner._label``, not an import of it: this
+    module never imports anything from :mod:`personacore.runbooks.runner`
+    (see the module docstring), so a build whose ``engine`` subtask has not
+    landed yet still renders this line — with the bare id, exactly as it
+    always did, since :func:`_current_step` then finds no step at all.
+    """
+    if not step_id:
+        return step_id
+    step = _current_step(state)
+    title = getattr(step, "title", None) if step is not None else None
+    return f"{step_id} · {title}" if title else step_id
+
+
 def _field(obj: Any, key: str, default: Any = None) -> Any:
     """One field off a ``Question`` — a ``dict`` (however ``gates.py`` hands
     one back over the JSON boundary) or an attribute-carrying object
@@ -182,14 +202,110 @@ def _context_rows(question: Any) -> list[dict[str, str]]:
     contract §4, added 2026-09-05: "every question carries the passages it
     is about." Read the same tolerant, dict-or-attribute way :func:`_field`
     reads everything else about a question, since a passage is one more
-    thing ``gates.py`` may hand back as either shape."""
+    thing ``gates.py`` may hand back as either shape.
+
+    ``role`` (SPEC alpha.22, contract §4 2026-09-06) is read the same
+    tolerant way and defaults to ``""`` — a passage with none is simply
+    never a candidate for the comparison card (:func:`_compare_view`), the
+    same as a ``.run.json`` gate state parked before the field existed."""
     rows: list[dict[str, str]] = []
     for passage in _field(question, "context", None) or ():
         ref = str(_field(passage, "ref", "") or "")
         quote = str(_field(passage, "quote", "") or "")
+        role = str(_field(passage, "role", "") or "")
         if ref or quote:
-            rows.append({"ref": ref, "quote": quote})
+            rows.append({"ref": ref, "quote": quote, "role": role})
     return rows
+
+
+_PARAGRAPH_SPLIT_RE = re.compile(r"\n[ \t]*\n+")
+_PARAGRAPH_PREFIX_CHARS = 40
+"""Contract §4, added 2026-09-06: the third of the paragraph match's three
+tries is "the first 40 characters of the quote" — a model's own word-for-word
+quote can still drift from the file (a line wrap, a curly quote) enough that
+neither an exact nor a whitespace-normalised match finds it, and a shorter,
+plainer needle still usually will."""
+
+
+def _paragraphs(text: str) -> list[str]:
+    """``text`` split into paragraphs — contract §4, added 2026-09-06:
+    "paragraph = text between blank lines." Each paragraph keeps its own
+    internal line breaks; only the blank lines that separate paragraphs,
+    and the leading/trailing ones a paragraph picks up from the split, are
+    dropped."""
+    return [part.strip("\n") for part in _PARAGRAPH_SPLIT_RE.split(text) if part.strip()]
+
+
+def _normalized(text: str) -> str:
+    """``text`` with every run of whitespace collapsed to one space — the
+    second of the paragraph match's three tries, for a quote that reproduces
+    the words but not the line wraps."""
+    return " ".join(text.split())
+
+
+def _paragraph_containing(text: str, quote: str) -> str:
+    """The whole paragraph of ``text`` that contains ``quote`` — contract
+    §4, added 2026-09-06. Tried three ways, in order: the quote exactly as
+    written, the quote with whitespace normalised, and the quote's own
+    first 40 characters; ``quote`` itself is the fallback when none of the
+    three find it, which is exactly what the card showed before this
+    feature existed.
+    """
+    if not quote:
+        return quote
+    paragraphs = _paragraphs(text)
+    for paragraph in paragraphs:
+        if quote in paragraph:
+            return paragraph
+    normalized_quote = _normalized(quote)
+    if normalized_quote:
+        for paragraph in paragraphs:
+            if normalized_quote in _normalized(paragraph):
+                return paragraph
+    prefix = quote[:_PARAGRAPH_PREFIX_CHARS]
+    if prefix:
+        for paragraph in paragraphs:
+            if prefix in paragraph:
+                return paragraph
+    return quote
+
+
+def _compare_view(
+    context: list[dict[str, str]],
+    source_pins: Mapping[str, str],
+    layout: Any | None,
+    cid: str,
+) -> dict[str, Any] | None:
+    """A question's own comparison card — contract §4, added 2026-09-06: a
+    passage that exists in two of the files the review step read is shown
+    as two panes, the earlier-produced role on the left, the later on the
+    right, each expanded to its whole paragraph (:func:`_paragraph_containing`).
+
+    ``None`` when there is no ``layout``/``cid`` to read a file through, no
+    ``source_pins`` to open one with, or the question's own context does
+    not span exactly two of those roles — every one of those is the
+    ordinary options card's job, unchanged.
+    """
+    if layout is None or not cid or not source_pins:
+        return None
+    order = list(source_pins.keys())
+    found: dict[str, str] = {}
+    for passage in context:
+        role = passage.get("role") or ""
+        if not role or role not in source_pins or role in found:
+            continue
+        text = read_workspace_text(layout, cid, source_pins[role])
+        if text is None:
+            continue
+        found[role] = _paragraph_containing(text, passage.get("quote", ""))
+    roles = [role for role in order if role in found]
+    if len(roles) != 2:
+        return None
+    left_role, right_role = roles
+    return {
+        "left": {"role": left_role, "label": f"original · {left_role}", "text": found[left_role]},
+        "right": {"role": right_role, "label": f"now · {right_role}", "text": found[right_role]},
+    }
 
 
 def _matched_flag_line(text: str, context: list[dict[str, str]]) -> str | None:
@@ -245,6 +361,20 @@ def _gate_view(
     :mod:`personacore.web.screens.chat_workspace` already serves it on.
     Omitted (the default) for :func:`composer_locked`'s own call, which only
     ever asks "is there a gate" and reads neither.
+
+    ``title``/``description`` (the gate step's own) and ``source_role``/
+    ``source_title``/``source_description`` (the ``from:`` step's own) are
+    SPEC alpha.22's addition — read straight off the gate state
+    (:class:`~personacore.runbooks.state.GateState`, the runner's own
+    addition of these same fields) and never re-parsed off the runbook file,
+    which this module has no business reading at all.
+
+    ``compare`` (SPEC alpha.22, contract §4 2026-09-06) is
+    :func:`_compare_view` on this question's own context and the gate's own
+    ``source_pins`` — ``None`` for the ordinary options card, or
+    ``{"left": {...}, "right": {...}}`` when the question's passages span
+    two roles the ``from:`` step could see, in which case the template
+    draws the comparison card instead of the options.
     """
     step = _current_step(state)
     if step is None:
@@ -271,6 +401,8 @@ def _gate_view(
             text = read_workspace_text(layout, cid, source_file)
             if text is not None:
                 flag_line = _matched_flag_line(text, context)
+        source_pins = dict(getattr(gate, "source_pins", None) or {})
+        compare = _compare_view(context, source_pins, layout, cid)
         return {
             "question_id": qid,
             "text": str(_field(question, "text") or ""),
@@ -282,6 +414,19 @@ def _gate_view(
             "flag_line": flag_line,
             "source_file": source_file if isinstance(source_file, str) else None,
             "source_url": source_url,
+            # SPEC alpha.22, "every step says what it is for": the gate's own
+            # title/description head the card, and the `from:` step's own
+            # name the "Questions from …" line below it — both stored on the
+            # gate state by the runner (`runbooks/state.py`'s `GateState`),
+            # never re-read off the runbook file here.
+            "title": getattr(gate, "title", None),
+            "description": getattr(gate, "description", None),
+            "source_role": getattr(gate, "source_role", None),
+            "source_title": getattr(gate, "source_title", None),
+            "source_description": getattr(gate, "source_description", None),
+            # SPEC alpha.22, contract §4 2026-09-06: the comparison card,
+            # or `None` for the ordinary options card — see `_compare_view`.
+            "compare": compare,
         }
     return None
 
@@ -404,12 +549,16 @@ async def runbook_run_view(
             "visible": True,
             "poll": run_status == "running",
             "cid": cid,
-            "message": f"Running {current}…" if current and run_status == "running" else "",
+            "message": (
+                f"Running {_step_label(state, current)}…"
+                if current and run_status == "running"
+                else ""
+            ),
             "items": items,
         }
 
     if run_status == "running":
-        message = f"Running {current}…" if current else "Running…"
+        message = f"Running {_step_label(state, current)}…" if current else "Running…"
         return {
             **_EMPTY_RUN_VIEW,
             "visible": True,

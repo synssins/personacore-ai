@@ -23,12 +23,28 @@
              stop_url, resume_url,
              gate: {question_id, text, options: [str], other (bool),
                     index, total,
-                    context: [{ref, quote}], flag_line (str|None),
-                    source_file (str|None), source_url (str|None)}|None,
+                    context: [{ref, quote, role}], flag_line (str|None),
+                    source_file (str|None), source_url (str|None),
+                    title (str|None), description (str|None),
+                    source_role (str|None), source_title (str|None),
+                    source_description (str|None),
+                    compare: {left: {role, label, text},
+                              right: {role, label, text}}|None}|None,
              items: [{value, status, reason, link}],
              turn_running (bool)}, oob (bool — true when this is an
              out-of-band replacement, chat_messages.html switching threads)
              — see chat_run.runbook_run_view.
+
+   `gate.title`/`description` (the gate step's own) and `source_role`/
+   `source_title`/`source_description` (the `from:` step's own) are SPEC
+   alpha.22's addition ("every step says what it is for"): the card is
+   headed with the gate's own title/description when present, and a quiet
+   "Questions from …" line names the step the questions came from by its
+   own title/description too — so a person sees which pass is asking and
+   why, not just a bare step id. Either half may be absent on its own (a
+   step with no title still shows its bare id); neither is templated or
+   trusted beyond Jinja's own autoescaping, same as every other string in
+   this block.
 
    `turn_running` (chat_run._fragment's own addition, not
    `runbook_run_view`'s) says a chat turn is registered and running in this
@@ -55,7 +71,17 @@
    question is about is quoted under it, the flag line it came from is
    shown under the options, and a link opens the file itself. Every string
    here is untrusted model or workspace output — no `|safe` anywhere in this
-   block, Jinja's own autoescaping is what makes that safe to print. #}
+   block, Jinja's own autoescaping is what makes that safe to print.
+
+   `gate.compare` is contract runbook.md §4's own addition, added
+   2026-09-06: a passage that exists in two of the files the review step
+   read is shown as two panes — the earlier-produced role's whole
+   paragraph on the left, the later one's on the right — instead of the
+   options card, which renders exactly as before whenever `compare` is
+   `None`. Clicking a pane posts a fixed `left`/`right` token; the answer
+   it actually writes is worked out from the gate's own state
+   (`runbooks/runner.py`'s `_compare_roles`), never from anything this
+   form claims about which role it was. #}
 <div id="run-status" class="chat-notice{% if run.gate %} run-status-gate{% endif %}"
      {% if oob %}hx-swap-oob="true"{% endif %}
      {% if not run.visible %}hidden{% endif %}
@@ -76,10 +102,76 @@
      a form with its own evidence to show, not a quiet progress bubble, and
      `.chat-notice`'s own 90%-and-centred rule (chat.html) is what every
      other use of this element still wants. #}
+  {% if run.gate.title %}
+  {# ── the gate step's own heading — SPEC alpha.22, "every step says what
+     it is for": what this gate is, before what it is asking. #}
+  <div class="stack" style="gap:2px; margin:0">
+    <strong style="font-size:14px">{{ run.gate.title }}</strong>
+    {% if run.gate.description %}<p class="meta" style="margin:0">{{ run.gate.description }}</p>{% endif %}
+  </div>
+  {% endif %}
   <div class="hrow" style="justify-content:space-between; width:100%">
     <strong style="font-size:12px">{{ run.gate.index }} of {{ run.gate.total }}</strong>
   </div>
+  {% if run.gate.source_role %}
+  {# ── which pass the questions come from, and why — SPEC alpha.22 ──
+     A quiet line, never the card's own heading: the gate is what is
+     asking, the `from:` step is why. #}
+  <p class="meta" style="margin:0">
+    Questions from {{ run.gate.source_role }}{% if run.gate.source_title %} · {{ run.gate.source_title }}{% endif %}{% if run.gate.source_description %} — {{ run.gate.source_description }}{% endif %}
+  </p>
+  {% endif %}
   <p style="margin:0; font-size:13px; color:var(--color-text)">{{ run.gate.text }}</p>
+  {% if run.gate.compare %}
+  {# ── the comparison card — contract runbook.md §4, added 2026-09-06 ──
+     A passage that exists in two of the files the review step read: the
+     earlier-produced role's whole paragraph on the left, the later one's
+     on the right, each its own button in the answer form. Posting names a
+     fixed token (`left`/`right`) and the role only for a person reading the
+     form; the roles the answer is actually written with come from the
+     gate's own state (`runbooks/runner.py`'s `_compare_roles`), never from
+     this. Stacks on a narrow screen because the row itself wraps. #}
+  <div class="hrow" style="align-items:stretch; flex-wrap:wrap; gap:var(--space-2)">
+    <form method="post" action="/admin/chat/run/{{ run.cid }}/answer"
+          style="flex:1 1 240px; margin:0"
+          hx-post="/admin/chat/run/{{ run.cid }}/answer" hx-target="#run-status" hx-swap="outerHTML">
+      <input type="hidden" name="question_id" value="{{ run.gate.question_id }}">
+      <input type="hidden" name="choice" value="left">
+      <input type="hidden" name="role" value="{{ run.gate.compare.left.role }}">
+      <button type="submit" class="btn btn-secondary stack"
+              style="width:100%; height:100%; text-align:left; align-items:flex-start; gap:2px">
+        <strong style="font-size:11px">{{ run.gate.compare.left.label }}</strong>
+        <span style="white-space:pre-wrap; font-size:13px">{{ run.gate.compare.left.text }}</span>
+      </button>
+    </form>
+    <form method="post" action="/admin/chat/run/{{ run.cid }}/answer"
+          style="flex:1 1 240px; margin:0"
+          hx-post="/admin/chat/run/{{ run.cid }}/answer" hx-target="#run-status" hx-swap="outerHTML">
+      <input type="hidden" name="question_id" value="{{ run.gate.question_id }}">
+      <input type="hidden" name="choice" value="right">
+      <input type="hidden" name="role" value="{{ run.gate.compare.right.role }}">
+      <button type="submit" class="btn btn-secondary stack"
+              style="width:100%; height:100%; text-align:left; align-items:flex-start; gap:2px">
+        <strong style="font-size:11px">{{ run.gate.compare.right.label }}</strong>
+        <span style="white-space:pre-wrap; font-size:13px">{{ run.gate.compare.right.text }}</span>
+      </button>
+    </form>
+  </div>
+  {% if run.gate.other %}
+  <details>
+    <summary class="btn btn-secondary" style="display:inline-flex; cursor:pointer">Other</summary>
+    <form method="post" action="/admin/chat/run/{{ run.cid }}/answer" class="hrow"
+          style="gap:var(--space-2); margin-top:var(--space-2)"
+          hx-post="/admin/chat/run/{{ run.cid }}/answer" hx-target="#run-status" hx-swap="outerHTML">
+      <input type="hidden" name="question_id" value="{{ run.gate.question_id }}">
+      <label for="run-gate-other" style="position:absolute; left:-9999px">Your own answer</label>
+      <textarea class="input" id="run-gate-other" name="other" placeholder="Type your own answer"
+                rows="1" data-send-on-enter style="resize:none; overflow-y:auto"></textarea>
+      <button type="submit" class="btn btn-primary">Send</button>
+    </form>
+  </details>
+  {% endif %}
+  {% else %}
   {% if run.gate.context %}
   {# ── the passages this question is about, quoted word for word ──
      One quiet line per passage — a timeline question shows both times side
@@ -126,6 +218,7 @@
     {%- if run.gate.flag_line and run.gate.source_url %} — {% endif -%}
     {%- if run.gate.source_url %}<a href="{{ run.gate.source_url }}">Open {{ run.gate.source_file }}</a>{% endif -%}
   </p>
+  {% endif %}
   {% endif %}
   {% elif run['items'] %}
   {# ── a parent run's own progress lines — WAVE2.md's foreach/parent runs ──

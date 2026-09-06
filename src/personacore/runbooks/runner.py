@@ -915,7 +915,9 @@ class Runner:
                 return
 
             self._begin(live, step_id)
-            await self._say(live, f"{step_id}: {step.kind} — running")
+            label = _label(step)
+            kind_suffix = "" if getattr(step, "title", None) else f": {step.kind}"
+            await self._say(live, f"{label}{kind_suffix} — running")
             started = time.perf_counter()
             try:
                 if isinstance(step, ToolStep):
@@ -931,15 +933,13 @@ class Runner:
             except _StepFailed as exc:
                 live.state = run_state.fail(live.state, step_id, exc.reason)
                 self._write(live)
-                await self._say(live, f"{step_id}: failed — {exc.reason}")
+                await self._say(live, f"{label}: failed — {exc.reason}")
                 return
             if live.stopping.is_set():
                 return
             live.state = run_state.advance(live.state, step_id, outputs)
             self._write(live)
-            await self._say(
-                live, f"{step_id}: done, {_took(started)}, {self._sizes(live, outputs)}"
-            )
+            await self._say(live, f"{label}: done, {_took(started)}, {self._sizes(live, outputs)}")
             if live.state.status != "running":
                 return
 
@@ -978,7 +978,8 @@ class Runner:
                     collected.setdefault(role, []).append(name)
                 await self._say(
                     live,
-                    f"{step.id} [{value}]: done, {_took(started)}, {self._sizes(live, outputs)}",
+                    f"{_label(step)} [{value}]: done, {_took(started)}, "
+                    f"{self._sizes(live, outputs)}",
                 )
         finally:
             live.iterating = None
@@ -1357,8 +1358,11 @@ class Runner:
         question = _question_by_id(gate, question_id)
         if question is None:
             raise RunRefused(f"{question_id} is not one of this gate's questions.")
+        compare = _compare_roles(question, gate.source_pins)
         try:
-            gate.answers[question.id] = gate_tools.answer_line(question, choice, other)
+            gate.answers[question.id] = gate_tools.answer_line(
+                question, choice, other, compare=compare
+            )
         except gate_tools.GateError as exc:
             raise RunRefused(exc.message) from exc
         self._write(live)
@@ -1409,7 +1413,7 @@ class Runner:
         except _StepFailed as exc:
             live.state = run_state.fail(live.state, step.id, exc.reason)
             self._write(live)
-            await self._say(live, f"{step.id}: failed — {exc.reason}")
+            await self._say(live, f"{_label(step)}: failed — {exc.reason}")
             return False
 
     async def _gate_inner(self, live: _Live, step: GateStep) -> bool:
@@ -1424,7 +1428,7 @@ class Runner:
             if standing.answers and len(standing.answers) >= (len(standing.questions) or 1):
                 await self._finish_gate(live, step)
                 return live.state.status == "running"
-            return await self._park_at_gate(live, step, standing, _gate_row(step.id, standing))
+            return await self._park_at_gate(live, step, standing, _gate_row(step, standing))
         self._begin(live, step.id)
         if step.auto is not None:
             return await self._auto_gate(live, step)
@@ -1435,6 +1439,7 @@ class Runner:
     async def _human_gate(self, live: _Live, step: GateStep) -> bool:
         """Contract §4: the questions, from a model turn or from the file."""
         name, text = self._gate_file(live, step)
+        source_title, source_description = _source_titles(live, step)
         try:
             if step.questions == "file":
                 source = text
@@ -1447,8 +1452,14 @@ class Runner:
             # Contract §4's fallback. Not a failure: the flags are real, the
             # person can read them, and a text box is a worse gate than click
             # options but an infinitely better one than a stopped run.
-            gate = GateState(mode="text")
-            row = f"{step.id}: waiting for you — {exc.message} Answer in the box below; {name}"
+            gate = GateState(
+                mode="text",
+                title=step.title,
+                description=step.description,
+                source_title=source_title,
+                source_description=source_description,
+            )
+            row = f"{_label(step)}: waiting for you — {exc.message} Answer in the box below; {name}"
             return await self._park_at_gate(live, step, gate, row)
         if not asked.questions:
             # Contract §4, added 2026-09-05: every flag said "consistent" —
@@ -1460,8 +1471,18 @@ class Runner:
             questions=[question.model_dump() for question in asked.questions],
             source_file=name,
             source_role=step.from_,
+            # SPEC alpha.22: stored here, once, so the web never re-parses
+            # the runbook file to draw the card's heading or its "Questions
+            # from …" line — see `_source_titles`.
+            title=step.title,
+            description=step.description,
+            source_title=source_title,
+            source_description=source_description,
+            # SPEC alpha.22, contract §4 2026-09-06: the comparison card's
+            # own doorway into the workspace — see `_source_pins`.
+            source_pins=_source_pins(live, step, name, self._known_files(live)),
         )
-        return await self._park_at_gate(live, step, gate, _gate_row(step.id, gate))
+        return await self._park_at_gate(live, step, gate, _gate_row(step, gate))
 
     async def _pass_no_questions(self, live: _Live, step: GateStep) -> bool:
         """Contract §4, added 2026-09-05: an empty ``questions`` list is a
@@ -1477,7 +1498,7 @@ class Runner:
             raise _StepFailed(f"{wanted} could not be written to the workspace.")
         live.state = run_state.advance(live.state, step.id, {step.id: name})
         self._write(live)
-        await self._say(live, f"{step.id}: resolved: no questions, continuing")
+        await self._say(live, f"{_label(step)}: resolved: no questions, continuing")
         return live.state.status == "running"
 
     async def _questions_turn(self, live: _Live, step: GateStep, name: str, text: str) -> str:
@@ -1538,7 +1559,7 @@ class Runner:
         if live.state.status == "parked":
             live.state.status = "running"
         self._write(live)
-        await self._say(live, f"{step.id}: answered, {self._sizes(live, {step.id: name})}")
+        await self._say(live, f"{_label(step)}: answered, {self._sizes(live, {step.id: name})}")
 
     # -- an auto gate ------------------------------------------------------
 
@@ -1565,16 +1586,19 @@ class Runner:
         if passed:
             live.state = run_state.advance(live.state, step.id, {})
             self._write(live)
-            await self._say(live, f"{step.id}: passed on {name}")
+            await self._say(live, f"{_label(step)}: passed on {name}")
             return live.state.status == "running"
 
         gate.loops += 1
         if gate.loops > auto.else_.max_loops:
+            # `reason` is stored on the run state (parked-run message,
+            # `chat_run.py`), so its own text keeps the bare step id — only
+            # the progress row's own lead segment gets the title treatment.
             reason = f"auto gate {step.id}: {auto.else_.max_loops} loops without passing"
             live.state = run_state.park(live.state, reason)
             live.state.current = step.id
             self._write(live)
-            await self._say(live, f"{step.id}: parked — {reason}")
+            await self._say(live, f"{_label(step)}: parked — {reason}")
             return False
 
         self._rewind(live, step.id, auto.else_.goto)
@@ -1583,7 +1607,7 @@ class Runner:
         self._write(live)
         await self._say(
             live,
-            f"{step.id}: did not pass, back to {auto.else_.goto} "
+            f"{_label(step)}: did not pass, back to {auto.else_.goto} "
             f"(loop {gate.loops} of {auto.else_.max_loops})",
         )
         return True
@@ -2008,12 +2032,120 @@ def _question_by_id(gate: GateState, question_id: str) -> gate_tools.Question | 
     return None
 
 
-def _gate_row(step_id: str, gate: GateState) -> str:
+def _label(step: Any) -> str:
+    """The lead segment of a progress row (SPEC alpha.22, "every step says
+    what it is for"): the step's bare id, or ``"id · title"`` when the step
+    names one.
+
+    The one place a row's step-identifying text is built, so a titled step
+    reads the same way in every row that names it rather than "p5 · Audit"
+    in one line and bare "p5" in the next depending on which call site wrote
+    it. A step with no title returns exactly its id — today's text,
+    unchanged, for every runbook already written.
+    """
+    title = getattr(step, "title", None)
+    return f"{step.id} · {title}" if title else step.id
+
+
+def _gate_row(step: Any, gate: GateState) -> str:
     """The progress line a parked human gate posts (contract §1.2: "a short
     message … and parks")."""
+    label = _label(step)
     if gate.mode == "questions":
-        return f"{step_id}: waiting for you, {len(gate.questions)} questions"
-    return f"{step_id}: waiting for you, answer in the box below"
+        return f"{label}: waiting for you, {len(gate.questions)} questions"
+    return f"{label}: waiting for you, answer in the box below"
+
+
+def _source_titles(live: _Live, step: GateStep) -> tuple[str | None, str | None]:
+    """The ``from:`` step's own ``title``/``description``, off the parsed
+    runbook (SPEC alpha.22) — what the gate card's "Questions from …" line
+    names that step by, so a person reads *why* the flags exist and not only
+    which step id they came from. ``(None, None)`` when the ``from`` step
+    cannot be found, which :func:`validate_runbook` already refuses at
+    upload, so this is only ever reached for a runbook already proven to
+    have one.
+    """
+    source = _find_source_step(live, step)
+    if source is None:
+        return None, None
+    return getattr(source, "title", None), getattr(source, "description", None)
+
+
+def _find_source_step(live: _Live, step: GateStep) -> Any | None:
+    """The step that produced the ``from:`` role — tried first by matching
+    a step id (a model step's own output is pinned under its own id,
+    contract §2) and, when that misses, by which step's own
+    :func:`_roles_made` includes it (a tool step's ``files:`` can name a
+    role different from its own id), taking the last such step in file
+    order the same way :func:`_known_files` would resolve it. ``None``
+    when nothing produces the role, which :func:`validate_runbook` already
+    refuses at upload for a runbook this could ever be reached against.
+    """
+    source = next((one for one in live.runbook.steps if one.id == step.from_), None)
+    if source is not None:
+        return source
+    makers = [one for one in live.runbook.steps if step.from_ in _roles_made(one)]
+    return makers[-1] if makers else None
+
+
+def _source_pins(
+    live: _Live, step: GateStep, name: str, known: Mapping[str, str]
+) -> dict[str, str]:
+    """The ``from:`` step's own resolved pins, role -> filename, plus its
+    own output under its own role — SPEC alpha.22, contract §4 2026-09-06:
+    what the chat's comparison card (``web/screens/chat_run.py``) opens the
+    right file per role from, without re-reading the runbook itself.
+
+    Ordered the way ``known`` already is — by the step that produced each
+    role (:meth:`Runner._known_files`), not by the order the ``from:`` step
+    happened to list its own pins in — so a later reader can tell which of
+    two roles was produced earlier in the run purely from this mapping's
+    own key order (contract §4: "left is the role produced earlier in the
+    run … which the runner writes in step order").
+
+    Read off whichever of ``pins`` (a model step) or ``pin`` (a tool step —
+    schema.py's own note: "singular for a tool step, ``pins`` for a model
+    step") the source step actually has; a step with neither, or one that
+    cannot be found at all, leaves this holding only the gate's own file.
+    Never raises — this only ever makes a card richer, never a run refused.
+    """
+    source = _find_source_step(live, step)
+    wanted = list(getattr(source, "pins", None) or getattr(source, "pin", None) or ())
+    try:
+        resolved = role_tools.resolve_pins(wanted, known)
+    except role_tools.RoleError:
+        resolved = {}
+    ordered = {role: resolved[role] for role in known if role in resolved}
+    ordered[step.from_] = name
+    return ordered
+
+
+def _compare_roles(
+    question: gate_tools.Question, source_pins: Mapping[str, str]
+) -> tuple[str, str] | None:
+    """Which two roles, if any, ``question`` itself compares — SPEC
+    alpha.22, contract §4 2026-09-06: a ``left``/``right`` answer only
+    means anything when the question's own passages span exactly two of
+    the roles the gate's ``from:`` step could see, and which one is
+    ``left`` (produced earlier in the run) is :attr:`~personacore.
+    runbooks.state.GateState.source_pins`'s own order — never anything a
+    form could claim.
+
+    ``None`` for every other question (one passage, no roled passages, or
+    more than two distinct roles) — :func:`personacore.runbooks.gates.
+    answer_line` then refuses a ``left``/``right`` choice exactly like any
+    option the question never offered.
+    """
+    order = list(source_pins.keys())
+    roles: list[str] = []
+    for passage in question.context:
+        role = passage.role
+        if role and role in source_pins and role not in roles:
+            roles.append(role)
+    if len(roles) != 2:
+        return None
+    roles.sort(key=order.index)
+    return roles[0], roles[1]
 
 
 def _with_conversation(state: RunState, conversation_id: str) -> RunState:

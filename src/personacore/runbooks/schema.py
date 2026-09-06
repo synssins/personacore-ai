@@ -65,6 +65,39 @@ the two spellings."""
 
 BUDGET_REFUSAL = "the thinking budget is set on the model server, not in a runbook."
 
+MAX_STEP_TITLE = 60
+"""SPEC alpha.22, "every step says what it is for": the cap on a step's own
+``title:``. Short by design — it is the whole of what a progress row adds to
+a step id ("p5 · Audit — running")."""
+
+MAX_STEP_DESCRIPTION = 200
+"""SPEC alpha.22's cap on a step's own ``description:`` — the sentence the
+gate card and the run form's step preview show, written (per the wiki) for
+the person reading it, not for the model."""
+
+
+def _check_step_text(step_id: str, title: str | None, description: str | None) -> None:
+    """Refuse a step's ``title``/``description`` only for being too long —
+    both are optional, so ``None`` never trips this — with a sentence naming
+    the step and the field, which pydantic's own default message for a
+    length cap ("String should have at most 60 characters") names neither.
+
+    Shared by every step kind's own ``model_validator`` rather than a mixin
+    base class: the three step models already differ enough (a discriminated
+    union keyed on ``kind``) that one more shared ancestor would cost more to
+    read than the three near-identical lines it would save.
+    """
+    if title is not None and len(title) > MAX_STEP_TITLE:
+        raise ValueError(
+            f"step {step_id!r}'s title is {len(title)} characters; "
+            f"{MAX_STEP_TITLE} is the most a title may be."
+        )
+    if description is not None and len(description) > MAX_STEP_DESCRIPTION:
+        raise ValueError(
+            f"step {step_id!r}'s description is {len(description)} characters; "
+            f"{MAX_STEP_DESCRIPTION} is the most a description may be."
+        )
+
 
 class ValidationError(Exception):
     """The runbook could not be accepted. Never one problem — every one found.
@@ -217,6 +250,13 @@ class ToolStep(BaseModel):
 
     kind: Literal["tool"]
     id: str
+    title: str | None = None
+    """SPEC alpha.22: what this step is for, in a few words — shown in
+    progress rows ("p5 · Audit — running") and the run form's step preview.
+    Optional; a step with none reads exactly as one always has."""
+    description: str | None = None
+    """SPEC alpha.22: a sentence for the person reading a progress row or
+    the run form, not for the model. Optional, and never sent to a model."""
     tool: str
     args: dict[str, Scalar] = Field(default_factory=dict)
     files: dict[str, str] = Field(default_factory=dict)
@@ -255,6 +295,11 @@ class ToolStep(BaseModel):
                 "(for example 'weather.forecast')."
             )
         return value
+
+    @model_validator(mode="after")
+    def _check_text(self) -> ToolStep:
+        _check_step_text(self.id, self.title, self.description)
+        return self
 
 
 # ---------------------------------------------------------------------------
@@ -299,6 +344,11 @@ class ModelStep(BaseModel):
 
     kind: Literal["model"]
     id: str
+    title: str | None = None
+    """SPEC alpha.22: what this step is for — see :class:`ToolStep`'s own."""
+    description: str | None = None
+    """SPEC alpha.22: a sentence for the person reading it. See
+    :class:`ToolStep`'s own."""
     prompt: str | None = None
     prompt_text: str | None = None
     thinking: Literal["on", "off"]
@@ -326,6 +376,11 @@ class ModelStep(BaseModel):
                 f"step {self.id!r} names exactly one of 'prompt' or 'prompt_text', "
                 "never both and never neither."
             )
+        return self
+
+    @model_validator(mode="after")
+    def _check_text(self) -> ModelStep:
+        _check_step_text(self.id, self.title, self.description)
         return self
 
 
@@ -385,6 +440,14 @@ class GateStep(BaseModel):
 
     kind: Literal["gate"]
     id: str
+    title: str | None = None
+    """SPEC alpha.22: what this step is for — see :class:`ToolStep`'s own.
+    A human gate's title/description are shown as the gate card's own
+    heading (``web/screens/chat_run.py``); an auto gate has no card and
+    these are simply never read for one."""
+    description: str | None = None
+    """SPEC alpha.22: a sentence for the person answering the gate, not for
+    the model. See :class:`ToolStep`'s own."""
     from_: str = Field(alias="from")
     questions: QuestionsSource | None = None
     answer: str | None = None
@@ -416,6 +479,11 @@ class GateStep(BaseModel):
                 f"gate {self.id!r} names neither a person's questions nor an "
                 "'auto' condition, so nothing could ever resolve it."
             )
+        return self
+
+    @model_validator(mode="after")
+    def _check_text(self) -> GateStep:
+        _check_step_text(self.id, self.title, self.description)
         return self
 
 
@@ -493,6 +561,8 @@ class Runbook(BaseModel):
 __all__ = [
     "BUDGET_REFUSAL",
     "ITERABLE_INPUT_TYPES",
+    "MAX_STEP_DESCRIPTION",
+    "MAX_STEP_TITLE",
     "RESERVED_BUDGET_KEYS",
     "RUNBOOK_ID_RE",
     "STEP_ID_RE",

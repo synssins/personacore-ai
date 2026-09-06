@@ -65,6 +65,12 @@ generously is still handing over the evidence a person needs to answer, and
 refusing it would fall the gate back to the raw-file card the whole change
 exists to avoid."""
 
+MAX_ROLE_CHARS = 40
+"""Contract §4, added 2026-09-06: a passage's ``role`` is capped the same
+way its ``ref`` already is (:data:`MAX_REF_CHARS`) and for the same
+reason — a role name a little too long is still a role name, and refusing
+it would cost the person the comparison card over a formatting slip."""
+
 OTHER = "Other"
 """How a typed answer is labelled in the answer file — contract §4's own
 example line, ``q1: Other — the visitor is the neighbour's cousin; they have only just met.``"""
@@ -106,6 +112,15 @@ class Passage(BaseModel):
 
     ref: str
     quote: str
+    role: str | None = None
+    """Which pinned role this passage was quoted from — contract §4, added
+    2026-09-06: a comparison question quotes the same passage from two
+    roles, and the web (``web/screens/chat_run.py``'s gate card) needs to
+    know which is which to open the right file and label each pane.
+    ``None`` for a question about the one file the gate itself reads, where
+    a role is not needed to tell two passages apart, and for a ``.run.json``
+    gate state written before this field existed — old gate states without
+    ``role`` still load (contract §5)."""
 
     @field_validator("ref")
     @classmethod
@@ -116,6 +131,13 @@ class Passage(BaseModel):
     @classmethod
     def _cap_quote(cls, value: str) -> str:
         return _capped(value, MAX_QUOTE_CHARS)
+
+    @field_validator("role")
+    @classmethod
+    def _cap_role(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return _capped(value, MAX_ROLE_CHARS)
 
 
 class Question(BaseModel):
@@ -129,6 +151,39 @@ class Question(BaseModel):
     """The passages this question is about, added 2026-09-05 so a question
     never asks about evidence the card does not show. Optional — a question
     with none renders exactly as before."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_named_other(cls, data: Any) -> Any:
+        """Contract §4, added 2026-09-06: "An option the model named
+        'Other' (any case) is dropped; the only Other is the one that lets
+        the author type." Done on the raw options the model wrote, before
+        the field's own two-to-four-option count is checked, so a model
+        that (redundantly) listed its own "Other" is not refused for a
+        count that only looks short once the duplicate is gone.
+
+        Forces ``other: true`` whenever an option was actually dropped — a
+        model that named its own "Other" and also, wrongly, turned the
+        built-in one off must not cost the person the ability to type,
+        which is the one case dropping the option could otherwise take
+        away.
+        """
+        if not isinstance(data, Mapping):
+            return data
+        options = data.get("options")
+        if not isinstance(options, list):
+            return data
+        kept = [
+            option
+            for option in options
+            if not (isinstance(option, str) and option.strip().casefold() == OTHER.casefold())
+        ]
+        if len(kept) == len(options):
+            return data
+        updated = dict(data)
+        updated["options"] = kept
+        updated["other"] = True
+        return updated
 
     @field_validator("id", "text")
     @classmethod
@@ -173,15 +228,20 @@ Reply with JSON and nothing else. No explanation, no code fence, no heading:
 
 {"questions": [{"id": "q1", "text": "Is this deliberate?", "options": \
 ["Keep as written", "Change it"], "other": true, "context": \
-[{"ref": "¶24", "quote": "the passage, quoted word for word"}]}]}
+[{"ref": "¶24", "quote": "the passage, quoted word for word", "role": \
+"p4"}]}]}
 
 - One decision per question, in the order raised, at most 20; ids q1, q2, ...
 - Two to four options: the actions this file makes possible, in the \
 author's own words ("Keep as written", "Change to ..."), never a bare \
-Yes/No pair.
+Yes/No pair. Never name one of them "Other" — the person always has a box \
+of their own to type in; do not offer it again as a choice.
 - Quote every passage the question is about, word for word, as a "context" \
 entry naming its paragraph mark, or its first three words when the file has \
-none.
+none. Name the role you quoted it from — the pinned blocks below are each \
+headed "pinned as [role] (file)" — as that entry's "role". For a question \
+comparing two versions of one passage, quote it once from each role, as two \
+separate "context" entries.
 - No question for a flag that already says it is consistent, clean, \
 verified or needs no change. If none needs a decision, reply \
 {"questions": []}.
@@ -260,13 +320,30 @@ def _first(exc: PydanticValidationError) -> str:
 # ---------------------------------------------------------------------------
 
 
-def answer_line(question: Question, choice: str | None, other: str | None) -> str:
+def answer_line(
+    question: Question,
+    choice: str | None,
+    other: str | None,
+    *,
+    compare: tuple[str, str] | None = None,
+) -> str:
     """One line of the answer file — contract §4's own shape.
 
     ``q1: Yes`` for a click, ``q1: Other — <what they typed>`` for the box.
     A typed answer wins whenever there is one, because the box only opens
     when a person chose to type instead of click, and the click that opened
     it is not the answer.
+
+    ``compare``, added contract §4 2026-09-06: ``(earlier_role, later_role)``
+    when this question is a comparison — the passage exists in two of the
+    files the review step read. A ``choice`` of ``left`` or ``right`` then
+    means which pane was picked, and the line is the contract's own
+    comparison phrasing (``q4: use the original version (text)`` /
+    ``q4: keep the current version (p4)``) rather than one of the question's
+    own options. The caller works out ``compare`` from the gate's own state
+    — never from anything a form could claim — and passes ``None`` for
+    every other question, where ``left``/``right`` are refused exactly like
+    any option the question did not offer.
 
     Refuses, in a sentence, an answer that is neither: a choice the question
     did not offer (a stale page, or something posting at the API directly),
@@ -280,6 +357,11 @@ def answer_line(question: Question, choice: str | None, other: str | None) -> st
     picked = (choice or "").strip()
     if not picked:
         raise GateError(f"{question.id} was not answered.")
+    if compare is not None and picked in ("left", "right"):
+        earlier_role, later_role = compare
+        if picked == "left":
+            return f"{question.id}: use the original version ({earlier_role})"
+        return f"{question.id}: keep the current version ({later_role})"
     if picked not in question.options:
         raise GateError(f"{picked!r} is not one of the answers to {question.id}.")
     return f"{question.id}: {picked}"
@@ -385,6 +467,7 @@ __all__ = [
     "MAX_QUESTIONS",
     "MAX_QUOTE_CHARS",
     "MAX_REF_CHARS",
+    "MAX_ROLE_CHARS",
     "MIN_OPTIONS",
     "OTHER",
     "PASS_WHEN_CONDITIONS",

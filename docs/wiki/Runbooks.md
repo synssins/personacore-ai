@@ -117,6 +117,26 @@ steps:
 - **A step writes exactly one new file** (or the files a `tool` step's own contract says it hands back). Nothing is ever overwritten.
 - **`thinking:` is `on` or `off`**, sent per request for a `model` step. There is no numeric budget — that is the model server's own concern.
 
+### Step titles and descriptions
+
+Any step — `tool`, `model` or `gate` — may carry two optional strings:
+
+```yaml
+- id: audit
+  kind: model
+  title: Audit                     # up to 60 characters
+  description: >                   # up to 200 characters
+    Checks the edited chapter against the original for anything lost.
+  prompt: prompts/audit.md
+  thinking: on
+  pins: [draft]
+  output: "audit-flags.md"
+```
+
+Neither changes what the step does — a `title`/`description` are never sent to the model, and a step with neither reads exactly as it always has. What they change is what a person sees: a progress row reads `audit · Audit — running` instead of a bare `audit: model — running`; the run form's own step preview shows the description under the step id; and on a `gate` step, the gate card is headed with that step's own title and description, with a second, quieter line naming the step the questions came from by *its* title and description too ("Questions from audit · Audit — checks the edited chapter against the original for anything lost").
+
+Write the description for **the person answering the gate**, not for the model — it is never part of a prompt. Its whole job is telling someone reading a progress row or a gate card what this pass is for and why, which is exactly what a bare step id cannot do.
+
 ### Gates
 
 A `gate` step either asks a person, or checks a condition automatically:
@@ -237,6 +257,8 @@ A `gate` step (see the file format above) either asks a person a small set of qu
 While a `questions: model` (or `questions: file`) gate has an unanswered question, the run's own status area shows a card in place of the plain status line: the question's own text, one button per option, and an **Other** control that opens a small box with its own **Send** — typing there and pressing Enter sends it (Shift+Enter starts a new line instead), same as the Send button does. A **"1 of 3"** count says how many questions are left. Answering one posts it and the same card re-renders with the next question in its place, or — once every question has an answer — the plain status line resumes, naming the step that is running again. This card may take the chat's full width — it is a form with evidence to show, not a quiet progress pill.
 
 **Every question shows its own evidence, added 2026-09-05.** The first live run asked "is the timeline consistent between 'two years in' and 'three months and four days'?" with neither passage in sight, and nobody could answer it. So under the question text, the card quotes — word for word — every passage it is about (`¶24 — "…"`, or the file's own paragraph mark); under the options, it names the flag line the question came from and links to open the file itself. **The questions turn asks only about flags that need a decision** — a flag that already says "consistent", "clean" or "no change" gets no question at all, and a file where nothing needs a decision resolves the gate on its own ("resolved: no questions, continuing") rather than parking for a person with nothing to decide.
+
+**A question comparing two versions of a passage shows a comparison card, added 2026-09-06.** When a flag's evidence exists in two of the files the review step read — the edited text and the original, say — each `context` entry names which one it was quoted from (`role:`, alongside `ref`/`quote`), and the card shows the whole paragraph from each side, side by side, instead of the usual options: the earlier-produced role on the left, headed "original · *role*", the later one on the right, headed "now · *role*". Clicking a pane is the decision — no separate options to click as well — and **Other** still opens the same typing box underneath. The core finds each paragraph itself: it expands the quoted sentence to the whole paragraph containing it (text between blank lines) in that role's own file, matching the quote exactly first, then with whitespace normalised, then by its first forty characters, falling back to the quote alone when none of those find it. The answer file still gets one line naming what was actually chosen — `q4: use the original version (text)` or `q4: keep the current version (p4)` — in words a later pass can act on. A question whose passages come from only one file keeps the ordinary options card.
 
 **The composer stays locked while a gate's questions are showing**, but the sentence next to it says why: *"A runbook is waiting for your answers above."* while a question card is up, or the ordinary *"A runbook is running here; Stop it to type."* while a step is actually running — even though the run's own status is technically parked either way, a gate waiting on a person is not a moment to also be typing into the ordinary conversation.
 

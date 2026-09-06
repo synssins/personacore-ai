@@ -4,9 +4,14 @@
    composer's "+ -> Run a runbook..." picker, so there is one form and one
    set of skip semantics rather than two).
    Context: plugin, id, title, refusal (str|None), runnable (bool),
-     steps: [{id, kind, thinking, writes, running, disabled, hint}],
+     steps: [{id, kind, thinking, writes, running, disabled, hint,
+               description (str|None)}],
      fields: [{name, prompt, control ('number'|'text'|'checkbox'), value,
-               checked, help}], personas: [PersonaChoice] #}
+               checked, help}], personas: [PersonaChoice]
+
+   `step.description` is SPEC alpha.22's addition ("every step says what it
+   is for") — a step's own `description:`, shown under its id when present;
+   a step with none shows exactly what this table always showed. #}
 {% extends "base.html" %}
 {% from "_controls.html" import icon %}
 {% block title %}Run {{ title }} — PersonaCore admin{% endblock %}
@@ -55,7 +60,10 @@
                    {% if step.hint %}aria-describedby="hint-{{ step.id }}"{% endif %}>
             {% if step.hint %}<div class="meta" id="hint-{{ step.id }}">{{ step.hint }}</div>{% endif %}
           </td>
-          <td><label for="run-step-{{ step.id }}">{{ step.id }}</label></td>
+          <td>
+            <label for="run-step-{{ step.id }}">{{ step.id }}</label>
+            {% if step.description %}<div class="meta">{{ step.description }}</div>{% endif %}
+          </td>
           <td>{{ step.kind }}</td>
           <td>{{ 'yes' if step.thinking else 'no' }}</td>
           <td>{{ step.writes or '' }}</td>
