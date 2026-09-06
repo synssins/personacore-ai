@@ -12,8 +12,25 @@
   'use strict';
 
   // ── 1. modal ──
-  var modal = null;
-  function getModal() { return modal || (modal = document.getElementById('modal')); }
+  //
+  // NOT cached. `<dialog id="modal">` sits in base.html outside
+  // `{% block content %}`, so a boosted navigation to a *different* screen
+  // replaces it with a brand new element the instant `hx-boost` swaps
+  // `document.body`'s contents — the old node is discarded, disconnected.
+  // A memoised reference here would go stale the moment that happens, and it
+  // takes surprisingly little for it to be resolved once and cached before
+  // that swap: this file's own `htmx:afterSwap` listeners fire (and used to
+  // call a memoised `getModal()`) for ANY swap on the page, not only ones
+  // aimed at the modal — the Health screen's own `#health-body` polls itself
+  // every 15 seconds (`health.html`), and one poll landing on that screen
+  // before the operator ever opens the Plugins page from the menu was enough
+  // to cache that page's dialog. Every later modal fragment on the next
+  // screen would then swap its content into the *new*, live dialog while this
+  // file kept comparing against the *old*, disconnected one — so the
+  // comparison in the listener below was always false, `showModal()` was
+  // never called, and the install disclosure sat in the DOM, populated,
+  // invisible. A fresh `document.getElementById` is cheap and always live.
+  function getModal() { return document.getElementById('modal'); }
 
   document.body.addEventListener('htmx:afterSwap', function (e) {
     if (e.target === getModal() && getModal().innerHTML.trim() !== '') {
