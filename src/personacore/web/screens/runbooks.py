@@ -329,16 +329,31 @@ def _step_rows(
     (unposted) view, or ``requested_run``'s own reading of a form already
     posted once (:func:`_requested_run_from_form`) when a blocked Start is
     re-rendering the same page.
+
+    Walked **back to front**, not in file order, and that is load-bearing.
+    A browser never posts a disabled checkbox's own ``value="1"`` at all —
+    only the always-present hidden field's ``"0"`` — so
+    :func:`_requested_run_from_form`'s raw reading of a *disabled* step's
+    own field is meaningless and must never be trusted. Walking back to
+    front means that by the time a row asks "is my dependent running?", that
+    dependent's own row has already been resolved — forced ``True`` if it
+    was itself disabled — so the answer comes from what a dependent is
+    actually going to do, never from a form field a browser could not have
+    sent. A dependent is always later in the file (contract §2: a role can
+    only be pinned or read once something earlier has produced it), so this
+    order always resolves every dependent before the step that names it.
     """
     requested = dict(requested_run or {})
     rows = [{**step, "running": requested.get(step["id"], True)} for step in steps]
-    for row in rows:
+    resolved: dict[str, bool] = {}
+    for row in reversed(rows):
         dependents = _dependents_of(runner, record, row["id"])
-        blocking = next((dep for dep in dependents if requested.get(dep, True)), None)
+        blocking = next((dep for dep in dependents if resolved.get(dep, True)), None)
         row["disabled"] = blocking is not None
         row["hint"] = f"needed by {blocking}" if blocking else ""
         if row["disabled"]:
             row["running"] = True
+        resolved[row["id"]] = row["running"]
     return rows
 
 
