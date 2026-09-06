@@ -25,9 +25,22 @@
                     index, total,
                     context: [{ref, quote}], flag_line (str|None),
                     source_file (str|None), source_url (str|None)}|None,
-             items: [{value, status, reason, link}]}, oob (bool — true when
-             this is an out-of-band replacement, chat_messages.html
-             switching threads) — see chat_run.runbook_run_view.
+             items: [{value, status, reason, link}],
+             turn_running (bool)}, oob (bool — true when this is an
+             out-of-band replacement, chat_messages.html switching threads)
+             — see chat_run.runbook_run_view.
+
+   `turn_running` (chat_run._fragment's own addition, not
+   `runbook_run_view`'s) says a chat turn is registered and running in this
+   conversation *right now* — `chat_turns.running_turn`, not this run's own
+   `status`. The two differ exactly when they matter most: a run moving from
+   one model step to the next ends one turn and starts a fresh one
+   (`chat_turns.begin_turn`) while `status` reads `running` throughout, and a
+   page that attached to the first turn has nothing pointing it at the
+   second — its own `data-turn-running` was consumed once, at page load. This
+   fragment is what is left polling (`run.poll` below) for as long as the run
+   is running, so its own swap is chat.js's one remaining chance to notice
+   and reattach (`attachIfMarked`).
 
    `gate` and `items` are WAVE2.md's own additions — "Gate questions in the
    chat" and a parent run's own progress lines — and each pre-empts the
@@ -46,6 +59,7 @@
 <div id="run-status" class="chat-notice{% if run.gate %} run-status-gate{% endif %}"
      {% if oob %}hx-swap-oob="true"{% endif %}
      {% if not run.visible %}hidden{% endif %}
+     {% if run.turn_running %}data-turn-running{% endif %}
      {% if run.poll %}hx-get="/admin/chat/run/{{ run.cid }}" hx-trigger="every 4s" hx-swap="outerHTML"{% endif %}
      role="status" style="flex-direction:column; align-items:stretch; gap:var(--space-2)">
   {% if run.visible %}

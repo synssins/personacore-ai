@@ -377,6 +377,12 @@ class ChatView:
     exchange_fragment: Any
     """One send's worth of messages, plus the rail if they changed it."""
 
+    detached_exchange_html: Any
+    """Everything said in a conversation since an instant, as markup, with no
+    request anywhere — the last frame of a turn nobody typed. Async, and the
+    only field here a caller outside this package ever reaches (through
+    ``chat_turns.TurnEngine``)."""
+
 
 def register(router: APIRouter, ctx: UIContext) -> None:
     """Register the front door, the Chat page and the fragments it swaps."""
@@ -760,6 +766,67 @@ def register(router: APIRouter, ctx: UIContext) -> None:
             entry["workspace_files"] = chat_workspace.chips_for_names(
                 found.conversation_id, names, pinned=pinned
             )
+
+    async def _detached_exchange_html(
+        owner: Any, opened: datetime, since: datetime
+    ) -> str:
+        """Everything said in this conversation since ``since``, as markup.
+
+        The last frame of a turn nobody typed — a runbook's scripted step
+        (``chat_turns.start_turn``). A person's turn ends by rendering what it
+        has just produced, in the request that started it; a detached turn has
+        no request to render in, and no operator's preferences to read through
+        one, so it renders **what a reload would draw** instead: the rows out
+        of the transcript, through ``transcript_exchanges``, with the same
+        audit and reasoning records the page reads.
+
+        That is not a workaround, it is the stronger answer. The chrome a page
+        shows while a run's reply lands and the chrome it shows after a refresh
+        are then the same markup from the same function, so they cannot
+        disagree — and the folding a run's rows get (``runbook_prompt``, a
+        gate's ``gate_questions_reply``) is had for free rather than being a
+        second thing to keep in step.
+
+        Three of the reload's hydrations are deliberately skipped. The audio
+        replay needs a ``Request`` and a run's reply was never spoken; the
+        attachment and image hydrations answer for a message somebody typed,
+        which this is not. The workspace cards are kept: a model step's tool
+        call can leave files behind like any other turn's.
+
+        The rail rides along with a person's reply because a first message is
+        what gives a conversation its name and its place in the list. A run's
+        conversation was named when the run started and is already on the rail,
+        so ``conversations=None`` here leaves it alone rather than swapping it
+        for a copy built without the operator's own folds.
+
+        ``owner`` is anything carrying an ``id`` — this is called with an
+        :class:`~personacore.audit.models.Owner` from a run, where every other
+        caller passes an :class:`~personacore.admin.models.AdminUser`, and
+        everything below reads only ``id``.
+        """
+        records, _known = await _visible(owner)
+        rows = [row for row in thread_records(records, opened) if row.timestamp >= since]
+        if not rows:
+            return ""
+        built = transcript_exchanges(
+            rows,
+            human=_my_name(records, owner),
+            audit_rows=await _turn_audit(rows, owner),
+            reasoning_by_correlation=await _turn_reasoning(rows, owner),
+            context_limit=await _context_length(),
+        )
+        _attach_replay_workspace_files(await _looked_at(owner, opened), built)
+        # `get_template().render()`, not `TemplateResponse`: there is no
+        # request to hand one, and this fragment needs nothing a request would
+        # supply — the same fact `chat_streaming._markers_html` already checks
+        # against the files it renders. `speech_autoplay=False` because a run's
+        # reply was never read aloud and must not start doing so on arrival.
+        return templates.get_template("fragments/chat_exchange.html").render(
+            exchanges=built,
+            conversations=None,
+            conversation=opened.isoformat(),
+            speech_autoplay=False,
+        )
 
     def _attach_replay_images(
         built: Sequence[dict[str, Any]], conversation: Conversation | None
@@ -1599,6 +1666,7 @@ def register(router: APIRouter, ctx: UIContext) -> None:
         speaks=_speaks,
         context_length=_context_length,
         exchange_fragment=_exchange_fragment,
+        detached_exchange_html=_detached_exchange_html,
     )
     exchange = exchanges.register(router, view)
     streaming.register(router, exchange)

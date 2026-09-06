@@ -80,44 +80,50 @@ def _mount_admin(
     # door is broken; both are worse to serve than to refuse, because the
     # container's health check would answer either of them with "ok".
     from personacore.admin import create_admin_router
+    from personacore.web.screens import chat_turns
 
-    app.include_router(
-        create_admin_router(
-            layout=layout,
-            discovery=discovery,
-            personas=personas,
-            preferences=preferences,
-            audit=audit,
-            llm=llm,
-            bus=bus,
-            trusted_user_header=trusted_header,
-            # PC-294's one rule, handed down rather than re-derived. The
-            # admin surface never asks the environment which door is open.
-            auth=auth,
-            auth_context=auth_context,
-            # The holder, so the routers ask which door is open per request
-            # instead of closing over the one this process booted with.
-            auth_live=auth_live,
-            api_keys=_api_key_store(layout),
-            secrets=SecretStore(layout),
-            # ADR-0016: a settings field can be filled by asking the plugin.
-            # Passing the host's own call_tool is the whole wiring — it
-            # already enforces the manifest's declared risk, applies the
-            # plugin's permissions, and records the call in the audit log
-            # and the trace, which is what the ADR requires of a lookup.
-            call_plugin_tool=plugin_toggle.call_tool,
-            apply_settings=apply_settings,
-            chat=chat,
-            plugin_health=plugin_health,
-            plugin_toggle=plugin_toggle,
-            # working/contracts/runbook.md §6: the plugin-install hook that
-            # copies a plugin's bundled runbooks in lives on this surface,
-            # beside the rest of plugin installation (`admin/api_plugins.py`).
-            # `None` on an assembly that never built one — the routes still
-            # mount, `install_bundled` just never runs.
-            runbooks=runbooks,
-        )
+    admin_router = create_admin_router(
+        layout=layout,
+        discovery=discovery,
+        personas=personas,
+        preferences=preferences,
+        audit=audit,
+        llm=llm,
+        bus=bus,
+        trusted_user_header=trusted_header,
+        # PC-294's one rule, handed down rather than re-derived. The
+        # admin surface never asks the environment which door is open.
+        auth=auth,
+        auth_context=auth_context,
+        # The holder, so the routers ask which door is open per request
+        # instead of closing over the one this process booted with.
+        auth_live=auth_live,
+        api_keys=_api_key_store(layout),
+        secrets=SecretStore(layout),
+        # ADR-0016: a settings field can be filled by asking the plugin.
+        # Passing the host's own call_tool is the whole wiring — it
+        # already enforces the manifest's declared risk, applies the
+        # plugin's permissions, and records the call in the audit log
+        # and the trace, which is what the ADR requires of a lookup.
+        call_plugin_tool=plugin_toggle.call_tool,
+        apply_settings=apply_settings,
+        chat=chat,
+        plugin_health=plugin_health,
+        plugin_toggle=plugin_toggle,
+        # working/contracts/runbook.md §6: the plugin-install hook that
+        # copies a plugin's bundled runbooks in lives on this surface,
+        # beside the rest of plugin installation (`admin/api_plugins.py`).
+        # `None` on an assembly that never built one — the routes still
+        # mount, `install_bundled` just never runs.
+        runbooks=runbooks,
     )
+    app.include_router(admin_router)
+    # PLAN.md alpha.21: the chat screen assembles the engine that makes a turn
+    # a turn, and a runbook's scripted step runs its turns through it. It is
+    # built where its pieces are — inside a `register(router, ...)` — so it
+    # rides up on the router; this is the one place that has both a router and
+    # an application to bind it to.
+    chat_turns.attach_engine(app, admin_router)
     app.state.surfaces.add("admin")
     log.info("surface_mounted", surface="admin")
 

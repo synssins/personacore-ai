@@ -432,6 +432,7 @@ def create_admin_router(
         TEMPLATE_DIR,
         create_admin_ui_router,
     )
+    from personacore.web.screens import chat_turns
 
     if auth_context is not None:
         # Mounted BEFORE the guarded UI router and outside it: these are the
@@ -448,55 +449,62 @@ def create_admin_router(
             )
         )
 
-    router.include_router(
-        create_admin_ui_router(
-            # The same dependency the JSON API is guarded by, wrapped so a
-            # browser is sent to the sign-in page instead of being handed a 401
-            # body it cannot act on. The check is not repeated — only its
-            # refusal is presented differently (see
-            # `redirect_when_not_signed_in`).
-            require_user=(
-                redirect_when_not_signed_in(require_user, context=auth_context)
-                if auth_context is not None
-                else require_user
-            ),
-            auth_context=auth_context,
-            layout=layout,
-            audit=audit,
-            llm=llm,
-            bus=bus,
-            scans=scans,
-            disk_warning_bytes=disk_warning_bytes,
-            # The API's own persist-and-apply helper, for the same reason
-            # `require_user` is passed rather than rebuilt: the settings
-            # screens and `PUT /admin/api/config` must validate, write, apply
-            # live and audit through one path, or "saved" means two things.
-            save_config=_save_config,
-            # The core's own persona store — the same object the agent loop
-            # loads a persona from on every turn. The Personas screen creates,
-            # edits and deletes the folders it reads, so a second store here
-            # would be a second cache and a second answer to "what is on disk".
-            personas=personas,
-            preferences=preferences,
-            # The agent loop's own runner, the same one the assembly hands
-            # everything else: a turn taken on the admin chat screen is the
-            # turn the core takes anywhere, with the same persona, policy and
-            # audit trail behind it (PC-152).
-            chat=chat,
-            # The same supervisor view `_PluginScanCache` above already holds,
-            # for the plugin health and plugin output screens (PC-279, PC-280).
-            # Passed rather than reached for through the cache: the cache's copy
-            # is a private detail of how a listing gets built, and two screens
-            # reading a supervisor is not that.
-            plugin_health=plugin_health,
-            # The same ceilings `POST /admin/api/plugins/install` installs
-            # under. The UI route hands its upload to that endpoint's own
-            # handler, which enforces them; this is passed so the page can
-            # refuse an obviously oversized file before it is spooled to disk,
-            # against the same number rather than a second one.
-            package_limits=package_limits,
-        )
+    ui_router = create_admin_ui_router(
+        # The same dependency the JSON API is guarded by, wrapped so a
+        # browser is sent to the sign-in page instead of being handed a 401
+        # body it cannot act on. The check is not repeated — only its
+        # refusal is presented differently (see
+        # `redirect_when_not_signed_in`).
+        require_user=(
+            redirect_when_not_signed_in(require_user, context=auth_context)
+            if auth_context is not None
+            else require_user
+        ),
+        auth_context=auth_context,
+        layout=layout,
+        audit=audit,
+        llm=llm,
+        bus=bus,
+        scans=scans,
+        disk_warning_bytes=disk_warning_bytes,
+        # The API's own persist-and-apply helper, for the same reason
+        # `require_user` is passed rather than rebuilt: the settings
+        # screens and `PUT /admin/api/config` must validate, write, apply
+        # live and audit through one path, or "saved" means two things.
+        save_config=_save_config,
+        # The core's own persona store — the same object the agent loop
+        # loads a persona from on every turn. The Personas screen creates,
+        # edits and deletes the folders it reads, so a second store here
+        # would be a second cache and a second answer to "what is on disk".
+        personas=personas,
+        preferences=preferences,
+        # The agent loop's own runner, the same one the assembly hands
+        # everything else: a turn taken on the admin chat screen is the
+        # turn the core takes anywhere, with the same persona, policy and
+        # audit trail behind it (PC-152).
+        chat=chat,
+        # The same supervisor view `_PluginScanCache` above already holds,
+        # for the plugin health and plugin output screens (PC-279, PC-280).
+        # Passed rather than reached for through the cache: the cache's copy
+        # is a private detail of how a listing gets built, and two screens
+        # reading a supervisor is not that.
+        plugin_health=plugin_health,
+        # The same ceilings `POST /admin/api/plugins/install` installs
+        # under. The UI route hands its upload to that endpoint's own
+        # handler, which enforces them; this is passed so the page can
+        # refuse an obviously oversized file before it is spooled to disk,
+        # against the same number rather than a second one.
+        package_limits=package_limits,
     )
+    router.include_router(ui_router)
+    # The detached-turn engine the chat screen assembled (PLAN.md alpha.21).
+    # It rides up on the router it was built against, because the function
+    # that builds it is handed a router and never an application; `_mount_admin`
+    # is the one place that has both and binds it there. Relayed rather than
+    # rebuilt: a second engine would be a second answer to what a turn is.
+    engine = getattr(ui_router, chat_turns.ENGINE_ATTRIBUTE, None)
+    if engine is not None:
+        setattr(router, chat_turns.ENGINE_ATTRIBUTE, engine)
 
     return router
 

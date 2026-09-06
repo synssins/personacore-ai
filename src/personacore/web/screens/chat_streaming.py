@@ -49,31 +49,35 @@ happens on the browser's separate request for the audio.
 Split out of ``chat.py`` unchanged (ADR-0040). The screen still registers this
 route, and every name below is still importable from that module.
 
-**One thing survived the move and stopped meaning what it looks like.**
+**The lifecycle itself is now next door**, in
+:mod:`personacore.web.screens.chat_turns`: the ring, the subscribe/replay/stop
+machinery, the keepalive read and the mapping from the runner's events to
+frames, moved there so a runbook's scripted step runs the same turn a person's
+message does rather than a thinner copy of it (PLAN.md alpha.21). Every name is
+re-exported here, unchanged, and everything that needs a
+:class:`~fastapi.Request` — the form, the room, the attachments, the
+rendering — stayed. Read the paragraphs above beside that module: they describe
+the same lifecycle from the side that has a reader to lose.
+
+**One name is deliberately not a plain re-export.**
 ``tests/server/test_chat_streaming.py`` shortens :data:`KEEPALIVE_SECONDS` by
-patching it on ``chat``, which is now a re-export: :func:`_kept_alive` reads
-this module's copy, so the patch no longer reaches it and that test waits the
-whole ten seconds. It still proves what it was written to prove and it is ten
-seconds slower for it. The fix is one name in the test, and it was left for
-whoever is allowed to touch tests.
+patching it on the module it calls the keepalive through, and a patch that
+lands on a re-export is a test that has quietly stopped testing. So
+:func:`_kept_alive` below reads *this* module's copy at call time and passes it
+down — see its own docstring for why it is a plain function and not an
+``async def``.
 """
 
 from __future__ import annotations
 
 import asyncio
-import contextlib
-import json
 import time
-from collections import deque
 from collections.abc import AsyncIterator, Sequence
-from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
 import structlog
 from fastapi import APIRouter, Request
-from fastapi.responses import StreamingResponse
-from starlette.background import BackgroundTask
 
 from personacore.admin.models import AdminUser
 from personacore.audit.models import (
@@ -84,8 +88,7 @@ from personacore.audit.models import (
     ReasoningRecord,
     Surface,
 )
-from personacore.voice.live import finished_prefix
-from personacore.web.screens import chat_attachments, chat_workspace
+from personacore.web.screens import chat_attachments, chat_turns, chat_workspace
 from personacore.web.screens import chat_voices as voices
 from personacore.web.screens.chat_audio import begin_live
 from personacore.web.screens.chat_exchange import (
@@ -99,7 +102,6 @@ from personacore.web.screens.chat_reply import (
     TURN_METRICS_ACTION,
     TURN_METRICS_CATEGORY,
     TurnMetrics,
-    _latency,
     _metrics_detail,
     _refused,
     chat_exchange,
@@ -110,613 +112,64 @@ from personacore.web.screens.chat_thread import (
     conversation_start,
     wanted_conversation,
 )
-from personacore.web.shared import _readable
 
 log = structlog.get_logger(__name__)
 
 
-_PING = ": still here" + chr(10) * 2
-"""One SSE comment frame. The reader ignores it; the socket carries a byte."""
-
-_KEEPALIVE = object()
-"""Yielded by :func:`_kept_alive` when the turn has gone quiet for a while."""
-
-KEEPALIVE_SECONDS = 10.0
-"""How long a streamed turn may say nothing before the socket is reminded it
-is alive. Ten seconds is well inside the shortest idle timeout anything between
-a browser and this core is likely to enforce, and far too coarse to matter to a
-reply that is actually arriving."""
-
-
-async def _kept_alive(events: Any, *, stopping: asyncio.Event | None = None) -> AsyncIterator[Any]:
-    """``events``, with :data:`_KEEPALIVE` yielded whenever it goes quiet.
-
-    The pending ``__anext__`` is held across a quiet spell rather than being
-    cancelled and retried: cancelling it would drop the very event we were
-    waiting for. That is why this is `asyncio.wait` on a task we keep, and not
-    `asyncio.wait_for`.
-
-    **The cancelled task is awaited before this returns**, and that is not
-    tidiness. Driving ``__anext__`` from a separate Task leaves the underlying
-    async generator marked as running until the cancellation has actually been
-    delivered to it. `_TurnHolding.release` calls ``events.aclose()`` on the way
-    out; against a generator still marked running that raises
-    ``RuntimeError: aclose(): asynchronous generator is already running``, which
-    was being swallowed — so ``release`` set its handle to ``None`` and believed
-    it had let go of the agent turn and the LLM socket while both were still
-    held. That is the leak `_TurnHolding` exists to prevent, and the first
-    version of this function reintroduced it while fixing something else.
-
-    ``stopping`` is §4a's reply-level stop, and this is the one place it can be
-    honoured promptly: the turn spends nearly all its life suspended on the
-    ``__anext__`` above, so anything that only checks a flag between events
-    would not be felt until the model produced its next token — which on a
-    twenty-minute reply can be a minute away. Waiting on the flag *beside* the
-    read, and returning when it wins, ends the iteration exactly as the model
-    running out of tokens does: the caller's ``async for`` finishes, its
-    ``finally`` closes the generator, and the turn winds down through the path
-    it already had. **Nothing is cancelled from underneath it.**
-    """
-    iterator = events.__aiter__()
-    pending: asyncio.Task[Any] | None = None
-    halt: asyncio.Task[Any] | None = None
-    try:
-        while True:
-            if stopping is not None and stopping.is_set():
-                return
-            if pending is None:
-                pending = asyncio.ensure_future(iterator.__anext__())
-            watched: set[asyncio.Future[Any]] = {pending}
-            if stopping is not None:
-                if halt is None:
-                    halt = asyncio.ensure_future(stopping.wait())
-                watched.add(halt)
-            done, _ = await asyncio.wait(
-                watched,
-                timeout=KEEPALIVE_SECONDS,
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-            if halt is not None and halt in done:
-                return
-            if pending not in done:
-                yield _KEEPALIVE
-                continue
-            task, pending = pending, None
-            try:
-                event = task.result()
-            except StopAsyncIteration:
-                return
-            # Outside the ``try``: a `CancelledError` raised by the *consumer*
-            # of this yield is the reader going away, and must not be mistaken
-            # for the iterator finishing.
-            yield event
-    finally:
-        if halt is not None:
-            halt.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await halt
-        if pending is not None:
-            pending.cancel()
-            with contextlib.suppress(asyncio.CancelledError, StopAsyncIteration):
-                await pending
-
-
-def _frame(event: str, payload: dict[str, Any]) -> str:
-    """One server-sent event: a name, a JSON body, a blank line.
-
-    JSON rather than the raw text, for a reason that is not tidiness: a reply
-    contains newlines, and a newline inside a ``data:`` line ends the frame.
-    Encoding it means the reader never has to guess where a fragment stopped.
-    """
-    return f"event: {event}\ndata: {json.dumps(payload)}\n\n"
-
-
-async def _close_stream(events: Any) -> None:
-    """Close a turn's event stream, whatever it thinks of the idea.
-
-    A generator abandoned mid-iteration holds the turn and the connection to
-    the model until something happens to collect it, and abandoning one is the
-    *ordinary* end of a streamed reply — the reader closes the tab. Nothing
-    here may raise: by the time this runs there is nobody left to tell, and a
-    failure to hang up politely must not become the failure.
-    """
-    closer = getattr(events, "aclose", None)
-    if closer is None:
-        return
-    with contextlib.suppress(Exception):
-        await closer()
-
-
-class _TurnHolding:
-    """What one streamed turn is holding, and the one way to let it go.
-
-    This exists because of a specific, checked fact about how a streamed
-    response ends. Starlette watches for the client going away and **cancels
-    the task that is writing the body**; the cancellation lands in its own
-    writer, not inside the generator producing the frames, so that generator is
-    simply abandoned — still suspended, still holding the agent turn, the
-    connection to the model and a queue somebody is filling. Every uvicorn in
-    this project announces ASGI spec 2.3, which is the version that takes that
-    path, so this is the ordinary case and not a corner of it.
-
-    The response therefore carries a background task that releases the same
-    things. Releasing is idempotent, so whichever of the two gets there first
-    is the one that does it and the other finds nothing left.
-    """
-
-    def __init__(self) -> None:
-        self.live: Any = None
-        self.events: Any = None
-        self.forget: Any = None
-        """How to take a finished exchange out of the stop registry.
-
-        Set for a room with more than one persona in it, because that is the
-        only kind of exchange the stop button can reach. Called on the way out
-        alongside everything else this holds, so a stopped-or-finished exchange
-        does not sit in the ring waiting to be evicted — a token that still
-        resolves is a token somebody's stale tab can press.
-        """
-
-    async def release(self) -> None:
-        live, self.live = self.live, None
-        events, self.events = self.events, None
-        forget, self.forget = self.forget, None
-        if live is not None:
-            # Synchronous and first: it ends the queue the turn was filling,
-            # and it cannot raise, so it happens even if the close below is
-            # itself interrupted.
-            live.abandon()
-        if forget is not None:
-            with contextlib.suppress(Exception):
-                forget()
-        await _close_stream(events)
-
-
-@dataclass(slots=True)
-class _Spoken:
-    """What one persona's streamed turn produced, gathered as it happened.
-
-    A mutable object rather than a return value because the thing producing it
-    is an async generator of frames: the frames have to reach the browser as
-    they are made, and the numbers are only complete when it has finished. One
-    small object passed in is the plain way to have both.
-    """
-
-    reply: str = ""
-    result: Any = None
-    tokens: int = 0
-    first_token_ms: float | None = None
-    total_ms: float | None = None
-    tools: list[tuple[str, float | None]] = field(default_factory=list)
-    announced: bool = False
-    """The browser was told where to listen. Deciding on what was *promised*
-    rather than on what arrived makes the answer the same every time — see
-    where it is read."""
-
-    first_audio_ms: float | None = None
-    broke: str = ""
-    """A sentence, when the turn did not finish. Empty otherwise."""
-
-    reasoning: str = ""
-    """The model's own reasoning, gathered exactly as ``reply`` is — every
-    ``reasoning`` event's text, in order. Empty for the ordinary reply, which
-    is most of them: a model that never reasons sends no ``reasoning`` events
-    at all. Kept here, not only forwarded to the ``thinking`` frame, because
-    the owner asked to be able to read this back later (2026-09-02) — see
-    ``_record_reasoning``, which is what makes that true."""
-
-    workspace_files: list[str] = field(default_factory=list)
-    """Every workspace file this turn's own tool calls left behind — workspace
-    contract §7 — gathered off each ``tool_result`` event's own ``detail``
-    (``AgentEvent(type=TOOL_RESULT).detail["files"]``, the agent loop's own
-    joint), in the order the tool calls finished. Empty for a persona with no
-    workspace, or one whose tools produced nothing to keep — most turns,
-    which never touch this field at all. Turned into cards for the finished
-    exchange by ``chat_workspace.chips_for_names`` and into the one audit
-    record a reload reads back by (``_record_workspace_files``)."""
-
-
 # ---------------------------------------------------------------------------
-# A turn that outlives the browser watching it — detached-turns contract §3
+# The lifecycle, and the mapping from events to frames — both live next door
 # ---------------------------------------------------------------------------
+#
+# Everything that makes a turn a turn — the ring of running turns, the
+# subscribe/replay/stop machinery, the keepalive read, and the mapping from the
+# runner's events to the frames `chat.js` understands — moved to
+# `chat_turns.py` so a runbook's scripted step can use the same code rather
+# than a thinner copy of it (PLAN.md alpha.21). Nothing about it changed on the
+# way out; this module still owns the route, the form, the room, the
+# attachments and the rendering, which is everything that needs a `Request`.
+#
+# The names are re-exported because they are what the test suite and the rest
+# of the screen already call them, and because a rename is a change to
+# something these lines are not about.
 
-RUNNING_ATTRIBUTE = "chat_running_turns"
-"""Where the running turns live on ``app.state``.
-
-On the application rather than in a module global for the same reason the stop
-registry beside it is (``chat_voices.STOP_ATTRIBUTE``): the test suite builds
-several applications in one process, and a global would let one core's turn be
-attached to — or stopped — through another's.
-"""
-
-REPLAY_BYTES = 2 * 1024 * 1024
-"""How much of a running turn is kept for somebody who attaches late (§3.2).
-
-Two megabytes, and the number is chosen against the worst turn this host
-actually produces: fifteen thousand reasoning tokens is normal here, which is
-sixty kilobytes of text plus a frame header each. This holds that several times
-over and is still a fixed ceiling rather than however long a pasted message
-runs.
-
-**Oldest frames out first when it is reached**, which §3.2 permits explicitly
-because a late attacher's *final* answer does not come from this buffer: the
-``done`` frame carries the server's own rendering of the finished exchange, and
-after that the transcript is the authority. The worst a full buffer costs is
-the top of a very long reply while it is still being written.
-
-The buffer is short-lived by construction — §7: as soon as the response is in
-place the buffer can drop, since the transcript already carries everything
-needed to resume the conversation — so this bounds one enormous turn, not
-accumulation over a day.
-"""
-
-_ENDED = object()
-"""Put on every subscriber's queue when the turn is over. Not a frame."""
+_PING = chat_turns._PING
+_KEEPALIVE = chat_turns._KEEPALIVE
+KEEPALIVE_SECONDS = chat_turns.KEEPALIVE_SECONDS
+_frame = chat_turns.frame
+_close_stream = chat_turns.close_stream
+_TurnHolding = chat_turns._TurnHolding
+_Spoken = chat_turns._Spoken
+RUNNING_ATTRIBUTE = chat_turns.RUNNING_ATTRIBUTE
+REPLAY_BYTES = chat_turns.REPLAY_BYTES
+_ENDED = chat_turns._ENDED
+_RunningTurn = chat_turns._RunningTurn
+STOPPED_REPLY = chat_turns.STOPPED_REPLY
+_stopped_or_broken = chat_turns._stopped_or_broken
+_turns = chat_turns._turns
+_keyed = chat_turns._keyed
+running_turn = chat_turns.running_turn
+stop_turn = chat_turns.stop_turn
+_attached = chat_turns._attached
+_dropped = chat_turns._dropped
+_watching = chat_turns._watching
+_drive = chat_turns._drive
 
 
-class _RunningTurn:
-    """One turn, running whether or not anybody is watching it.
+def _kept_alive(events: Any, *, stopping: asyncio.Event | None = None) -> AsyncIterator[Any]:
+    """``chat_turns.kept_alive``, with **this module's** keepalive interval.
 
-    **Identity is the conversation's own marker** (§3.1): one conversation can
-    only have one turn running at a time, the screen already posts that marker
-    on every control, and ``fragments/chat_markers.html`` exists solely to keep
-    it correct. The key is ``(owner, marker)``, so rule 3 — a member sees only
-    their own turns — is enforced by the lookup itself rather than by a check
-    somebody can forget to write.
-
-    **A brand new conversation has no marker to be keyed by**, because the
-    instant that names it is minted inside the turn (``opened``, below). Such a
-    turn is therefore unregistered until :meth:`identify` is called with the
-    same instant the ``markers`` frame carries — which is before the first word
-    of the reply. Nothing can attach to it in that window, and nothing needs
-    to: the marker a browser would attach with does not exist yet either.
-
-    **The guard against running twice cannot be "same connection"** (§7),
-    because deliberately it is not: three devices signed in as the same person
-    watch one turn at the same time. It is "is a turn already running for this
-    conversation", which is exactly what a lookup on this key answers.
+    A plain function returning that generator rather than an ``async def``
+    wrapping it, and both halves of that matter. Reading
+    :data:`KEEPALIVE_SECONDS` here, at call time, is what keeps
+    ``test_chat_streaming.py``'s monkeypatch working: it patches the name on
+    this module, and a patch that lands on a re-export is a test that has
+    quietly stopped testing (that file's own comment). Handing back the inner
+    generator rather than iterating it means the caller closes the real one —
+    a wrapper would leave the inner generator's pending read alive, and
+    ``_TurnHolding.release``'s ``aclose`` would then raise the
+    "already running" error that leak exists to prevent.
     """
-
-    def __init__(self, ring: dict[tuple[str, str], _RunningTurn], owner: str) -> None:
-        self._ring = ring
-        self.owner = owner
-        self.key: tuple[str, str] | None = None
-        self.holding = _TurnHolding()
-        self.stopping = asyncio.Event()
-        """Somebody pressed stop (§4a). Read by :func:`_kept_alive` beside the
-        model's own next event, so it is felt in the middle of a reply and not
-        only between them."""
-
-        self.task: asyncio.Task[None] | None = None
-        self.finished = False
-        self._pinned: list[str] = []
-        self._recent: deque[str] = deque()
-        self._bytes = 0
-        self._watchers: set[asyncio.Queue[Any]] = set()
-
-    # -- identity ----------------------------------------------------------
-
-    def identify(self, marker: str) -> None:
-        """Register under the conversation this turn turned out to be in.
-
-        Called the moment ``opened`` is known and with exactly the string the
-        ``markers`` frame carries, so the marker a browser attaches with and
-        the key it is found by cannot drift.
-
-        A second turn already registered here is **replaced, not stopped**: it
-        is a turn this one has already superseded — see the route, which stops
-        the previous one before starting a replacement — and stopping it from
-        here would end a turn twice for a reason that has nothing to do with
-        identity.
-        """
-        if self.finished:
-            return
-        self.key = (self.owner, marker)
-        self._ring[self.key] = self
-
-    def _forget(self) -> None:
-        """Take this turn out of the registry, if it is still the one in it.
-
-        ``is self`` matters: a second send stops this turn and starts another
-        under the same key, and this turn's own wind-down happens afterwards.
-        Popping the key blindly would deregister the *replacement*.
-        """
-        key = self.key
-        if key is not None and self._ring.get(key) is self:
-            del self._ring[key]
-
-    # -- what a late attacher gets ----------------------------------------
-
-    def publish(self, frame: str) -> None:
-        """One frame, to everybody attached now and to whoever attaches next.
-
-        Synchronous, and it has to stay that way: :meth:`subscribe` snapshots
-        the buffer and adds its queue in one unbroken block, so an ``await``
-        anywhere in here would open the window where a frame reaches neither
-        the snapshot nor the queue — or, the other way round, both.
-        """
-        if frame is not _PING:
-            # A comment frame keeps a socket warm and says nothing. Replaying
-            # one to somebody who has just attached is bytes with no meaning,
-            # and it would spend the buffer this turn's actual words need.
-            self._remember(frame)
-        for queue in self._watchers:
-            queue.put_nowait(frame)
-
-    def _remember(self, frame: str) -> None:
-        if frame.startswith(("event: markers", "event: exchange")):
-            # Never evicted. Between them they are two small frames that say
-            # which conversation this is and which exchange the room's stop
-            # button reaches — both of which a late attacher needs to be
-            # *correct*, not merely complete. Dropping the oldest frames is
-            # only safe while the oldest frames are words.
-            self._pinned.append(frame)
-            return
-        self._recent.append(frame)
-        self._bytes += len(frame)
-        while self._recent and self._bytes > REPLAY_BYTES:
-            self._bytes -= len(self._recent.popleft())
-
-    def subscribe(self) -> tuple[asyncio.Queue[Any], list[str]]:
-        """A queue of what happens next, and a copy of what already happened.
-
-        The two are taken together, with nothing awaited in between, which is
-        the whole of the correctness argument: on one event loop that makes the
-        pair atomic against :meth:`publish`, so a frame produced at this exact
-        moment lands in the replay or in the queue and never in neither or
-        both.
-
-        The queue is unbounded on purpose. It holds at most what one turn
-        produces, it is dropped the moment its reader's response ends, and
-        bounding it would mean choosing between a wedged socket and a gap in
-        the middle of somebody's reply.
-        """
-        queue: asyncio.Queue[Any] = asyncio.Queue()
-        replay = [*self._pinned, *self._recent]
-        if self.finished:
-            queue.put_nowait(_ENDED)
-        else:
-            self._watchers.add(queue)
-        return queue, replay
-
-    def unsubscribe(self, queue: asyncio.Queue[Any]) -> None:
-        """One reader has gone. **This is not stopping** (§5 rule 5) — it takes
-        a queue out of a set and touches nothing else the turn is holding."""
-        self._watchers.discard(queue)
-
-    # -- the two ways it ends ---------------------------------------------
-
-    def stop(self) -> None:
-        """§4a's stop: end the reply being written.
-
-        Deregistered here rather than only on the way out, so the conversation
-        is free for the next turn immediately — a second send stops this one
-        and starts another under the same key in the same breath.
-        """
-        self.stopping.set()
-        self._forget()
-
-    def finish(self) -> None:
-        """The turn is over. Tell everyone attached, and drop the buffer.
-
-        §7: as soon as the response is in place the buffer can drop, because
-        the conversation can always be resumed from the transcript, which
-        already carries the whole of the context. The live
-        buffer exists only between a turn starting and its transcript row
-        landing; after that the transcript is the only authority and it already
-        survives everything.
-
-        Readers mid-replay are unaffected — :meth:`subscribe` handed them their
-        own copy of the list, not this one.
-        """
-        if self.finished:
-            return
-        self.finished = True
-        self._forget()
-        self._pinned = []
-        self._recent.clear()
-        self._bytes = 0
-        watchers, self._watchers = self._watchers, set()
-        for queue in watchers:
-            queue.put_nowait(_ENDED)
-
-
-STOPPED_REPLY = "You stopped this reply."
-"""What the card where the answer would have been says (§4a).
-
-Plain, and it names who did it: the one thing a person needs to know when a
-half-written reply disappears is that it was them and not a failure.
-"""
-
-
-def _stopped_or_broken(
-    message: str,
-    out: _Spoken,
-    *,
-    stopped: bool,
-    attachments: Sequence[Any] = (),
-    attachment_notice: str = "",
-    workspace_files: Sequence[Any] = (),
-) -> dict[str, Any]:
-    """The card a turn that produced no reply leaves behind.
-
-    **THIS IS THE CHOICE POINT §4a LEAVES OPEN, AND IT IS THE ONLY ONE.**
-    The owner has not answered it: whether a stopped reply is kept as far as
-    it got, or discarded. Keeping it means a partial answer in the transcript, which is
-    then history the next turn reads back. Discarding it means twenty minutes
-    of work vanishing on purpose. The room-level stop dodges the question by
-    letting the reply *finish* — which a reply-level stop cannot do, because
-    finishing is the thing being stopped.
-
-    What ships is **discarded**, and that is what falls out rather than what
-    was chosen: the agent loop writes the assistant row when its turn
-    completes, so a turn broken off mid-stream writes none. ``out.reply`` holds
-    the words that did arrive and nothing here reads it.
-
-    The other answer is one branch in this function — write ``out.reply`` as an
-    assistant row and render it as an ordinary reply — and it is **not** written
-    here, deliberately. This screen is not the transcript's writer: the
-    chat-room contract says the agent loop is, and the one place that rule is
-    already bent (``chat_exchange._recorded_unanswered``) carries a paragraph
-    explaining why it had to be and writes a *user* row, not an assistant one.
-    Bending it a second time, for an answer nobody has given, is a decision
-    with a shape — whose name goes over a half-sentence, what the next turn
-    reads back — and it belongs to the owner.
-    """
-    return _refused(
-        message,
-        STOPPED_REPLY if stopped else out.broke,
-        attachments=attachments,
-        attachment_notice=attachment_notice,
-        workspace_files=workspace_files,
-    )
-
-
-def _turns(app: Any) -> dict[tuple[str, str], _RunningTurn]:
-    """The running turns on this application, made on first use."""
-    ring: dict[tuple[str, str], _RunningTurn] | None = getattr(app.state, RUNNING_ATTRIBUTE, None)
-    if ring is None:
-        ring = {}
-        setattr(app.state, RUNNING_ATTRIBUTE, ring)
-    return ring
-
-
-def _keyed(owner: str, marker: str | None) -> tuple[str, str] | None:
-    """``(owner, marker)`` in the one canonical spelling, or ``None``.
-
-    Round-tripped through :func:`conversation_start` rather than used as typed,
-    so the plus-eaten form a query string produces
-    (``chat_thread._PLUS_EATEN``) and the properly encoded one land on the same
-    key. A marker that names no instant names no turn.
-    """
-    started = conversation_start(wanted_conversation(marker))
-    if started is None:
-        return None
-    return (owner, started.isoformat())
-
-
-def running_turn(request: Request, owner: str, marker: str | None) -> bool:
-    """Whether a turn is running in this person's conversation right now.
-
-    Read by the screen so a page opened — or reopened — while a reply is still
-    being written can attach to it instead of showing a conversation that looks
-    finished (§6: coming back to a conversation should find it exactly where
-    it was left).
-    """
-    key = _keyed(owner, marker)
-    if key is None:
-        return False
-    ring = getattr(request.app.state, RUNNING_ATTRIBUTE, None) or {}
-    return key in ring
-
-
-def stop_turn(request: Request, marker: str | None, owner: str) -> bool:
-    """§4a — halt the reply being written in this person's conversation.
-
-    ``True`` when a turn was stopped. An unknown marker, somebody else's
-    conversation and a turn that has already finished are one answer, for the
-    same reason ``chat_voices.stop`` gives one: which it was belongs in the log
-    and not in the response.
-
-    **This is the sibling of the room's stop, not a replacement for it.**
-    ``chat_voices.stop`` ends an *exchange* at the current turn's boundary —
-    the reply being written finishes and nobody else is asked — and only ever
-    exists for a room. This ends the reply itself, which is the thing a solo
-    conversation has no button for at all, and is now the only way to end a
-    turn somebody has walked away from.
-    """
-    key = _keyed(owner, marker)
-    if key is None:
-        return False
-    ring = getattr(request.app.state, RUNNING_ATTRIBUTE, None) or {}
-    turn = ring.get(key)
-    if turn is None:
-        return False
-    turn.stop()
-    # Counts and timings only — never a frame's contents (rule 4).
-    log.info("chat_turn_stopped")
-    return True
-
-
-async def _attached(
-    turn: _RunningTurn, queue: asyncio.Queue[Any], replay: list[str]
-) -> AsyncIterator[str]:
-    """One subscriber's view of a turn: what it missed, then what happens next.
-
-    **The ``finally`` unsubscribes and does nothing else, and that is the whole
-    fix.** This generator used to *be* the turn: a reader who went away raised
-    `CancelledError` at the ``yield``, the ``finally`` cancelled the pending
-    read and released the model connection, and a tablet locking its screen
-    ended a twenty-minute reply. Detaching is not stopping (§5 rule 5).
-
-    The response also carries a background task that removes the same queue,
-    for the reason `_TurnHolding` documents: on the ASGI version every uvicorn
-    in this project speaks, a reader who closes the tab leaves this generator
-    *abandoned* rather than closed, so its ``finally`` may never run at all.
-    Whichever of the two gets there first does it; ``discard`` makes the other
-    a no-op.
-    """
-    try:
-        for frame in replay:
-            yield frame
-        while True:
-            frame = await queue.get()
-            if frame is _ENDED:
-                return
-            yield frame
-    finally:
-        turn.unsubscribe(queue)
-
-
-async def _dropped(turn: _RunningTurn, queue: asyncio.Queue[Any]) -> None:
-    """The response's own way of saying this reader has gone. See `_attached`."""
-    turn.unsubscribe(queue)
-
-
-def _watching(turn: _RunningTurn) -> StreamingResponse:
-    """A response that watches ``turn`` and has no power over it."""
-    queue, replay = turn.subscribe()
-    return StreamingResponse(
-        _attached(turn, queue, replay),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-store",
-            "Connection": "keep-alive",
-            # Without this the reverse proxy in front of this core (spec §7)
-            # buffers the whole response and hands it over at the end, which
-            # is precisely the behaviour this route exists to stop.
-            "X-Accel-Buffering": "no",
-        },
-        background=BackgroundTask(_dropped, turn, queue),
-    )
-
-
-async def _drive(turn: _RunningTurn, frames: AsyncIterator[str]) -> None:
-    """Run one turn to its end, feeding everybody attached to it.
-
-    This is the task the application owns. Nothing in here consults a request,
-    a connection or a subscriber: a turn nobody is watching runs exactly as
-    fast and finishes exactly as completely as one three tablets are watching,
-    which is §3 in one sentence.
-
-    §3.3 — *nothing waits for a reader*. When the frames run out the transcript
-    has been written by the path that always wrote it (§5 rule 1), the model is
-    released, the buffer is dropped and this turn is out of the registry. A
-    turn nobody ever comes back to is a completed conversation, not a held
-    resource.
-    """
-    try:
-        async for frame in frames:
-            turn.publish(frame)
-    except asyncio.CancelledError:
-        # The application is going down. Let it.
-        raise
-    except Exception as exc:  # noqa: BLE001 - a dead task must still be buried
-        # Never the frame, never the reply — the error only (rule 4).
-        log.error("chat_turn_task_failed", error=repr(exc))
-    finally:
-        await turn.holding.release()
-        turn.finish()
+    return chat_turns.kept_alive(events, stopping=stopping, seconds=KEEPALIVE_SECONDS)
 
 
 def register(router: APIRouter, exchange: ChatExchange) -> None:
@@ -1025,14 +478,21 @@ def register(router: APIRouter, exchange: ChatExchange) -> None:
         # A conversation this turn may not have a name for yet — a brand new
         # one is named by an instant minted inside `_turn_frames`, which calls
         # `identify` with it before the first word. See `_RunningTurn`.
-        turn = _RunningTurn(ring, user.id)
-        if key is not None:
-            turn.identify(key[1])
+        #
+        # Registered through `chat_turns.begin_turn`, which is the one place a
+        # turn enters the ring whoever started it — a browser here, a runbook
+        # step through `chat_turns.start_turn`. This response then streams from
+        # **the handle's own turn** rather than looking the key up again: two
+        # lookups is two chances to answer with a different turn than the one
+        # just started.
+        handle = chat_turns.begin_turn(
+            request.app, owner=user.id, marker=None if key is None else key[1]
+        )
         # Subscribed **before** the task exists, so the first frame cannot be
         # produced before there is somewhere to put it.
-        watching = _watching(turn)
-        turn.task = asyncio.create_task(
-            _drive(turn, _turn_frames(request, user, message, started, turn, uploads))
+        watching = _watching(handle.running)
+        handle.drive(
+            _turn_frames(request, user, message, started, handle.running, uploads)
         )
         return watching
 
@@ -1676,9 +1136,6 @@ def register(router: APIRouter, exchange: ChatExchange) -> None:
         )
         holding.live = live
 
-        buffer = ""
-        spoken = 0
-        finished = False
         events = streaming(
             prompt,
             user=user.id,
@@ -1702,140 +1159,95 @@ def register(router: APIRouter, exchange: ChatExchange) -> None:
             # on its own — the same value it already defaults to.
             **({"thinking": thinking} if _carries_thinking else {}),
         )
-        holding.events = events
-        try:
-            async for event in _kept_alive(events, stopping=stopping):
-                if event is _KEEPALIVE:
-                    # A comment frame: the reader ignores it, and the socket
-                    # has carried a byte. Nothing was written here until the
-                    # model's first token, so a turn that thinks for a minute
-                    # before speaking looked exactly like a dead connection --
-                    # and got closed as one, with the reply lost.
-                    yield _PING
-                    continue
-                kind = getattr(event, "kind", "")
-                if kind == "text":
-                    text = str(getattr(event, "text", "") or "")
-                    if not text:
-                        continue
-                    out.tokens += 1
-                    if out.first_token_ms is None:
-                        out.first_token_ms = (time.monotonic() - began) * 1000.0
-                    buffer += text
-                    yield _frame("delta", {"text": text})
-                    if live is not None:
-                        if not out.announced:
-                            out.announced = True
-                            # §6.1: the browser is told where to listen and
-                            # queues it behind whatever is still playing. One
-                            # voice at a time is decided there, because that is
-                            # where the playing happens.
-                            #
-                            # Announced on the FIRST WORD, not on the first
-                            # finished sentence. `complete_sentences` only
-                            # marks off text that something was written after,
-                            # so a one-sentence reply never reached the line
-                            # below — and a one-sentence reply is the ordinary
-                            # case in a room. What used to happen then was that
-                            # the finished exchange autoplayed instead, through
-                            # `data-play-once`, which admin.js fires per swap
-                            # with nothing between two of them: two characters
-                            # talking over each other, which is exactly what
-                            # §6.1 exists to prevent. Announcing here puts every
-                            # spoken reply through the one queue.
-                            #
-                            # The browser's fetch then waits on `LiveSpeech.start`
-                            # until there is something to say — which for a
-                            # single sentence is the tail pushed by `close`
-                            # below. It is the same audio, one round trip
-                            # sooner.
-                            yield _frame("speech", {"url": live.audio_url})
-                        ready, spoken = finished_prefix(buffer, spoken, live.pacing)
-                        if ready:
-                            # A put on a queue. Nothing here touches an engine,
-                            # a thread or a socket.
-                            live.add(ready)
-                elif kind == "reasoning":
-                    # Forwarded as its own frame, exactly as before, and now
-                    # ALSO gathered onto `out.reasoning` — never into `buffer`
-                    # (that is the reply, and `_close_stream`/`live.close`
-                    # below speak and transcript exactly that), never counted
-                    # in `out.tokens`, and never logged: it is conversation
-                    # content the same way a reply is (`ReasoningRecord`'s own
-                    # docstring). A model that never reasons sends no
-                    # `reasoning` events at all, so this branch never fires and
-                    # the ordinary turn is unchanged — no row, no line, same as
-                    # before the owner asked for this to survive a reload.
-                    text = str(getattr(event, "text", "") or "")
-                    if text:
-                        out.reasoning += text
-                        yield _frame("thinking", {"text": text})
-                elif kind == "tool_call":
-                    name = str(getattr(event, "tool_name", "") or "")
-                    if name:
-                        yield _frame("tool", {"name": name})
-                elif kind == "tool_result":
-                    name = str(getattr(event, "tool_name", "") or "")
-                    took = getattr(event, "duration_ms", None)
-                    if name:
-                        out.tools.append((name, float(took) if took is not None else None))
-                        yield _frame("tool_done", {"name": name, "took": _latency(took)})
-                    # Workspace contract §7, the joint: `detail["files"]` on a
-                    # `TOOL_RESULT` event is the agent loop's own list of bare
-                    # filenames this one call wrote into the conversation's
-                    # workspace — empty, or the key simply absent, for a tool
-                    # call that kept nothing, which is most of them. `getattr`
-                    # rather than a plain attribute read because `event` is
-                    # built outside this package (`ChatStreamEvent`'s own
-                    # docstring: "an unknown kind is ignored"), and the same
-                    # defensiveness extends to a `detail` that is not a dict.
-                    detail = getattr(event, "detail", None)
-                    files = detail.get("files") if isinstance(detail, dict) else None
-                    new_files = [str(item) for item in files] if isinstance(files, list) else []
-                    if new_files:
-                        out.workspace_files.extend(new_files)
-                        # Live, so a card appears under the growing reply
-                        # without waiting for the whole turn to finish —
-                        # `workspace_ref` is `None` only for the one turn that
-                        # has no conversation yet (see `_stream_one`'s own
-                        # docstring), and a card with nothing to link to is
-                        # not drawn rather than drawn broken.
-                        if workspace_ref is not None:
-                            html = _workspace_cards_html(
-                                chat_workspace.chips_for_names(
-                                    workspace_ref,
-                                    new_files,
-                                    pinned=chat_workspace.pinned_names_for(
-                                        ctx.layout, workspace_ref
-                                    ),
-                                )
-                            )
-                            if html:
-                                yield _frame("workspace_files", {"html": html})
-                elif kind == "notice":
-                    yield _frame("notice", {"text": str(getattr(event, "text", "") or "")})
-                elif kind == "done":
-                    out.result = getattr(event, "result", None)
-                    finished = True
-        except Exception as exc:  # noqa: BLE001 - the status went out long ago
-            # Mid-stream, so there is no status left to change: the frames say
-            # what happened and the stream closes properly. A reader that never
-            # sees `done` waits for a reply that is not coming.
-            log.error("chat_stream_failed", error=repr(exc))
-            out.broke = f"The turn did not finish: {_readable(exc)}"
-        finally:
-            if live is not None and finished:
-                # The tail — whatever was still mid-sentence when the reply
-                # ended. Only on a turn that finished: a reply cut off by the
-                # reader leaving has no tail worth speaking to nobody.
-                live.close(buffer[spoken:])
-            # Read now rather than waited for. A reply is never made to wait on
-            # speech, and that includes waiting to find out how fast it was.
-            out.first_audio_ms = None if live is None else live.first_audio_ms
-            out.total_ms = (time.monotonic() - began) * 1000.0
-            out.reply = buffer
-            # The events are finished with; the live stream is not — the
-            # browser may still be fetching it, and the next character's turn
-            # will queue behind it. Only the generator is let go here.
-            holding.events = None
-            await _close_stream(events)
+        # THE MIDDLE OF THIS TURN IS `chat_turns.stream_frames`, and it is the
+        # same lines a run's scripted step goes through (PLAN.md alpha.21).
+        # Everything above this call is what only a screen can decide — who is
+        # speaking, what the room was told, which keywords this runner takes,
+        # whether the reply may speak itself — and everything below it, in the
+        # caller, is what only a screen can draw. The frames themselves are one
+        # implementation, because "byte-identical on the wire" is not something
+        # two copies of a dispatch chain can be trusted to stay.
+        async for piece in chat_turns.stream_frames(
+            events,
+            out=out,
+            holding=holding,
+            stopping=stopping,
+            began=began,
+            live=live,
+            # `workspace_ref` is `None` only for the one turn that has no
+            # conversation yet (see this function's own docstring): a card with
+            # nothing to link to is not drawn rather than drawn broken.
+            workspace_cards=(
+                None
+                if workspace_ref is None
+                else lambda names: _workspace_cards_html(
+                    chat_workspace.chips_for_names(
+                        workspace_ref,
+                        names,
+                        pinned=chat_workspace.pinned_names_for(ctx.layout, workspace_ref),
+                    )
+                )
+            ),
+            # This module's own copy of the interval, so the monkeypatch that
+            # shortens it still reaches the read — see `_kept_alive` above.
+            keepalive=KEEPALIVE_SECONDS,
+        ):
+            yield piece
+
+    # -- the same turn, for a caller with no request at all -----------------
+    #
+    # A runbook's model step is a turn in a person's conversation and has to
+    # behave like one (PLAN.md alpha.21, the owner's decision): stream as it is
+    # written, show the thinking box, leave the metrics line and the cards on
+    # the row. It has no request, no form and no room — but everything else it
+    # needs is built right here and nowhere else, so it is written down as one
+    # object and put where a caller outside this package can read it
+    # (`chat_turns.ENGINE_ATTRIBUTE`). Set on the router because that is what
+    # this function is handed; `boot.surfaces` lifts it onto `app.state`.
+    #
+    # The runner reads it duck-typed and calls `start`, exactly as
+    # `chat_run.py` reads `app.state.runner` — so `personacore.runbooks` still
+    # imports nothing from `personacore.web`.
+
+    async def _detached_html(owner: Any, opened: datetime, since: datetime) -> str:
+        """This conversation's last exchange, drawn as a reload would draw it."""
+        return await view.detached_exchange_html(owner, opened, since)
+
+    def _detached_cards(conversation_id: str, names: Sequence[str]) -> str:
+        return _workspace_cards_html(
+            chat_workspace.chips_for_names(
+                conversation_id,
+                names,
+                pinned=chat_workspace.pinned_names_for(ctx.layout, conversation_id),
+            )
+        )
+
+    setattr(
+        router,
+        chat_turns.ENGINE_ATTRIBUTE,
+        chat_turns.TurnEngine(
+            app=None,
+            chat=chat,
+            audit=audit,
+            conversations=conversations,
+            thread_rows=_thread_rows,
+            rendered=_detached_html,
+            markers_html=_markers_html,
+            workspace_cards=_detached_cards,
+            # Asked once, of the streaming runner, exactly as `_tells_the_room`
+            # and its neighbours above are and for the same reason: a runner
+            # does not change shape between requests, and one too old for a
+            # keyword raises on it rather than ignoring it.
+            carries=frozenset(
+                keyword
+                for keyword in (
+                    "conversation_id",
+                    "thinking",
+                    "temperature",
+                    "pins_by_role",
+                    "author_kind",
+                )
+                if _takes(getattr(chat, "stream", None), keyword)
+            ),
+        ),
+    )

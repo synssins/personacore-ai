@@ -952,17 +952,41 @@
   }
 
   // The server said a reply is still being written in this thread. Attach to
-  // it, once per render — §6: there is no control here and nothing to press,
-  // it is simply not broken any more.
-  function attachIfTurnRunning() {
+  // it if this page is not already watching one — the shared half of
+  // `attachIfTurnRunning` and the run-status poll's own re-attach below,
+  // which is why the check and the attach live here and not in either caller.
+  function attachIfMarked(el) {
     if (inFlight || !streamable) return;
-    var form = document.getElementById('chat-form');
-    if (!form || !form.hasAttribute('data-turn-running')) return;
-    form.removeAttribute('data-turn-running');
+    if (!el || !el.hasAttribute('data-turn-running')) return;
+    el.removeAttribute('data-turn-running');
     attachTries = 0;
     stoppedByHand = false;
     attachToTurn();
   }
+
+  // The server said a reply is still being written in this thread. Attach to
+  // it, once per render — §6: there is no control here and nothing to press,
+  // it is simply not broken any more.
+  function attachIfTurnRunning() {
+    attachIfMarked(document.getElementById('chat-form'));
+  }
+
+  // A page left open across a step boundary does not attach on its own: the
+  // composer's own `data-turn-running` is stamped once, at page load, so it
+  // says nothing about a turn a runbook step starts after that — the ordinary
+  // case, since a run's next model step opens a fresh turn under the same
+  // conversation (`chat_turns.begin_turn`) the moment the last one's `done`
+  // frame has gone out. `#run-status` is the one thing still watching this
+  // conversation while nothing is attached: fragments/run_status.html polls
+  // itself every four seconds for as long as the run is `running`
+  // (`hx-trigger="every 4s"`), and now carries the same `data-turn-running`
+  // marker the composer does whenever `chat_turns.running_turn` finds a live
+  // turn — so every swap of it is a chance to notice and reattach, guarded by
+  // `attachIfMarked`'s own `inFlight` check so an already-attached page never
+  // opens a second stream onto the same turn.
+  document.addEventListener('htmx:afterSwap', function (e) {
+    if (e.target && e.target.id === 'run-status') attachIfMarked(e.target);
+  });
 
   // One turn, watched. `attaching` says this fetch did not start the turn it
   // is reading — it went back for one that was already running — which changes

@@ -35,16 +35,29 @@ every earlier chapter in the prompt of the last one. A **step**-level
 ``foreach`` is the other shape and stays inside one run: one tool step,
 repeated per item, its roles holding a list.
 
-Three things here are deliberately *not* shared with the web layer, and the
-reason is direction: :mod:`personacore.web` may import this package, and this
-package may never import :mod:`personacore.web`.
+**A run's scripted turn is a person's turn** (owner's decision, 2026-09-05).
+It used to be a thinner thing: this module drove the chat runner itself and
+read the events with :func:`_watched`, which understood ``text`` and discarded
+every other kind, registered nothing a page could attach to, and wrote neither
+the metrics record nor the reasoning record the chat page draws its chrome
+from. A conversation a run was working in therefore showed a prompt and then,
+after a refresh, a bare reply. That is fixed by *not having a second
+implementation*: :meth:`Runner._streamed` hands the turn to the chat screen's
+own engine (``app.state.chat_turn_engine``, ``web/screens/chat_turns.py``),
+which registers it, streams it and records it exactly as a typed message's turn
+is. What stays here is only what is a run's: the output ceiling, the deadline,
+and the partial file written from what arrived before either tripped.
 
-* The stop discipline. ``web/screens/chat_streaming.py``'s ``_kept_alive``
-  waits on a stop flag *beside* the model's next event, so a stop is felt in
-  the middle of a reply rather than after it; :func:`_watched` here does the
-  same thing for the same reason, and neither cancels anything from
-  underneath the turn — the iteration simply ends and the generator is closed
-  through its own path.
+The direction still holds — :mod:`personacore.web` may import this package,
+and this package may never import :mod:`personacore.web`. The engine is read
+off ``app.state`` and called duck-typed, exactly as
+``web/screens/chat_run.py`` reads ``app.state.runner`` from the other side, so
+no import crosses. :func:`_watched` survives as the fallback for a core with no
+chat screen (every runner the tests build): the run runs identically and simply
+cannot be watched.
+
+Two things here are still deliberately *not* shared:
+
 * The plain sentences a refusal shows. They match the Runbooks screen's own
   (``web/screens/runbooks.py``) because they are answers to the same question.
 * The registry of what is running. A runbook run and a chat turn are keyed
@@ -232,6 +245,16 @@ class Runner:
     gives a runner that still starts, still refuses correctly and simply
     cannot record progress — which is what the tests that do not care about
     progress want.
+
+    ``app`` is where the chat screen's turn engine lives
+    (``app.state.chat_turn_engine``), and it is what makes a run's scripted
+    turn a turn like any other: registered where a page can attach to it,
+    streaming the same frames, leaving the same metrics and reasoning records
+    on the reply row. Read at the moment a turn is taken and never captured,
+    the same shape ``settings_enabled`` takes, because the admin surface is
+    mounted after this object is built. ``None`` — or an application with no
+    chat screen on it — falls back to :meth:`_streamed`'s own reader: the run
+    still runs and its rows are still written, it simply cannot be watched.
     """
 
     def __init__(
@@ -246,6 +269,7 @@ class Runner:
         *,
         audit: Any | None = None,
         workspaces: WorkspaceTools | None = None,
+        app: Any | None = None,
     ) -> None:
         self._layout = layout
         self._store = store
@@ -256,6 +280,7 @@ class Runner:
         self._plugin_enabled = plugin_enabled
         self._audit = audit
         self._workspaces = workspaces or WorkspaceTools(layout, WorkspaceSettings())
+        self._app = app
         self._live: dict[str, _Live] = {}
 
     # -- the four things a screen asks -------------------------------------
@@ -1025,6 +1050,205 @@ class Runner:
         self._pin(workspace, step.pin, {**known, **outputs})
         return outputs
 
+    # -- one scripted turn, however this core can take it -------------------
+
+    def _turns(self) -> Any:
+        """The chat screen's turn engine, or ``None``.
+
+        Read at the moment a turn is taken, duck-typed, exactly as
+        ``web/screens/chat_run.py`` reads ``app.state.runner`` from the other
+        side: the two packages are wired to each other through the application
+        and through nothing else, so this module still imports nothing from
+        :mod:`personacore.web`.
+        """
+        if self._app is None:
+            return None
+        return getattr(self._app.state, "chat_turn_engine", None)
+
+    async def _streamed(
+        self,
+        live: _Live,
+        *,
+        message: str,
+        thinking: bool,
+        temperature: float | None,
+        pins_by_role: Mapping[str, str],
+        seconds: int | None = None,
+        budget: int | None = None,
+    ) -> tuple[str, str | None]:
+        """One scripted turn, under this run's Stop and this step's watchdog.
+
+        Returns the reply text and the watchdog's reason, or ``None`` when it
+        did not trip — the same two values this always returned, so what a step
+        does with them is unchanged.
+
+        **The turn itself is the chat screen's** (PLAN.md alpha.21, the owner's
+        decision): registered where a page open on this conversation can attach
+        to it, streaming the same ``delta``/``thinking``/``tool`` frames a
+        person's turn streams, and leaving the same metrics and reasoning
+        records on the reply row — so a run's conversation behaves like a
+        conversation and not like a log that fills in on refresh. What stays
+        here is what is genuinely a *run's*: the ceiling, the deadline, and the
+        partial file the caller writes from the text this returns. The engine
+        knows about neither; it takes a callback for each delta and offers one
+        way to stop.
+
+        A core with no chat screen — every runner the tests build, and any
+        assembly without the admin surface — falls through to :func:`_watched`,
+        the reader this used to have. The run runs identically; it simply
+        cannot be watched while it does.
+        """
+        engine = self._turns()
+        since = datetime.now(UTC)
+        if engine is None:
+            events = self._chat.stream(
+                message,
+                user=live.owner.id,
+                persona=live.state.persona or None,
+                conversation_id=live.conversation_id,
+                thinking=thinking,
+                temperature=temperature,
+                pins_by_role=pins_by_role,
+                author_kind=AuthorKind.RUNBOOK,
+            )
+            streamed, tripped = await _watched(
+                events, stopping=live.stopping, seconds=seconds, budget=budget
+            )
+        else:
+            streamed, tripped = await self._through_engine(
+                engine,
+                live,
+                message=message,
+                thinking=thinking,
+                temperature=temperature,
+                pins_by_role=pins_by_role,
+                seconds=seconds,
+                budget=budget,
+            )
+        # The loop writes this turn's rows with no conversation on them (the
+        # surface that resolved the conversation claims them afterwards) — the
+        # same call the chat screen makes after a turn, for the same reason.
+        # The engine has already made it for its own path; making it again
+        # costs one UPDATE over rows that are already claimed and keeps the two
+        # paths ending the same way.
+        with contextlib.suppress(Exception):
+            await self._conversations.append(live.conversation, since=since)
+        return streamed, tripped
+
+    async def _through_engine(
+        self,
+        engine: Any,
+        live: _Live,
+        *,
+        message: str,
+        thinking: bool,
+        temperature: float | None,
+        pins_by_role: Mapping[str, str],
+        seconds: int | None,
+        budget: int | None,
+    ) -> tuple[str, str | None]:
+        """The watchdog and the Stop, over the engine's two seams.
+
+        ``on_text`` counts and ``stop()`` ends — that is the whole of the
+        interface, and it is deliberately no wider: a ``Watchdog`` type on the
+        engine's side would be the chat screen knowing what a runbook is.
+
+        **Nothing is cancelled from underneath the turn**, exactly as
+        :func:`_watched` promises: a ceiling or a deadline calls ``stop()``,
+        which ends the model's stream through the path it already had, and this
+        then waits for the turn to wind down and hand back everything it wrote
+        — including the words that arrived before the ceiling, which are the
+        only copy the ``.partial`` file can be written from.
+        """
+        parts: list[str] = []
+        tripped: str | None = None
+        handle: Any = None
+
+        def counted(text: str) -> None:
+            nonlocal tripped
+            parts.append(text)
+            if budget is None or tripped is not None:
+                return
+            if _tokens("".join(parts)) > budget:
+                tripped = f"it wrote more than {budget:,} tokens."
+                if handle is not None:
+                    handle.stop()
+
+        handle = await engine.start(
+            owner=live.owner,
+            conversation=live.conversation,
+            message=message,
+            persona=live.state.persona or None,
+            # Contract §3, "thinking rule": the step's own `thinking:` wins
+            # while a run is on, whatever the chat header's checkbox says.
+            thinking=thinking,
+            temperature=temperature,
+            # Contract §1.5: the step's roles are the *entire* pinned set for
+            # this turn, so an empty `pins:` sends an empty mapping and pins
+            # nothing — never flattened to `None`, which is the one value that
+            # would hand the choice back to the conversation's pin sidecar.
+            pins_by_role=pins_by_role,
+            # Contract §3: the rows this turn writes are a run's, not a
+            # person's. They are kept and drawn on the chat page; the marking
+            # is what keeps them out of the prompt the next typed message
+            # composes (`web/screens/chat_thread.conversation_history`).
+            author_kind=AuthorKind.RUNBOOK,
+            on_text=counted,
+        )
+
+        deadline = None if seconds is None else time.monotonic() + seconds
+        halt: asyncio.Task[Any] | None = asyncio.ensure_future(live.stopping.wait())
+        finished: asyncio.Task[Any] = asyncio.ensure_future(handle.result())
+        overran = False
+        try:
+            while True:
+                watched: set[asyncio.Future[Any]] = {finished}
+                if halt is not None:
+                    watched.add(halt)
+                timeout = None if deadline is None else max(0.0, deadline - time.monotonic())
+                done, _ = await asyncio.wait(
+                    watched, timeout=timeout, return_when=asyncio.FIRST_COMPLETED
+                )
+                if finished in done:
+                    outcome = finished.result()
+                    break
+                if halt is not None and halt in done:
+                    # Somebody pressed Stop on the run. End the reply and stay
+                    # here until the turn has actually finished winding down —
+                    # its rows and its `done` frame are still owed to whoever
+                    # is watching.
+                    handle.stop()
+                    halt = None
+                    deadline = None
+                    continue
+                # Nothing finished, so the only thing that can have happened is
+                # the deadline running out.
+                overran = True
+                handle.stop()
+                deadline = None
+        finally:
+            if halt is not None:
+                halt.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await halt
+            finished.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await finished
+        if tripped is None and overran:
+            tripped = f"it ran longer than {seconds} seconds."
+        # A ceiling this loop itself timed or counted takes priority over the
+        # engine's own report — both are never set at once in practice, and a
+        # trip this loop caused describes the failure in the run's own words.
+        # Otherwise `outcome.error` is the only account of what went wrong: a
+        # turn whose frames failed before `handle.settle(...)` ever ran (a bad
+        # persona, `markers_html` itself raising) used to come back here as an
+        # empty, untripped reply — a false success the step below then failed
+        # anyway, but for the wrong, uninformative reason ("the assistant
+        # returned nothing.") instead of the one that actually happened.
+        if tripped is None and outcome.error:
+            tripped = outcome.error
+        return outcome.reply_text, tripped
+
     # -- a model step ------------------------------------------------------
 
     async def _model_step(self, live: _Live, step: ModelStep) -> dict[str, str]:
@@ -1054,43 +1278,21 @@ class Runner:
         workspace = self._workspaces.workspace_for(live.conversation_id)
         budget = _output_budget(step, workspace, pins)
         seconds = step.watchdog.max_seconds if step.watchdog else None
-        since = datetime.now(UTC)
 
-        events = self._chat.stream(
-            message,
-            user=live.owner.id,
-            persona=live.state.persona or None,
-            conversation_id=live.conversation_id,
-            # Contract §3, "thinking rule": the step's own `thinking:` wins
-            # while a run is on, whatever the chat header's checkbox says.
+        streamed, tripped = await self._streamed(
+            live,
+            message=message,
             thinking=step.thinking == "on",
             temperature=step.temperature,
-            # Contract §1.5: the step's roles are the *entire* pinned set for
-            # this turn, so an empty `pins:` sends an empty mapping and pins
-            # nothing. `resolve_pins` returns `{}` for that case and it is
-            # passed on as `{}` — never flattened to `None`, which is the one
-            # value that would hand the choice back to the conversation's pin
-            # sidecar.
             pins_by_role=pins,
-            # Contract §3: the rows this turn writes are a run's, not a
-            # person's. They are kept and drawn on the chat page; the marking
-            # is what keeps them out of the prompt the next typed message
-            # composes (`web/screens/chat_thread.conversation_history`).
-            author_kind=AuthorKind.RUNBOOK,
-        )
-        streamed, tripped = await _watched(
-            events, stopping=live.stopping, seconds=seconds, budget=budget
+            seconds=seconds,
+            budget=budget,
         )
         # The reply *body*, which is what `output:` names — the same
         # `.strip()` `_AdminChat` applies before it hands a finished result to
         # a screen, so a run's file and the chat's own rendering of the same
         # reply cannot differ by a newline.
         reply = streamed.strip()
-        # The loop writes this turn's rows with no conversation on them (the
-        # surface that resolved the conversation claims them afterwards) — the
-        # same call the chat screen makes after a turn, for the same reason.
-        with contextlib.suppress(Exception):
-            await self._conversations.append(live.conversation, since=since)
 
         if live.stopping.is_set():
             # Stopped, not failed. Contract §3: every file stays, and the
@@ -1287,22 +1489,13 @@ class Runner:
         would rather read the pinned block than the prompt is reading the same
         bytes either way.
         """
-        since = datetime.now(UTC)
-        events = self._chat.stream(
-            gate_tools.questions_prompt(text),
-            user=live.owner.id,
-            persona=live.state.persona or None,
-            conversation_id=live.conversation_id,
+        streamed, _tripped = await self._streamed(
+            live,
+            message=gate_tools.questions_prompt(text),
             thinking=False,
             temperature=0.0,
             pins_by_role={step.from_: name},
-            author_kind=AuthorKind.RUNBOOK,
         )
-        streamed, _tripped = await _watched(
-            events, stopping=live.stopping, seconds=None, budget=None
-        )
-        with contextlib.suppress(Exception):
-            await self._conversations.append(live.conversation, since=since)
         return streamed.strip()
 
     async def _park_at_gate(self, live: _Live, step: GateStep, gate: GateState, row: str) -> bool:

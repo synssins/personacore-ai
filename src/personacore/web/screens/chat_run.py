@@ -48,6 +48,7 @@ from fastapi.responses import HTMLResponse
 
 from personacore.audit.models import Owner, Surface
 from personacore.conversations.service import ConversationService
+from personacore.web.screens import chat_turns
 from personacore.web.screens.chat_workspace import WORKSPACE_URL_PREFIX, read_workspace_text
 from personacore.web.shared import UIContext
 
@@ -109,6 +110,7 @@ _EMPTY_RUN_VIEW: dict[str, Any] = {
     "resume_url": "",
     "gate": None,
     "items": [],
+    "turn_running": False,
 }
 """Nothing to show — no run, no runner, or a run that has already ended.
 Copied (never mutated) by every branch of :func:`runbook_run_view`.
@@ -117,7 +119,13 @@ Copied (never mutated) by every branch of :func:`runbook_run_view`.
 run's own progress lines) are the two things this view can show *instead of*
 the plain message/Stop/Resume line — never alongside it, because the current
 step is either running plainly, waiting on a question, or the run is a
-parent watching its own children; it is never two of those at once."""
+parent watching its own children; it is never two of those at once.
+
+``turn_running`` is never set here — :func:`runbook_run_view` knows nothing
+of :mod:`chat_turns` (the module docstring's own boundary: this file reads
+only ``app.state.runner``). It is filled in afterwards, by ``register``'s own
+``_fragment``, the one place that renders ``fragments/run_status.html`` and
+therefore the one place a page's reattach can be decided."""
 
 
 def runner_for(request: Request) -> Any | None:
@@ -125,6 +133,20 @@ def runner_for(request: Request) -> Any | None:
     for why this is never imported and never asserted to be a particular
     type."""
     return getattr(request.app.state, "runner", None)
+
+
+def _sentence(text: str) -> str:
+    """``text`` with exactly one full stop at the end of it.
+
+    The reasons a run parks with are written as whole sentences by whoever
+    raised them ("it wrote more than 1,000 tokens."), and the line that shows
+    one used to add a full stop of its own regardless — so the status line read
+    "…tokens.. Resume?".
+    """
+    trimmed = text.strip()
+    if not trimmed or trimmed.endswith((".", "!", "?", ":")):
+        return trimmed
+    return f"{trimmed}."
 
 
 def _current_step(state: Any) -> Any | None:
@@ -411,7 +433,10 @@ async def runbook_run_view(
     if run_status == "parked":
         step = f"{current} " if current else ""
         if reason:
-            message = f"{step}failed: {reason}. Resume?"
+            # The reason is already a sentence — the runner writes "it wrote
+            # more than 1,000 tokens." with its own full stop — so this adds
+            # one only when there is none, rather than printing "tokens..".
+            message = f"{step}failed: {_sentence(reason)} Resume?"
         else:
             message = f"{step}parked. Resume?"
         return {
@@ -525,6 +550,38 @@ def register(router: APIRouter, ctx: UIContext) -> None:
     layout = ctx.layout
     conversations = ConversationService(store, surface=Surface.ADMIN_UI)
 
+    async def _turn_running(request: Request, cid: str) -> bool:
+        """Whether a chat turn is registered and running in this conversation
+        **right now** — :func:`chat_turns.running_turn`, never this run's own
+        ``status``.
+
+        The two differ exactly when a page's reattach depends on it: a run
+        moving from one model step to the next ends one turn and starts a
+        fresh one (``chat_turns.begin_turn``) while ``status`` reads
+        ``running`` the whole time, and a page that attached to the first
+        turn has nothing pointing it at the second — its own
+        ``data-turn-running`` was spent once, at page load (see
+        ``fragments/run_status.html``'s own note on this field).
+
+        ``chat_turns.running_turn`` is keyed by the conversation's own
+        ``started_at`` marker, not by ``cid``, so this conversation is
+        resolved again to find it. Never raises: this decides one attribute
+        on a status line, and a broken read costs a page one reattach it can
+        still pick up on the next poll, not a response.
+        """
+        try:
+            user = require_user(request)
+            conversation = await conversations.resolve(
+                Owner.profile(user.id), conversation_id=cid
+            )
+            if conversation is None:
+                return False
+            return chat_turns.running_turn(
+                request, user.id, conversation.started_at.isoformat()
+            )
+        except Exception:  # noqa: BLE001 - a missed reattach beats a dead poll
+            return False
+
     async def _fragment(request: Request, view: dict[str, Any], *, cid: str) -> HTMLResponse:
         """The run's own status fragment, **plus the composer's own lock
         state as an out-of-band swap** (this task's rework item 1): every
@@ -532,9 +589,20 @@ def register(router: APIRouter, ctx: UIContext) -> None:
         (or Resume, or answering a gate) unlocks or relocks the box in the
         same response — no second round trip, no stale composer left
         disabled after the run that disabled it has already ended.
+
+        **Also the one place a page's reattach across a step boundary can be
+        decided** (rework item 2): ``view["turn_running"]`` is always
+        ``False`` out of :func:`runbook_run_view` (that module never imports
+        :mod:`chat_turns` — see its own docstring), and is filled in here,
+        the one function every route in this module renders
+        ``fragments/run_status.html`` through — including the poll itself
+        (``chat_run_status``, fetched by the element's own ``hx-get`` every
+        four seconds while a run is running).
         """
         run_html = templates.TemplateResponse(
-            request=request, name="fragments/run_status.html", context={"run": view}
+            request=request,
+            name="fragments/run_status.html",
+            context={"run": {**view, "turn_running": await _turn_running(request, cid)}},
         ).body
         runner = runner_for(request)
         composer_html = templates.TemplateResponse(

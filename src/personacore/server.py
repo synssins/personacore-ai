@@ -987,6 +987,12 @@ def create_app(appdata: Path | str | None = None) -> FastAPI:
         app.state.runbooks.plugin_enabled,
         audit=audit,
         workspaces=workspace_tools,
+        # PLAN.md alpha.21: a run's scripted turn goes through the same engine
+        # a person's turn does, and that engine is on `app.state` (put there by
+        # `_mount_admin`, below). Handed the application rather than the engine
+        # itself because the admin surface is not mounted yet at this line, and
+        # a run reads it at the moment it takes a turn — which is always after.
+        app=app,
     )
 
     _mount_admin(
