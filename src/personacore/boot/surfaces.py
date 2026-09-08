@@ -29,6 +29,7 @@ from fastapi import FastAPI
 from personacore.admin.authn import AuthContext, LiveAuth
 from personacore.agent.loop import AgentLoop
 from personacore.agent.personas import PersonaStore
+from personacore.audit.models import Surface
 from personacore.audit.store import AuditStore
 from personacore.auth.method import AuthDecision
 from personacore.boot.degrade import DegradedPieces, degraded
@@ -37,6 +38,7 @@ from personacore.bus.client import EventBus
 from personacore.config import AppdataLayout, SecretStore
 from personacore.config.settings import KeylessSettings
 from personacore.contracts.policy import PolicyProfile
+from personacore.conversations.service import ConversationService
 from personacore.plugins.discovery import PluginDiscovery
 from personacore.preferences import PreferenceStore
 
@@ -189,6 +191,12 @@ def _mount_openai(
                 # surface is mounted above with no knowledge of this setting at
                 # all: two doors, two decisions (ADR-0032).
                 keyless=lambda: _keyless_profile(app),
+                # So an API turn is attached to a conversation live, the same
+                # shape `server.py` builds for the admin UI (`Surface.
+                # ADMIN_UI`) — see `ConversationService.current`. `layout` is
+                # omitted here on purpose: that parameter only matters for
+                # `hide`, which nothing on this surface ever calls.
+                conversations=ConversationService(audit, surface=Surface.API),
             )
         )
     except Exception as exc:  # noqa: BLE001 - a broken surface must not stop the rest

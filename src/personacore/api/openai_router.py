@@ -54,7 +54,8 @@ from personacore.audit.models import (
     Owner,
     Surface,
 )
-from personacore.contracts.policy import PolicyProfile
+from personacore.contracts.policy import PolicyProfile, ProfileKind
+from personacore.conversations.service import ConversationService
 
 logger = get_logger(__name__)
 
@@ -64,6 +65,21 @@ _INVALID_KEY_MESSAGE = (
 )
 """One message for absent, malformed, unknown and disabled keys alike. Anything
 that varied between them would be an oracle for probing which keys exist."""
+
+
+def _owner_for(profile: PolicyProfile) -> Owner:
+    """Whose conversation this caller's turns belong to — the same rule
+    :meth:`~personacore.agent.loop.TurnRequest.owner` applies once the turn is
+    built, computed here because the conversation has to be resolved *before*
+    that. An issued key's profile can never carry ``ProfileKind.ANONYMOUS``
+    (``ApiKeyRecord`` refuses one at construction, section 5.4); the anonymous
+    profile only reaches this surface through :class:`KeylessCaller` (ADR-0018),
+    so this and the two callers it stands in for agree without needing to share
+    code across modules that must not import each other.
+    """
+    if profile.kind is ProfileKind.ANONYMOUS:
+        return Owner.anonymous()
+    return Owner.profile(profile.id)
 
 
 # ---------------------------------------------------------------------------
@@ -78,6 +94,7 @@ def create_openai_router(
     audit: AuditSink,
     config: OpenAIApiConfig | None = None,
     keyless: Callable[[], PolicyProfile | None] | None = None,
+    conversations: ConversationService | None = None,
 ) -> APIRouter:
     """Build the ``/v1`` router. Mount it with ``app.include_router(...)``.
 
@@ -101,6 +118,14 @@ def create_openai_router(
         switch off closes the door on the very next request rather than at the
         next restart. **This is the ``/v1`` surface only**; the admin surface
         has its own door (ADR-0032) and knows nothing about this.
+    :param conversations: a :class:`ConversationService` built for
+        ``Surface.API``, or ``None`` for every assembly that predates it. Used
+        to attach a turn to a conversation live — reused or started per caller
+        per session gap, see :meth:`ConversationService.current` — so it is
+        visible to the memory review pass and the conversation list without
+        waiting for the startup backfill. ``None`` is also today's behaviour
+        for every existing test and assembly: every turn writes
+        ``conversation_id=None``, unattached until the next backfill.
     """
     settings = config or OpenAIApiConfig()
     router = APIRouter(prefix="/v1", tags=["openai"])
@@ -314,7 +339,24 @@ def create_openai_router(
             )
             return model_name
 
-        turn = _to_turn_request(body, record, settings, correlation_id)
+        # Attach this turn to a conversation live, so it is visible to the
+        # memory review pass and the conversation list without waiting for
+        # the startup backfill (`memory/review.py`'s `due()` skips a row with
+        # no conversation). `since` is captured now, before the turn runs, for
+        # the claim made after it — the same shape the admin chat screen's own
+        # turn already uses.
+        since = datetime.now(UTC)
+        conversation = None
+        if conversations is not None:
+            conversation = await conversations.current(_owner_for(record.profile), now=since)
+
+        turn = _to_turn_request(
+            body,
+            record,
+            settings,
+            correlation_id,
+            conversation_id=conversation.conversation_id if conversation is not None else None,
+        )
         if isinstance(turn, JSONResponse):
             await _record(
                 audit,
@@ -350,6 +392,9 @@ def create_openai_router(
                 prompt_tokens=prompt_tokens,
                 include_usage=body.wants_usage_chunk(),
                 detail=base_detail,
+                conversations=conversations,
+                conversation=conversation,
+                since=since,
             )
         return await _blocking_response(
             agent=agent,
@@ -360,6 +405,9 @@ def create_openai_router(
             correlation_id=correlation_id,
             prompt_tokens=prompt_tokens,
             detail=base_detail,
+            conversations=conversations,
+            conversation=conversation,
+            since=since,
         )
 
     return router

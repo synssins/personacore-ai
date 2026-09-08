@@ -13,7 +13,9 @@ turn.
 
 from __future__ import annotations
 
+import contextlib
 import time
+from datetime import datetime
 from typing import Any
 
 from fastapi import Response
@@ -40,6 +42,8 @@ from personacore.api.openai_wire import (
 )
 from personacore.audit.logging import get_logger
 from personacore.audit.models import AuditOutcome
+from personacore.conversations.models import Conversation
+from personacore.conversations.service import ConversationService
 
 logger = get_logger(__name__)
 
@@ -54,13 +58,35 @@ async def _blocking_response(
     correlation_id: str,
     prompt_tokens: int,
     detail: dict[str, Any],
+    conversations: ConversationService | None = None,
+    conversation: Conversation | None = None,
+    since: datetime | None = None,
 ) -> Response:
-    """Run the turn to completion and answer in one JSON body."""
+    """Run the turn to completion and answer in one JSON body.
+
+    ``conversations``/``conversation``/``since`` are the live-conversation
+    wiring (``openai_router.py``'s ``chat_completions``): once the turn has
+    written its rows, the resolved conversation claims the ones written
+    ``since`` the turn began — see :meth:`ConversationService.append`. Best
+    effort and silent either way, the same as the admin chat screen's own
+    call: a claim that fails leaves the reply exactly as usable as it always
+    was, unattached until the next backfill.
+    """
     wire = _WireTurn(correlation_id=correlation_id)
     events = agent.run_turn(turn)
     try:
-        async for event in events:
-            wire.feed(event)
+        try:
+            async for event in events:
+                wire.feed(event)
+        finally:
+            # However the turn ends — finished, degraded, or raised — any rows
+            # it managed to write before that already carry this conversation
+            # id (the loop stamps it straight onto each row); this call is
+            # only what recomputes `last_activity_at` and the title, so it
+            # runs on every exit rather than only the happy path.
+            if conversations is not None and since is not None:
+                with contextlib.suppress(Exception):
+                    await conversations.append(conversation, since=since)
     except Exception as exc:  # noqa: BLE001 - a client never sees a traceback
         logger.error("api_turn_failed", error=repr(exc), correlation_id=correlation_id)
         await _record(

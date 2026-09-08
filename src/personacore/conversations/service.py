@@ -27,7 +27,7 @@ things a screen needs on top of it and should not each reinvent:
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Protocol, runtime_checkable
 
 from personacore.audit.logging import get_logger
@@ -36,6 +36,7 @@ from personacore.config.appdata import AppdataLayout
 from personacore.conversations.models import (
     MAX_ROSTER,
     MAX_TITLE_LENGTH,
+    SESSION_GAP,
     Conversation,
     ConversationKind,
 )
@@ -407,6 +408,46 @@ class ConversationService:
         except Exception as exc:  # noqa: BLE001 - see module docstring
             _logger.error("conversation_start_failed", error=repr(exc))
             return None
+
+    async def current(
+        self, owner: Owner, *, now: datetime, gap: timedelta = SESSION_GAP
+    ) -> Conversation | None:
+        """The conversation a live turn on this surface belongs to right now.
+
+        For a surface whose turns arrive with no conversation id of their
+        own to resolve or mint (the OpenAI-compatible API, spec section
+        5.4) — mirrors the grouping rule the startup backfill already uses
+        (:data:`~personacore.conversations.models.SESSION_GAP`,
+        :meth:`~personacore.audit.store.AuditStore.backfill_conversations`):
+        this owner's most recent conversation on this surface is reused if it
+        was last spoken in within ``gap`` of ``now``; otherwise a fresh one is
+        started. One conversation per owner per gap.
+
+        A hidden conversation is never reused — :meth:`listing`'s underlying
+        query already excludes it by default, so the most recent *visible*
+        conversation is what this asks for and what it compares the gap
+        against, and a hidden one simply is not a candidate.
+
+        ``None`` for a store that cannot do this, or on any failure: the
+        caller's fallback is the turn running with no conversation, exactly
+        today's behaviour. Logged with ids only, never content.
+        """
+        if self._store is None:
+            return None
+        try:
+            # `include_empty`: a conversation this method just started, with
+            # nothing said in it yet, must be found by its own next lookup —
+            # a request rejected before its turn ran leaves exactly that, and
+            # without it every such request would mint another empty row.
+            recent = await self._store.list_conversations(
+                owner=owner, surface=self._surface, limit=1, include_empty=True
+            )
+        except Exception as exc:  # noqa: BLE001 - see module docstring
+            _logger.error("conversation_current_failed", error=repr(exc))
+            return None
+        if recent and now - recent[0].last_activity_at <= gap:
+            return recent[0]
+        return await self.start(owner)
 
     async def listing(
         self, owner: Owner, *, limit: int = 50, include_hidden: bool = False

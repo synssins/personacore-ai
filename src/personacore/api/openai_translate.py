@@ -129,6 +129,7 @@ def _to_turn_request(
     record: Caller,
     settings: OpenAIApiConfig,
     correlation_id: str,
+    conversation_id: str | None = None,
 ) -> TurnRequest | JSONResponse:
     """Turn an OpenAI request into a :class:`TurnRequest`.
 
@@ -205,6 +206,14 @@ def _to_turn_request(
         # persona_override is never taken from the request: on this surface the
         # persona is the key's, full stop (section 5.4).
         correlation_id=correlation_id,
+        # Resolved by the router before this is called (ConversationService.
+        # current) — see that method's own docstring for the reuse-within-the-
+        # gap rule. `None` when there is no conversation service wired in, or
+        # the store failed: the turn runs exactly as it always has.
+        conversation_id=conversation_id,
+        # An API client cannot see files, so this surface never keeps a
+        # workspace — see `TurnRequest.workspace_allowed`.
+        workspace_allowed=False,
         # ``tool_choice: "none"`` withdraws the offer for this request; it does
         # not erase what already happened, so the rounds are replayed either
         # way. Several clients send "none" on the final call precisely to force

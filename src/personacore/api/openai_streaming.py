@@ -17,8 +17,10 @@ the blocking path.
 
 from __future__ import annotations
 
+import contextlib
 import time
 from collections.abc import AsyncIterator
+from datetime import datetime
 from typing import Any
 
 from fastapi import Response
@@ -49,6 +51,8 @@ from personacore.api.openai_wire import (
 )
 from personacore.audit.logging import get_logger
 from personacore.audit.models import AuditOutcome
+from personacore.conversations.models import Conversation
+from personacore.conversations.service import ConversationService
 
 logger = get_logger(__name__)
 
@@ -84,6 +88,9 @@ async def _stream_response(
     prompt_tokens: int,
     include_usage: bool,
     detail: dict[str, Any],
+    conversations: ConversationService | None = None,
+    conversation: Conversation | None = None,
+    since: datetime | None = None,
 ) -> Response:
     """Stream the turn as server-sent events.
 
@@ -92,19 +99,33 @@ async def _stream_response(
     real 503 instead of a 200 whose body turns out to be an apology. Once any
     assistant text exists the status is committed and the buffered events are
     replayed ahead of the live ones, so nothing is lost or reordered.
+
+    ``conversations``/``conversation``/``since`` are the live-conversation
+    wiring (``openai_router.py``'s ``chat_completions``) — see
+    :func:`personacore.api.openai_blocking._blocking_response`'s docstring for
+    what the claim after the turn is for. Here it has to happen twice: once
+    below, for the pre-flight portion that fails or finishes before any
+    response is sent, and once more inside :func:`frames` for a turn that
+    keeps writing after the response has committed — a second call is a cheap,
+    idempotent no-op when the first one already saw everything.
     """
     events = agent.run_turn(turn)
     wire = _WireTurn(correlation_id=correlation_id)
     buffered: list[_Emission] = []
     finished = False
     try:
-        async for event in events:
-            buffered.extend(wire.feed(event))
-            if event.type in _COMMITS_THE_STREAM:
-                break
-            if event.type is AgentEventType.DONE:
-                finished = True
-                break
+        try:
+            async for event in events:
+                buffered.extend(wire.feed(event))
+                if event.type in _COMMITS_THE_STREAM:
+                    break
+                if event.type is AgentEventType.DONE:
+                    finished = True
+                    break
+        finally:
+            if conversations is not None and since is not None:
+                with contextlib.suppress(Exception):
+                    await conversations.append(conversation, since=since)
     except Exception as exc:  # noqa: BLE001 - a client never sees a traceback
         logger.error("api_turn_failed", error=repr(exc), correlation_id=correlation_id)
         await _record(
@@ -225,6 +246,14 @@ async def _stream_response(
             yield SSE_DONE
         finally:
             await _aclose(events)
+            # After the stream finishes — successfully, mid-stream failure, or
+            # a client that disconnected early — so whatever this turn wrote
+            # is reflected in the conversation's own activity and title. See
+            # this function's own docstring: a second, idempotent call after
+            # the one the pre-flight portion already made.
+            if conversations is not None and since is not None:
+                with contextlib.suppress(Exception):
+                    await conversations.append(conversation, since=since)
 
     return StreamingResponse(
         frames(),

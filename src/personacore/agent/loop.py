@@ -521,11 +521,25 @@ class TurnRequest(BaseModel):
     every memory a ``memory.remember`` call writes this turn so a screen can
     link a memory back to where it came from.
 
-    ``None`` is every caller that predates this and every turn with nowhere
-    to file it: the OpenAI-compatible API, a raw-passthrough turn, an event
-    waking the agent. Only the admin UI's chat screens know a conversation id
-    (they resolve or mint one before the turn), and only there is it passed —
-    see ``boot/chat.py``'s own ``conversation_id`` parameter.
+    ``None`` is every caller that predates this and every turn with nowhere to
+    file it: a raw-passthrough turn, an event waking the agent, or a store
+    that could not resolve one. The admin UI's chat screens know a
+    conversation id because they resolve or mint one before the turn (see
+    ``boot/chat.py``'s own ``conversation_id`` parameter); the OpenAI-
+    compatible API does the same, per caller and per session gap, via
+    ``ConversationService.current`` (``api/openai_router.py``) — see that
+    method's own docstring for the reuse rule.
+    """
+
+    workspace_allowed: bool = True
+    """Whether this turn may keep a workspace at all (workspace contract §5).
+
+    ``True`` for every caller that predates this field. The OpenAI-compatible
+    API sets it ``False``: an API client cannot see files, so the exposed
+    endpoint never keeps a workspace — the long-result spill would otherwise
+    write files the client has no way to read. Checked by
+    :meth:`AgentLoop._workspace_ready` beside the persona switch and the
+    conversation id, so the four places that consult it stay in agreement.
     """
 
     image_data_urls: list[str] = Field(default_factory=list)
@@ -771,6 +785,9 @@ class TurnContext:
     """Carried straight from :attr:`TurnRequest.conversation_id` — see that
     field's own docstring. ``None`` on ``ask_persona``'s turn, which has no
     request of its own and writes nothing a conversation id would label."""
+
+    workspace_allowed: bool = True
+    """Carried straight from :attr:`TurnRequest.workspace_allowed`."""
 
     thinking_override: bool | None = None
     """Carried straight from :attr:`TurnRequest.thinking` — workspace
@@ -1131,6 +1148,7 @@ class AgentLoop:
                 kind=request.author_kind or AuthorKind.HUMAN,
             ),
             conversation_id=request.conversation_id,
+            workspace_allowed=request.workspace_allowed,
             thinking_override=request.thinking,
             # Runbook contract §2 and §1.5: one step's own sampling
             # temperature, and the role-labelled pin set for a scripted turn.
@@ -1490,6 +1508,7 @@ class AgentLoop:
             and ctx.persona is not None
             and ctx.persona.workspace_enabled
             and ctx.conversation_id is not None
+            and ctx.workspace_allowed
         )
 
     def _workspace_blocks(self, ctx: TurnContext) -> list[str]:
