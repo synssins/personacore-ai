@@ -140,7 +140,7 @@ Everything the key's profile controls is described in [Policy Profiles](Policy-P
 
 Every turn taken here is filed into a conversation as it happens, owned by the key's profile. A turn reuses the caller's most recent conversation on this surface while its last activity is within two hours; a longer silence starts a new one. This is the same grouping the startup backfill applies to older rows, done live.
 
-Two things follow. The conversation shows up in the admin conversation list and the trace straight away. And when the key's persona has memory on and the key's memory scope is not `none`, the memory review pass reads the conversation once it has gone quiet and keeps what it judges worth keeping, the same way it does for the admin chat — so a voice assistant or a display pointed at this surface builds memory without any change on its side. A key with memory scope `none`, or a raw-passthrough key, still gets a conversation but no memory reads or writes.
+Two things follow. The conversation shows up in the admin conversation list and the trace straight away. And when the key's persona has memory on, the memory review pass reads the conversation once it has gone quiet and keeps what it judges worth keeping, the same way it does for the admin chat — so a voice assistant or a display pointed at this surface builds memory without any change on its side. The key's memory scope decides what is recalled into the turn; `none` means nothing is. A raw-passthrough key gets a conversation but no persona, so no memory at all.
 
 Turns on this surface never keep a workspace, whatever the persona's own workspace switch says: an API client has no way to see files, so none are made for it.
 
