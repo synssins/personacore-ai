@@ -181,6 +181,12 @@
     {% elif disclosure.url %}
     <p class="meta" style="margin:4px 0 0">It is called at: {{ disclosure.url }}</p>
     {% endif %}
+    {# Contract 2.2: a bearer secret and/or a pinned certificate, in plain
+       English rather than left for whoever opens manifest.toml. Empty for
+       the ordinary http plugin, and always empty on stdio. #}
+    {% for note in http_auth_notes %}
+    <p class="meta" style="margin:4px 0 0">{{ note }}</p>
+    {% endfor %}
   </section>
 
   {# ── the last thing read before Install is clicked ── #}

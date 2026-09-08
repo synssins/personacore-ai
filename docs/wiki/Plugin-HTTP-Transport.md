@@ -87,6 +87,12 @@ An HTTP plugin gets its credentials the same way any other container does: Docke
 
 Practical consequence: **declare `secrets = []` on an HTTP plugin.** Declaring names you will never receive is a manifest that lies to whoever reviews it. (It is not a load failure — nothing checks — which is precisely why it is worth saying here.)
 
+**Contract 2.2 adds the one thing the core can send: a bearer token.** `[plugin] auth_secret` names a secret in the core's own store, and the core sends its value as `Authorization: Bearer <value>` on every request to this plugin — not through `permissions.secrets` (still `[]`, per above), because this is the core's own credential to send, not one handed to a process it did not start. Read through `SecretStore.scoped(plugin_name, [auth_secret])`, exactly as a stdio plugin's declared secret is: a missing one means the plugin shows `waiting_for_secrets` on its health row and the core never connects, the same state a stdio plugin's missing required secret produces.
+
+`[plugin] tls_fingerprint` is the other half — a pinned certificate, verified instead of the system trust store, for a plugin that terminates TLS with a self-signed or otherwise unverifiable certificate on the LAN. It requires `https://` in `url`; naming it beside `http://` is a load failure, not a runtime one. A mismatch between what the server actually presents and what the registration pins is a `failed` health row naming both fingerprints — never a silent fallback to the trust store.
+
+Both fields are optional, meaningful only for `transport = "http"`, and ignored (with one warning) on a stdio manifest. See [Manifest](Plugin-Manifest) for the exact validation and [Contract Versioning](Plugin-Contract-Versioning#what-changed-in-22) for why this is a minor bump.
+
 ### Diagnostics are thinner
 
 For a stdio plugin, whatever the process printed to stderr is captured and appended to the failure message — usually the entire diagnosis. There is no equivalent for HTTP. A failed connection reports only what the transport said:

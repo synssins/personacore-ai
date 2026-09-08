@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 from enum import StrEnum
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -17,6 +18,9 @@ _NAME_RE = re.compile(r"^[a-z][a-z0-9-]{1,63}$")
 
 # "1.x" style: which contract major the plugin targets.
 _CONTRACT_RE = re.compile(r"^\d+\.(x|\d+)$")
+
+# `sha256:` plus the 64 lowercase hex characters of a SHA-256 digest — contract 2.2.
+_TLS_FINGERPRINT_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 # Both are matched with `fullmatch`, never `match` (the 2026-08 security review).
 #
@@ -108,6 +112,25 @@ PROVIDES_MUST_BE_A_LIST = (
 time it is used at all, and pydantic's own message for it ("Input should be a
 valid list") does not say what the one-entry form looks like.
 """
+
+
+def tls_fingerprint_format_message(value: str) -> str:
+    """Shown when ``tls_fingerprint`` does not look like a SHA-256 in the pinned form."""
+    return (
+        f"tls_fingerprint {value!r} must look like 'sha256:' followed by 64 "
+        "lowercase hex characters -- the SHA-256 fingerprint of the server's leaf "
+        "certificate, in DER. For example, openssl x509 -in cert.pem -outform DER "
+        "| sha256sum prints the hex half."
+    )
+
+
+def tls_fingerprint_needs_https_message(plugin: str, url: str) -> str:
+    """Shown when ``tls_fingerprint`` is declared alongside a non-https ``url``."""
+    return (
+        f"plugin {plugin!r} pins a certificate but the URL is not https: {url!r}. "
+        "tls_fingerprint verifies a TLS connection, so it has nothing to check "
+        "against an http:// url. Use https:// or remove tls_fingerprint."
+    )
 
 
 class ServiceKind(StrEnum):
@@ -388,6 +411,33 @@ class PluginIdentity(BaseModel):
     url: str | None = None
     """Base URL for http plugins. Required for http, ignored for stdio."""
 
+    auth_secret: str | None = None
+    """Contract 2.2. The **name** of a secret in the core's store, sent as
+    ``Authorization: Bearer <value>`` on every request to an http plugin.
+
+    Meaningful only when ``transport = "http"``. A stdio plugin declaring this
+    is accepted and ignored, with one warning line, because the field is
+    additive (spec 4.5): an old manifest that never mentions it is unaffected.
+
+    Read through :meth:`~personacore.config.secrets.SecretStore.scoped` with
+    only this one name, never the whole store, and never through
+    ``permissions.secrets`` — an http plugin declares that list empty, because
+    it never runs on this machine and never receives a secret itself; this is
+    the core's own credential to send, not the plugin's.
+    """
+
+    tls_fingerprint: str | None = None
+    """Contract 2.2. ``sha256:`` plus 64 lowercase hex characters — the SHA-256
+    of the server's leaf certificate, in DER. Verified **instead of** the
+    system trust store when present.
+
+    Meaningful only when ``transport = "http"``, and only with an ``https://``
+    URL: pinning a certificate for a connection with no TLS on it is refused at
+    load time (:func:`tls_fingerprint_needs_https_message`). A stdio plugin
+    declaring this is accepted and ignored, with one warning line, for the same
+    reason as :attr:`auth_secret`.
+    """
+
     provides: list[ServiceKind] = Field(default_factory=list)
     """What kind of service this plugin *is* — contract 2.1.
 
@@ -480,6 +530,52 @@ class PluginManifest(BaseModel):
             raise ValueError("a stdio plugin must declare 'entry' — the command that starts it")
         if transport is Transport.HTTP and not self.plugin.url:
             raise ValueError("an http plugin must declare 'url' — where the core reaches it")
+        self._check_http_auth_fields(transport)
+
+    def _check_http_auth_fields(self, transport: Transport) -> None:
+        """``auth_secret`` and ``tls_fingerprint`` — contract 2.2.
+
+        Both are meaningful only for an http plugin. On stdio they are accepted
+        and ignored (additive, spec 4.5): a manifest naming either still loads,
+        with one warning so the author can see the field is doing nothing
+        rather than silently trusting a stdio plugin never checks. On http,
+        ``tls_fingerprint`` is checked here because it is a shape a load-time
+        reader can already see; whether the fingerprint *matches* the server it
+        connects to is checked when the core connects (mcp_client._connect_http),
+        the same way the url scheme itself is (spec 5.1: manifest declares, core
+        enforces — but a malformed declaration is refused before that).
+        """
+        fingerprint = self.plugin.tls_fingerprint
+        auth_secret = self.plugin.auth_secret
+        if transport is Transport.HTTP:
+            if fingerprint is not None:
+                if not _TLS_FINGERPRINT_RE.fullmatch(fingerprint):
+                    raise ValueError(tls_fingerprint_format_message(fingerprint))
+                scheme = urlparse(self.plugin.url or "").scheme.lower()
+                if scheme != "https":
+                    raise ValueError(
+                        tls_fingerprint_needs_https_message(self.plugin.name, self.plugin.url or "")
+                    )
+            return
+        if fingerprint is None and auth_secret is None:
+            return
+        # Deferred import: `personacore.audit` imports `personacore.contracts`
+        # (for `RiskLevel`) at module scope, so a module-level import here would
+        # be circular. By the time a manifest is actually being validated, both
+        # modules exist to import fresh -- this file just cannot demand audit be
+        # importable before it is.
+        from personacore.audit import get_logger
+
+        ignored = [
+            name
+            for name, value in (("auth_secret", auth_secret), ("tls_fingerprint", fingerprint))
+            if value is not None
+        ]
+        get_logger(__name__).warning(
+            "http_only_field_ignored_on_stdio",
+            plugin=self.plugin.name,
+            fields=ignored,
+        )
 
     def risk_of(self, tool_name: str) -> RiskLevel:
         """Risk for a tool. An undeclared tool is not callable, so this raises

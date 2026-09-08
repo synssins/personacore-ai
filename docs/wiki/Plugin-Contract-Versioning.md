@@ -12,7 +12,7 @@ Spec §4.5 is careful about what is being promised:
 
 The promise is about the **contract**, not about features and not about the core's own version. `personacore.__version__` and `personacore.CONTRACT_VERSION` are different numbers and move independently.
 
-**This core implements contract `2.1`.** A manifest declaring a `1.x` contract is refused — see [What changed in 2.0](#what-changed-in-20) below. `2.1` added one optional field; see [What changed in 2.1](#what-changed-in-21).
+**This core implements contract `2.2`.** A manifest declaring a `1.x` contract is refused — see [What changed in 2.0](#what-changed-in-20) below. `2.1` added one optional field; see [What changed in 2.1](#what-changed-in-21). `2.2` added two more, both http-only; see [What changed in 2.2](#what-changed-in-22).
 
 ## Declaring a target
 
@@ -38,21 +38,22 @@ Note what is *not* accepted: `"2"`, `"2.0.0"`, `"^2.0"`, `">=2.0"`. Two parts, a
 2. **`x` as the minor means any minor.** `"2.x"` loads on any `2.y` core.
 3. **An exact minor loads on that minor or any later one in the same major** — never an earlier one.
 
-| Your `contract` | Core `2.0` | Core `2.1` (this one) | Core `2.3` | Core `3.0` |
-|---|---|---|---|---|
-| `"2.x"` | loads | loads | loads | **refused** |
-| `"2.0"` | loads | loads | loads | **refused** |
-| `"2.1"` | **refused** | loads | loads | **refused** |
-| `"2.2"` | **refused** | **refused** | loads | **refused** |
-| `"1.x"` | **refused** | **refused** | **refused** | **refused** |
-| `"3.x"` | **refused** | **refused** | **refused** | loads |
+| Your `contract` | Core `2.0` | Core `2.1` | Core `2.2` (this one) | Core `2.4` | Core `3.0` |
+|---|---|---|---|---|---|
+| `"2.x"` | loads | loads | loads | loads | **refused** |
+| `"2.0"` | loads | loads | loads | loads | **refused** |
+| `"2.1"` | **refused** | loads | loads | loads | **refused** |
+| `"2.2"` | **refused** | **refused** | loads | loads | **refused** |
+| `"2.3"` | **refused** | **refused** | **refused** | loads | **refused** |
+| `"1.x"` | **refused** | **refused** | **refused** | **refused** | **refused** |
+| `"3.x"` | **refused** | **refused** | **refused** | **refused** | loads |
 
-**A major mismatch and a minor one get different sentences**, because they are different situations. A minor gap means nothing is broken: the core is simply older than the plugin asked for. A `contract = "2.2"` manifest on this 2.1 core:
+**A major mismatch and a minor one get different sentences**, because they are different situations. A minor gap means nothing is broken: the core is simply older than the plugin asked for. A `contract = "2.3"` manifest on this 2.2 core:
 
 ```
-plugins/kitchen-timer/: this plugin needs plugin contract '2.2' and this core
-implements '2.1' -- an earlier minor version, so something the plugin asks for
-is not here yet and it has not been loaded. Update this core to contract 2.2 or
+plugins/kitchen-timer/: this plugin needs plugin contract '2.3' and this core
+implements '2.2' -- an earlier minor version, so something the plugin asks for
+is not here yet and it has not been loaded. Update this core to contract 2.3 or
 later, or -- if the plugin does not really need anything newer -- edit its
 manifest.toml to contract = "2.x", which loads on any 2.y core (spec 4.5).
 ```
@@ -63,7 +64,7 @@ The refusal, on this core, for the one older major that exists:
 
 ```
 plugins/kitchen-timer/: this plugin was written for plugin contract '1.x' and
-this core implements '2.1' -- a different major version, which is incompatible,
+this core implements '2.2' -- a different major version, which is incompatible,
 so it has not been loaded. Contract 2.0 changed one thing: permissions.secrets
 is now a list of tables instead of a list of names. Each credential is written
 as { name = "openweather_key", description = "What this is and where to get
@@ -81,7 +82,7 @@ It is a load failure, so the plugin appears in the admin UI as `failed` with tha
 
 **`"2.x"`, unless you know why not.** Minor versions only ever add, so they cannot break you, and `"2.x"` means you never have to touch the file when the core moves forward.
 
-**An exact minor is a requirement, not a preference.** `contract = "2.2"` says "I need something that was added in 2.2". It buys you one thing: on a 2.1 core you get a clear refusal saying so, instead of failing halfway through a call on a feature that is not there. Pin like this only when you genuinely depend on a newer feature — otherwise you have made your plugin refuse to load on cores where it would have worked fine.
+**An exact minor is a requirement, not a preference.** `contract = "2.3"` says "I need something that was added in 2.3". It buys you one thing: on a 2.2 core you get a clear refusal saying so, instead of failing halfway through a call on a feature that is not there. Pin like this only when you genuinely depend on a newer feature — otherwise you have made your plugin refuse to load on cores where it would have worked fine.
 
 The template says the same thing in its comments, which is where most authors will read it first.
 
@@ -105,6 +106,26 @@ It may **not**:
 That is the whole basis on which `"2.x"` is safe advice. A plugin written against 2.0 and left untouched must load on 2.9.
 
 One case is already named as a future minor bump: ADR-0012 item 5 records that real egress enforcement for stdio plugins would be **a contract minor version when it lands, "because plugins that quietly relied on unenforced access will break — which is the point."** Worth knowing if you are relying on today's unenforced `permissions.network` ([Manifest](Plugin-Manifest)).
+
+## What changed in 2.2
+
+**`[plugin] auth_secret` and `[plugin] tls_fingerprint` were added** — two optional fields, meaningful only for `transport = "http"`.
+
+```toml
+[plugin]
+transport       = "http"
+url             = "https://vision:8080/mcp"
+auth_secret     = "vision_token"
+tls_fingerprint = "sha256:2f5b1b1c9e3f8a7d4c6e0b2a1d9f8e7c6b5a4938271605f4e3d2c1b0a9887766"
+```
+
+`auth_secret` names a secret in the core's own store, sent as `Authorization: Bearer <value>` on every request to the plugin — the first thing the core has ever *sent* an http plugin, where before it only ever declared what it would refuse to send (`permissions.secrets` stays empty for http; see [HTTP Transport](Plugin-HTTP-Transport#secrets-are-not-delivered-to-an-http-plugin)). `tls_fingerprint` pins the server's certificate instead of trusting the system store, for a plugin reached over a LAN with no public certificate authority behind it.
+
+Full rules, messages and the connection-time behaviour: [Manifest](Plugin-Manifest#auth_secret-and-tls_fingerprint--a-bearer-token-and-a-pinned-certificate), [HTTP Transport](Plugin-HTTP-Transport).
+
+### Why this is 2.2 and not 3.0
+
+Both fields are optional and http-only. A manifest written against 2.1 or earlier does not mention either, gets `null` for both, and loads on this core exactly as it did — the same additive argument that made `provides` a 2.1 minor rather than a 3.0 major. A stdio manifest that *does* name one is not refused either: it loads, the field is ignored, and one warning line says so, because refusing an old manifest for a field it cannot use would not be "additive" in any sense worth the word.
 
 ## What changed in 2.1
 
@@ -169,7 +190,7 @@ Spec §4.5 sets two expectations: it is **rare to never**, and it **keeps a comp
 
 ## Checking the core's version
 
-- In code: `personacore.CONTRACT_VERSION` — `"2.1"` in this core.
+- In code: `personacore.CONTRACT_VERSION` — `"2.2"` in this core.
 - Over HTTP: `GET /health` returns `{"status": ..., "version": ..., "contract": ...}` — `contract` is the value your manifest is checked against.
 
 ## Your own `version` field

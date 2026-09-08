@@ -260,6 +260,17 @@ WHERE_IT_RUNS_HTTP = (
     "machine — but everything it is sent goes to that address."
 )
 
+HTTP_BEARER_HEADER_NOTE = "Sends the secret {name!r} as a bearer token to {url}."
+"""Contract 2.2. What ``[plugin] auth_secret`` means, in the operator's words
+rather than the manifest's: the value is the core's own credential to send,
+not something handed to the plugin (see ``permissions.secrets`` above, which
+an http plugin declares empty for exactly this reason)."""
+
+HTTP_TLS_FINGERPRINT_NOTE = "Pins certificate {fingerprint}."
+"""Contract 2.2. What ``[plugin] tls_fingerprint`` means: this one
+certificate is trusted instead of the system trust store, for this plugin's
+connection only."""
+
 REVIEW_REFUSED_TITLE = "That package was not read"
 
 REVIEW_REFUSED_NOTE = (
@@ -296,6 +307,26 @@ def _registers_as(disclosure: PackageDisclosure | None) -> str | None:
         return REGISTERS_AS_ONE.format(services=clauses[0])
     services = f"{', '.join(clauses[:-1])} and as {clauses[-1]}"
     return REGISTERS_AS_MANY.format(services=services)
+
+
+def _http_auth_notes(disclosure: PackageDisclosure | None) -> list[str]:
+    """One line per contract-2.2 field the manifest actually declares.
+
+    Empty is the ordinary case — nearly every http plugin declares neither
+    field, exactly as before contract 2.2 existed. Module-level and taking
+    only the disclosure, for the same testing reason as :func:`_registers_as`:
+    a test can read the exact sentences without standing up the application.
+    """
+    if disclosure is None:
+        return []
+    notes: list[str] = []
+    if disclosure.auth_secret:
+        notes.append(
+            HTTP_BEARER_HEADER_NOTE.format(name=disclosure.auth_secret, url=disclosure.url)
+        )
+    if disclosure.tls_fingerprint:
+        notes.append(HTTP_TLS_FINGERPRINT_NOTE.format(fingerprint=disclosure.tls_fingerprint))
+    return notes
 
 
 def register(router: APIRouter, ctx: UIContext) -> None:
@@ -728,6 +759,11 @@ def register(router: APIRouter, ctx: UIContext) -> None:
                     if disclosure and disclosure.transport is Transport.HTTP
                     else WHERE_IT_RUNS_STDIO
                 ),
+                # Contract 2.2: "sends the secret X as a bearer token to
+                # <url>" and/or "pins certificate sha256:…" — empty for the
+                # overwhelming majority of http plugins, which declare
+                # neither, and always empty for a stdio plugin.
+                "http_auth_notes": _http_auth_notes(disclosure),
                 "refused_note": REVIEW_REFUSED_NOTE,
             },
         )

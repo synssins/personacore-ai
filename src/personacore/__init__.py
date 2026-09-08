@@ -38,4 +38,12 @@ BUILD_DATE = os.environ.get("PERSONACORE_BUILD_DATE", "")
 # (`contract = "2.x"` and `contract = "2.0"` both load here). A manifest that
 # pins `contract = "2.1"` is refused by a 2.0 core, naming the version it needs
 # — which is the only reason to pin one.
-CONTRACT_VERSION = "2.1"
+#
+# 2.2: `[plugin] auth_secret` and `[plugin] tls_fingerprint` — two optional
+# fields, meaningful only when `transport = "http"`. `auth_secret` names a
+# secret the core sends as an `Authorization: Bearer` header on every request;
+# `tls_fingerprint` pins the server's certificate instead of trusting the
+# system store. Both additive: absent, an http plugin connects exactly as
+# before, and either on a stdio manifest is accepted and ignored (with a
+# warning) rather than refused. See `contracts.manifest.PluginIdentity`.
+CONTRACT_VERSION = "2.2"

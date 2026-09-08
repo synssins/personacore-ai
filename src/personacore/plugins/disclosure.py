@@ -119,6 +119,15 @@ class PackageDisclosure(BaseModel):
     entry: str | None = None
     url: str | None = None
 
+    auth_secret: str | None = None
+    """Contract 2.2, http only. The secret named here is sent as a bearer
+    token to :attr:`url` on every request -- the review screen says so in
+    plain English (spec section 9), the same way it says so for ``secrets``."""
+
+    tls_fingerprint: str | None = None
+    """Contract 2.2, http only. The certificate pinned instead of the system
+    trust store, shown on the review screen for the same reason."""
+
     provides: tuple[ServiceKind, ...] = ()
     """What kind of service the package registers as being (contract 2.1).
 
@@ -341,6 +350,8 @@ def _disclose(manifest: PluginManifest, folder: str) -> PackageDisclosure:
         transport=manifest.plugin.transport,
         entry=manifest.plugin.entry,
         url=manifest.plugin.url,
+        auth_secret=manifest.plugin.auth_secret,
+        tls_fingerprint=manifest.plugin.tls_fingerprint,
         provides=tuple(manifest.plugin.provides),
         tools=tuple(tools),
         declared_hosts=tuple(manifest.permissions.network),

@@ -43,9 +43,11 @@ not a boundary.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import shutil
+import ssl
 import tempfile
 from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
@@ -54,6 +56,7 @@ from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 from urllib.parse import unquote, urlparse
 
+import httpx2
 from mcp import ClientSession, MCPError, StdioServerParameters, types
 from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamable_http_client
@@ -265,6 +268,193 @@ def build_child_environment(
                 f"{name!r} in its manifest, and {exc}"
             ) from None
     return env
+
+
+# ---------------------------------------------------------------------------
+# The http child's own credential and certificate pin (contract 2.2)
+# ---------------------------------------------------------------------------
+
+
+def build_http_auth_headers(
+    record: PluginRecord, secrets: SecretStore | None
+) -> dict[str, str]:
+    """The ``Authorization`` header an http plugin's ``auth_secret`` becomes.
+
+    Same fail-closed shape as :func:`build_child_environment`'s **required**
+    secrets, and deliberately reuses :class:`MissingPluginSecrets` so a
+    missing credential is carried up to ``PluginHealth.waiting_for_secrets``
+    the same way for both transports (spec section 9) — the supervisor's
+    ``_run`` loop catches that exception generically, transport-agnostically,
+    so nothing there has to change.
+
+    Unlike a stdio secret request, ``auth_secret`` has no ``required = false``
+    spelling: it names exactly one secret, and a manifest that names it means
+    to send it. There is nothing sensible for the core to do with a *declared*
+    bearer token it silently never sends, so absence of the value is always
+    treated as "not started yet, waiting for it" rather than "started without
+    a header".
+
+    Returns an empty mapping when the manifest declares no ``auth_secret`` —
+    the ordinary case, unchanged from before contract 2.2.
+    """
+    name = record.manifest.plugin.auth_secret
+    if not name:
+        return {}
+    if secrets is None:
+        raise ChildEnvironmentError(
+            f"Plugin {record.name!r} asks for the secret {name!r} to send as a "
+            "bearer token, but this core was started without a secret store, so "
+            "it cannot be given it. It has not been started."
+        )
+    try:
+        scoped = secrets.scoped(record.name, [name])
+    except SecretError as exc:
+        raise ChildEnvironmentError(f"Plugin {record.name!r} cannot start: {exc}") from None
+    if scoped.missing():
+        raise MissingPluginSecrets(record.name, [name])
+    try:
+        value = scoped.get(name).get_secret_value()
+    except SecretError as exc:
+        raise ChildEnvironmentError(
+            f"Plugin {record.name!r} cannot start: it declares the secret {name!r} "
+            f"in its manifest, and {exc}"
+        ) from None
+    return {"Authorization": f"Bearer {value}"}
+
+
+def _check_tls_fingerprint(der: bytes, pinned: str, url: str) -> None:
+    """Raise :class:`PluginTransportError` naming both prints on a mismatch.
+
+    Free function, deliberately: it is the one line an operator's incident
+    turns on, and keeping it apart from the transport plumbing around it means
+    a test can feed it known DER bytes and a known pin without opening a
+    socket, or building an ``httpx2`` transport, or completing a TLS handshake
+    at all.
+    """
+    seen = hashlib.sha256(der).hexdigest()
+    if f"sha256:{seen}" != pinned:
+        raise PluginTransportError(
+            f"the certificate at {url} is sha256:{seen} but the registration "
+            f"pins {pinned}"
+        )
+
+
+class _PinnedCertTransport(httpx2.AsyncHTTPTransport):
+    """The default transport, plus one check between the handshake and the request.
+
+    ``streamable_http_client`` accepts a pre-built ``httpx2.AsyncClient`` and
+    nothing lower, so this is where a certificate pin has to live: a custom
+    transport passed as that client's ``transport=``.
+
+    **The check runs before any request leaves this process.** ``httpcore2``
+    fires a ``trace`` request extension at ``"connection.start_tls.complete"``
+    from inside connection setup — before the caller's ``handle_async_request``
+    writes a single byte of the request. Setting that extension here, on every
+    request through this transport, means the certificate is checked whether
+    the caller made a plain POST or opened the SSE stream, and there is no
+    window where a request could be sent to an unverified peer.
+
+    The client's own ``verify`` must be an ``SSLContext`` with
+    ``verify_mode = CERT_NONE`` for this to be reached at all — otherwise the
+    system trust store's own refusal happens first, inside the handshake, and
+    this project never runs. That inversion is deliberate (contract 2.2): the
+    fingerprint replaces the trust store rather than adding to it, so the core
+    trusts exactly the one certificate the registration named and nothing the
+    system happens to trust.
+
+    **The trace hook is the only thing that ever runs the pin check, and it
+    never fires for a plain ``http://`` request** — ``connection.start_tls.complete``
+    is a TLS-only event. Nothing today produces such a request through this
+    transport (manifest validation refuses a pin on a non-https url, and the
+    client never follows a redirect), but that is a property of the rest of
+    the system, not of this class, so ``handle_async_request`` itself refuses
+    — before delegating to the parent — any request whose scheme is not
+    ``https`` or whose host does not match the pinned url's host. That way the
+    guarantee holds even if either of those conditions elsewhere ever changes.
+    """
+
+    def __init__(self, *, pinned: str, url: str, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._pinned = pinned
+        self._url = url
+        self._pinned_host = urlparse(url).hostname or ""
+
+    async def handle_async_request(self, request: httpx2.Request) -> httpx2.Response:
+        if request.url.scheme != "https":
+            raise PluginTransportError(
+                f"refusing to send a {request.url.scheme!r} request to a "
+                f"connection pinned to a certificate at {self._url} -- a "
+                "certificate pin only means anything over https"
+            )
+        if request.url.host.lower() != self._pinned_host.lower():
+            raise PluginTransportError(
+                f"refusing to send a request to host {request.url.host!r}, which "
+                f"is not the host of the pinned url {self._url}"
+            )
+        previous_trace = request.extensions.get("trace")
+        request.extensions = {
+            **request.extensions,
+            "trace": self._chained_trace(previous_trace),
+        }
+        return await super().handle_async_request(request)
+
+    def _chained_trace(self, previous_trace: Any) -> Any:
+        """Wrap an already-present ``trace`` extension rather than drop it.
+
+        Whatever callback the caller already installed still has to run --
+        this transport is not the only thing that might want connection
+        trace events. The pin check runs first; the previous callback, if
+        any, runs after it, so a mismatched pin still stops the request
+        before the previous callback sees a completed, unverified connection.
+        """
+        if previous_trace is None:
+            return self._trace
+
+        async def _chained(name: str, info: dict[str, Any]) -> None:
+            await self._trace(name, info)
+            await previous_trace(name, info)
+
+        return _chained
+
+    async def _trace(self, name: str, info: dict[str, Any]) -> None:
+        if name != "connection.start_tls.complete":
+            return
+        stream = info.get("return_value")
+        ssl_object = stream.get_extra_info("ssl_object") if stream is not None else None
+        der = ssl_object.getpeercert(binary_form=True) if ssl_object is not None else None
+        if der is None:
+            raise PluginTransportError(
+                f"could not read the certificate offered at {self._url} to check "
+                "it against the registration's pin"
+            )
+        _check_tls_fingerprint(der, self._pinned, self._url)
+
+
+def build_http_client_kwargs(record: PluginRecord, secrets: SecretStore | None) -> dict[str, Any]:
+    """Everything ``httpx2.AsyncClient`` needs for one http plugin's manifest.
+
+    Kept apart from :meth:`McpSessionFactory._connect_http` so a test can call
+    this directly and inspect ``headers`` and ``verify`` — and, when a pin is
+    declared, that ``transport`` is a :class:`_PinnedCertTransport` carrying the
+    right pin and url — without constructing a client, completing a handshake,
+    or opening a socket.
+    """
+    kwargs: dict[str, Any] = {"headers": build_http_auth_headers(record, secrets)}
+    fingerprint = record.manifest.plugin.tls_fingerprint
+    if fingerprint is not None:
+        url = record.manifest.plugin.url or ""
+        # The trust store's own verification must not run at all: it would
+        # refuse a self-signed pinned certificate before the pin is ever
+        # checked, for the plugin this field exists for. The pin is the only
+        # check now, and `_PinnedCertTransport` is what performs it.
+        ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ssl_context.check_hostname = False
+        ssl_context.verify_mode = ssl.CERT_NONE
+        kwargs["verify"] = ssl_context
+        kwargs["transport"] = _PinnedCertTransport(
+            pinned=fingerprint, url=url, verify=ssl_context
+        )
+    return kwargs
 
 
 # ---------------------------------------------------------------------------
@@ -824,10 +1014,24 @@ class McpSessionFactory:
                 "an http:// or https:// URL. HTTP plugins are reached over the "
                 "network and nothing else."
             )
+        # Contract 2.2: the bearer secret is looked up before any connection is
+        # attempted, exactly as a stdio plugin's required secret is
+        # (`build_child_environment` above) -- a missing one means the core
+        # does not connect, and `MissingPluginSecrets` carries that up to the
+        # same `waiting_for_secrets` health row for both transports, through
+        # the supervisor's existing, transport-agnostic catch of it.
+        client_kwargs = build_http_client_kwargs(record, self._secrets)
         try:
             async with AsyncExitStack() as stack:
+                # Built and owned here, not by `streamable_http_client`: it only
+                # manages the lifecycle of a client it creates itself. Headers
+                # (the bearer token) and TLS verification (the pin) both live on
+                # this client, per its own docstring.
+                client = await stack.enter_async_context(httpx2.AsyncClient(**client_kwargs))
                 try:
-                    streams = await stack.enter_async_context(streamable_http_client(url))
+                    streams = await stack.enter_async_context(
+                        streamable_http_client(url, http_client=client)
+                    )
                 except PluginTransportError:
                     raise
                 except Exception as exc:
@@ -916,5 +1120,7 @@ __all__ = [
     "RemoteToolResult",
     "SessionFactory",
     "build_child_environment",
+    "build_http_auth_headers",
+    "build_http_client_kwargs",
     "render_call_result",
 ]

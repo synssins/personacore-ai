@@ -69,6 +69,15 @@ entry = "python main.py"
 # http only. Delete `entry` and uncomment this instead:
 # url = "http://my-plugin:8080/mcp"
 
+# http only, optional, contract 2.2. Name of a secret (pasted into PersonaCore's
+# own secret store) the core sends you as `Authorization: Bearer <value>`.
+# auth_secret = "my_plugin_token"
+
+# http only, optional, contract 2.2. Pins the server's certificate instead of
+# trusting the system store -- sha256: plus 64 lowercase hex. Needs url to be
+# https://.
+# tls_fingerprint = "sha256:2f5b1b1c9e3f8a7d4c6e0b2a1d9f8e7c6b5a4938271605f4e3d2c1b0a9887766"
+
 # CHANGE THIS. One line. It is what a human sees in the admin UI plugin list.
 description = "Template plugin. Copy it, rename it, make it do something."
 

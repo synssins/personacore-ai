@@ -55,6 +55,27 @@ The core treats the two identically once discovered. Same manifest, same risk
 levels, same permissions. Repackaging a stdio plugin as an HTTP one is a change
 of two manifest lines and how you start it.
 
+**An http plugin can ask the core to send a bearer token and pin a certificate**
+(contract 2.2, http only):
+
+```toml
+[plugin]
+transport       = "http"
+url             = "https://your-service:8443/mcp"
+auth_secret     = "your_service_token"
+tls_fingerprint = "sha256:2f5b1b1c9e3f8a7d4c6e0b2a1d9f8e7c6b5a4938271605f4e3d2c1b0a9887766"
+```
+
+`auth_secret` names a secret the operator pastes into PersonaCore's own secret
+store; the core sends its value as `Authorization: Bearer <value>` on every
+request to you. It never reaches you as a value the way a stdio plugin's
+declared secret does (§6) — you never see the token, only requests that already
+carry it — so it does not go in your `permissions.secrets`, which stays `[]`
+regardless. `tls_fingerprint` pins your certificate instead of the system trust store —
+useful if you terminate TLS yourself with a self-signed certificate, which is
+the ordinary case on a LAN. Both are optional and both are ignored on a stdio
+manifest. Full detail: [Manifest](../wiki/Plugin-Manifest#auth_secret-and-tls_fingerprint--a-bearer-token-and-a-pinned-certificate).
+
 ## 3. Folder layout
 
 ```
@@ -109,6 +130,8 @@ subscribes = []
 | `plugin.transport` | `"stdio"` or `"http"`. Must match the directory you installed into, or you get an error telling you which one to move it to. |
 | `plugin.entry` | stdio only, required. The command that starts you, relative to your folder. |
 | `plugin.url` | http only, required. Where the core reaches you. |
+| `plugin.auth_secret` | http only, optional. Name of a secret the core sends you as `Authorization: Bearer <value>`. Added in contract 2.2. See §2. |
+| `plugin.tls_fingerprint` | http only, optional. `sha256:` + 64 lowercase hex — the certificate the core pins instead of the trust store. Added in contract 2.2. See §2. |
 | `plugin.description` | One line for humans. Not read by the model — tool descriptions are. |
 | `plugin.provides` | Optional, default `[]`. What kind of service your plugin **is** — `"tts"`, `"stt"`. **A list**, always. Added in contract 2.1; almost every plugin leaves it out. See below. |
 | `permissions.network` | Hostname allowlist. Empty means no outbound network at all. |
@@ -424,13 +447,21 @@ contract, not about features:
   and the refusal names what changed rather than only that something did.
 
 Check the core's current contract version in `personacore.CONTRACT_VERSION`. It
-is `"2.1"` today.
+is `"2.2"` today.
 
 **A minor gap and a major gap read differently, and they should.** A manifest
 pinning a minor this core does not have yet is told exactly that — *"this plugin
-needs plugin contract '2.2' and this core implements '2.1' — an earlier minor
+needs plugin contract '2.3' and this core implements '2.2' — an earlier minor
 version"* — and told it can drop to `"2.x"` if it did not really need anything
 newer. Nothing is broken in that case; the core is just behind.
+
+### What changed in 2.2
+
+**`auth_secret` and `tls_fingerprint` were added** (§2), both http-only: a
+bearer token the core sends you, and a certificate pinned instead of the
+system trust store. Purely additive, the same as 2.1 below — an old manifest
+mentions neither, gets `null` for both, and is unaffected. Pin
+`contract = "2.2"` only if your plugin will not work without one of them.
 
 ### What changed in 2.1
 

@@ -47,6 +47,8 @@ subscribes = []
 | `description` | string | no | `""` | One line for humans, shown in the plugin list. **Not** read by the model — the description the model reads is the one on the tool in your code. |
 | `entry` | string | stdio only | `null` | The command that starts you, relative to your folder. Required for stdio, ignored for http. |
 | `url` | string | http only | `null` | Where the core reaches you. Required for http, ignored for stdio. Must be `http://` or `https://`. |
+| `auth_secret` | string | no | `null` | http only, meaningful. Name of a secret the core sends as `Authorization: Bearer <value>`. Added in contract 2.2. See below. |
+| `tls_fingerprint` | string | no | `null` | http only, meaningful. `sha256:` + 64 lowercase hex — the certificate pinned instead of the trust store. Added in contract 2.2. See below. |
 | `provides` | list of strings | no | `[]` | What kind of service the plugin **is** — `"tts"`, `"stt"`. Added in contract 2.1. Always a list. Unknown names and duplicates are refused. |
 
 ### `name`
@@ -83,7 +85,7 @@ contract '1' must look like '2.x' or '2.0' — the contract version this plugin
 targets
 ```
 
-Compatibility is decided against `personacore.CONTRACT_VERSION`, which is `"2.1"` in the core this wiki documents. A manifest from an older major is refused, and the refusal says **what changed**, not only that something did:
+Compatibility is decided against `personacore.CONTRACT_VERSION`, which is `"2.2"` in the core this wiki documents. A manifest from an older major is refused, and the refusal says **what changed**, not only that something did:
 
 ```
 plugins/kitchen-timer/: this plugin was written for plugin contract '1.x' and
@@ -93,12 +95,12 @@ is now a list of tables instead of a list of names. […] Edit the plugin's
 manifest.toml and install it again (spec 4.5).
 ```
 
-A **minor** gap is a different sentence, because it is a different situation: nothing is broken, this core is simply older than the plugin asked for. A manifest pinning `contract = "2.2"` on this 2.1 core gets:
+A **minor** gap is a different sentence, because it is a different situation: nothing is broken, this core is simply older than the plugin asked for. A manifest pinning `contract = "2.3"` on this 2.2 core gets:
 
 ```
-plugins/kitchen-timer/: this plugin needs plugin contract '2.2' and this core
-implements '2.1' -- an earlier minor version, so something the plugin asks for
-is not here yet and it has not been loaded. Update this core to contract 2.2 or
+plugins/kitchen-timer/: this plugin needs plugin contract '2.3' and this core
+implements '2.2' -- an earlier minor version, so something the plugin asks for
+is not here yet and it has not been loaded. Update this core to contract 2.3 or
 later, or -- if the plugin does not really need anything newer -- edit its
 manifest.toml to contract = "2.x", which loads on any 2.y core (spec 4.5).
 ```
@@ -148,6 +150,34 @@ an http plugin must declare 'url' — where the core reaches it
 The scheme is checked when the core connects rather than at load:
 
 > Plugin 'vision' declares the address 'file:///x', which is not an http:// or https:// URL. HTTP plugins are reached over the network and nothing else.
+
+### `auth_secret` and `tls_fingerprint` — a bearer token and a pinned certificate
+
+Added in **contract 2.2**. Both http-only, both optional, both ignored (with one warning) on a stdio manifest — see [HTTP Transport](Plugin-HTTP-Transport#secrets-are-not-delivered-to-an-http-plugin) for what they actually do at connection time. This section is only the load-time shape.
+
+```toml
+[plugin]
+transport       = "http"
+url             = "https://vision:8080/mcp"
+auth_secret     = "vision_token"
+tls_fingerprint = "sha256:2f5b1b1c9e3f8a7d4c6e0b2a1d9f8e7c6b5a4938271605f4e3d2c1b0a9887766"
+```
+
+`auth_secret` is a **name**, checked no differently than any other string field at load time — whether the secret it names actually exists is a connect-time question (`SecretStore.scoped`), not a manifest-shape one. `tls_fingerprint` gets two load-time checks:
+
+```
+tls_fingerprint 'sha1:ab12…' must look like 'sha256:' followed by 64
+lowercase hex characters -- the SHA-256 fingerprint of the server's leaf
+certificate, in DER. […]
+```
+
+```
+plugin 'vision' pins a certificate but the URL is not https: 'http://vision:8080/mcp'.
+tls_fingerprint verifies a TLS connection, so it has nothing to check against
+an http:// url. Use https:// or remove tls_fingerprint.
+```
+
+A stdio manifest naming either field still loads — additive, per contract 4.5 — with one log line naming which fields were ignored, so an author who copy-pasted a block meant for an http plugin can see it did nothing rather than trust silently that it did.
 
 ### `provides` — what the plugin *is*
 
