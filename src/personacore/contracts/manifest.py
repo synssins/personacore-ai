@@ -22,6 +22,13 @@ _CONTRACT_RE = re.compile(r"^\d+\.(x|\d+)$")
 # `sha256:` plus the 64 lowercase hex characters of a SHA-256 digest — contract 2.2.
 _TLS_FINGERPRINT_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 
+# An endpoint-set entry's own pin. The same digest, with the `sha256:` prefix
+# optional: the entries are written by an enrolment flow that has just computed
+# a fingerprint, and a bare 64-hex digest is what every tool that prints one
+# hands over. Normalised to the prefixed form on the way in, so everything
+# downstream compares one shape (`mcp_client._check_tls_fingerprint`).
+_ENDPOINT_PIN_RE = re.compile(r"^(?:sha256:)?[0-9a-f]{64}$")
+
 # Both are matched with `fullmatch`, never `match` (the 2026-08 security review).
 #
 # Python's `$` also matches immediately before a trailing newline, so
@@ -130,6 +137,72 @@ def tls_fingerprint_needs_https_message(plugin: str, url: str) -> str:
         f"plugin {plugin!r} pins a certificate but the URL is not https: {url!r}. "
         "tls_fingerprint verifies a TLS connection, so it has nothing to check "
         "against an http:// url. Use https:// or remove tls_fingerprint."
+    )
+
+
+# -- the endpoint set (`urls`) ---------------------------------------------
+#
+# These messages are the endpoint set's half of the wording above. They
+# are separate functions rather than parameters on the two above, because the
+# single ``url``/``tls_fingerprint`` pair's text is frozen: a plugin that
+# declares only ``url`` must read exactly as it did before this field existed,
+# and the surest way to keep that true is for nothing on its path to have
+# gained an argument.
+
+
+def endpoint_pin_format_message(url: str, value: str) -> str:
+    """Shown when an ``urls`` entry's ``pin`` is not a SHA-256 digest."""
+    return (
+        f"the pin for {url!r} is {value!r}, which must be 64 lowercase hex "
+        "characters -- the SHA-256 fingerprint of that address's leaf "
+        "certificate, in DER -- optionally written with a 'sha256:' prefix. For "
+        "example, openssl x509 -in cert.pem -outform DER | sha256sum prints the "
+        "hex half."
+    )
+
+
+def endpoint_pin_needs_https_message(plugin: str, url: str) -> str:
+    """Shown when an ``urls`` entry carries a ``pin`` but is not an https address."""
+    return (
+        f"plugin {plugin!r} pins a certificate for {url!r}, but that URL is not "
+        "https. A pin verifies a TLS connection, so it has nothing to check "
+        "against an http:// url. Use https:// or remove that entry's pin."
+    )
+
+
+def endpoint_auth_secret_is_blank_message(url: str) -> str:
+    """Shown when an entry's ``auth_secret`` is present but says nothing."""
+    return (
+        f"the auth_secret for {url!r} is blank. It is the *name* of a secret in "
+        "this plugin's own store, not the token itself -- give the name, or "
+        "remove the line and the plugin's own auth_secret is sent instead."
+    )
+
+
+ENDPOINT_SET_MUST_NOT_BE_EMPTY = (
+    "urls is present but empty. An http plugin reaches its addresses through "
+    "url, or through urls with at least one { url = ..., pin = ... } entry -- "
+    "an empty list declares nothing at all. Remove the line, or add an entry."
+)
+"""Shown when ``urls = []``. Refused rather than treated as absent, because an
+empty list is far more likely to be a generator that produced nothing than an
+author deliberately writing "no addresses"."""
+
+
+def endpoint_set_pin_belongs_in_the_entry_message(plugin: str) -> str:
+    """Shown when ``urls`` and ``tls_fingerprint`` are declared with no ``url``.
+
+    ``tls_fingerprint`` pins the certificate at ``url``. With no ``url`` there
+    is nothing for it to pin, and the plugin almost certainly meant to put the
+    digest on the entry it belongs to -- so say that, rather than let the
+    single field's own message report that a URL which was never written is not
+    https.
+    """
+    return (
+        f"plugin {plugin!r} declares tls_fingerprint and urls but no url. "
+        "tls_fingerprint pins the certificate at url; each urls entry carries "
+        "its own pin instead. Put the digest in that entry's pin = ..., or add "
+        "the url it was meant for."
     )
 
 
@@ -396,6 +469,67 @@ class EventDeclaration(BaseModel):
     subscribes: list[str] = Field(default_factory=list)
 
 
+class EndpointDeclaration(BaseModel):
+    """One address in an http plugin's optional endpoint set — see :attr:`PluginIdentity.urls`.
+
+    An address and, optionally, the pin for the certificate served *at that
+    address*. Deliberately its own two fields rather than a reuse of
+    :attr:`PluginIdentity.url` and :attr:`PluginIdentity.tls_fingerprint`: the
+    set exists because one plugin can front several machines, and each machine
+    terminates TLS itself with its own self-signed certificate. A pin shared
+    across the set would be a pin that matches nothing.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    url: str
+    """The address of this one endpoint. Required — an entry with no address is
+    not an endpoint."""
+
+    pin: str | None = None
+    """``sha256:`` plus 64 lowercase hex, or the bare 64 hex characters, of this
+    endpoint's leaf certificate in DER. Normalised to the prefixed form.
+
+    Optional, exactly as :attr:`PluginIdentity.tls_fingerprint` is: an endpoint
+    with a certificate the system trust store already accepts does not need
+    one. When present the address must be ``https://``
+    (:func:`endpoint_pin_needs_https_message`).
+    """
+
+    auth_secret: str | None = None
+    """The **name** of the secret to send as this endpoint's bearer token.
+
+    The third of the three facts that belong to one machine, and it travels
+    with the other two for the same reason the pin does: each machine issues
+    its own token, so a credential shared across the set is a credential the
+    other machines will refuse. Looked up in the *plugin's* namespace, which is
+    already per-plugin, so N named secrets under one plugin need no new
+    machinery.
+
+    Optional. An entry that does not name one is sent the plugin's own
+    :attr:`PluginIdentity.auth_secret`, if it has one — which is what a set of
+    machines standing behind a single shared credential looks like.
+
+    This exists **only inside an entry**. A plugin declaring one ``url`` reads
+    its bearer token from :attr:`PluginIdentity.auth_secret` exactly as it
+    always has, and never from a list.
+    """
+
+    def model_post_init(self, _context: object) -> None:
+        """Check and normalise the pin here, where the address is also in hand.
+
+        A field validator would have the digest but not the URL it belongs to,
+        and "that is not a SHA-256" is a much worse sentence for an author with
+        four entries than "the pin for https://... is not a SHA-256".
+        """
+        if self.pin is None:
+            return
+        if not _ENDPOINT_PIN_RE.fullmatch(self.pin):
+            raise ValueError(endpoint_pin_format_message(self.url, self.pin))
+        if not self.pin.startswith("sha256:"):
+            self.pin = f"sha256:{self.pin}"
+
+
 class PluginIdentity(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -410,6 +544,34 @@ class PluginIdentity(BaseModel):
 
     url: str | None = None
     """Base URL for http plugins. Required for http, ignored for stdio."""
+
+    urls: list[EndpointDeclaration] | None = None
+    """An optional *set* of addresses for one http plugin — ADR-0048.
+
+    **Additive, and beside :attr:`url` rather than instead of it.** A plugin
+    declaring only ``url`` never sees this field: it is validated by nothing it
+    reaches, connected by the path it has always used, and reported on the
+    health row it has always had. That is not an accident of the implementation
+    — it is the shape of the change, taken deliberately over the tidier
+    alternative of making every plugin an endpoint set with one entry.
+
+    It exists for the one plugin that fronts several machines. Each entry
+    carries its own address and its own :attr:`EndpointDeclaration.pin`,
+    because each machine terminates TLS itself with its own certificate. The
+    core holds one connection and one health row per entry, all under this one
+    plugin record: the machines are part of the plugin, not plugins of their
+    own.
+
+    ``None`` (absent) and ``[]`` are different: absent is the ordinary case,
+    empty is refused (:data:`ENDPOINT_SET_MUST_NOT_BE_EMPTY`).
+
+    ``url`` and ``urls`` may both be present. ``url`` is then the plugin's own
+    address and keeps every behaviour it has today; the entries are additional.
+
+    Meaningful only when ``transport = "http"``. A stdio plugin declaring it is
+    accepted and ignored, with one warning line, for the same reason
+    :attr:`auth_secret` is.
+    """
 
     auth_secret: str | None = None
     """Contract 2.2. The **name** of a secret in the core's store, sent as
@@ -528,9 +690,60 @@ class PluginManifest(BaseModel):
         transport = self.plugin.transport
         if transport is Transport.STDIO and not self.plugin.entry:
             raise ValueError("a stdio plugin must declare 'entry' — the command that starts it")
-        if transport is Transport.HTTP and not self.plugin.url:
+        if transport is Transport.HTTP and not self.plugin.url and self.plugin.urls is None:
             raise ValueError("an http plugin must declare 'url' — where the core reaches it")
+        # Runs first, and returns immediately unless `urls` is present, so a
+        # plugin that does not declare an endpoint set reaches
+        # `_check_http_auth_fields` in exactly the state it always has —
+        # including which error it hits first.
+        self._check_endpoint_set(transport)
         self._check_http_auth_fields(transport)
+
+    def _check_endpoint_set(self, transport: Transport) -> None:
+        """``urls`` — ADR-0048. Inert for every plugin that does not declare it.
+
+        Written as its own method, called before
+        :meth:`_check_http_auth_fields` and returning on the first line unless
+        ``urls`` is present, so that the single-``url`` path is not merely
+        *equivalent* to what it was but is literally the same code reached in
+        the same order. The endpoint set is a second path beside it, never a
+        generalisation of it.
+
+        Each entry's ``pin`` format is already checked, and normalised, by
+        :meth:`EndpointDeclaration.model_post_init`. What is left here is the
+        pair of checks that need something the entry does not hold: the plugin
+        name, for the wording, and the scheme rule the single field gets.
+        """
+        urls = self.plugin.urls
+        if urls is None:
+            return
+        if transport is not Transport.HTTP:
+            self._warn_http_only_fields(["urls"])
+            return
+        if not urls:
+            raise ValueError(ENDPOINT_SET_MUST_NOT_BE_EMPTY)
+        if self.plugin.tls_fingerprint is not None and not self.plugin.url:
+            raise ValueError(endpoint_set_pin_belongs_in_the_entry_message(self.plugin.name))
+        for endpoint in urls:
+            if endpoint.auth_secret is not None and not endpoint.auth_secret.strip():
+                raise ValueError(endpoint_auth_secret_is_blank_message(endpoint.url))
+            if endpoint.pin is None:
+                continue
+            if urlparse(endpoint.url).scheme.lower() != "https":
+                raise ValueError(
+                    endpoint_pin_needs_https_message(self.plugin.name, endpoint.url)
+                )
+
+    def _warn_http_only_fields(self, fields: list[str]) -> None:
+        """One warning line for an http-only field on a stdio plugin."""
+        # Deferred import, for the reason given in `_check_http_auth_fields`.
+        from personacore.audit import get_logger
+
+        get_logger(__name__).warning(
+            "http_only_field_ignored_on_stdio",
+            plugin=self.plugin.name,
+            fields=fields,
+        )
 
     def _check_http_auth_fields(self, transport: Transport) -> None:
         """``auth_secret`` and ``tls_fingerprint`` — contract 2.2.

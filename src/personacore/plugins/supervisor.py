@@ -37,10 +37,12 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from personacore.audit import get_logger
+from personacore.contracts.manifest import EndpointDeclaration
 from personacore.plugins.discovery import PluginRecord
-from personacore.plugins.health import PluginHealth, PluginState
+from personacore.plugins.health import EndpointHealth, PluginHealth, PluginState
 from personacore.plugins.mcp_client import (
     ChildEnvironmentError,
+    EndpointSessionFactory,
     MissingPluginSecrets,
     PluginContractMismatch,
     PluginSession,
@@ -445,6 +447,335 @@ class PluginSupervisor:
 
 
 # ---------------------------------------------------------------------------
+# The second path: one plugin, several endpoints (ADR-0048)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _BoundEndpointFactory:
+    """A :class:`SessionFactory` for one entry of a plugin's endpoint set.
+
+    The adapter that lets :class:`EndpointSetSupervisor` be built out of real
+    :class:`PluginSupervisor` instances instead of a parallel lifecycle. Each
+    child asks for "the session for this record" exactly as every supervisor in
+    the house does, and this turns that into "the session for this record *at
+    this address*".
+
+    Note which way the reuse runs. The *set* is expressed in terms of the
+    single connection, one per entry; the single connection is not expressed in
+    terms of a set. A plugin that declares one ``url`` is built by
+    :class:`PluginSupervisor` directly, through the factory's own
+    :meth:`~personacore.plugins.mcp_client.SessionFactory.connect`, with
+    nothing on its path that knows an endpoint set exists.
+    """
+
+    factory: EndpointSessionFactory
+    endpoint: EndpointDeclaration
+
+    def connect(self, record: PluginRecord) -> Any:
+        return self.factory.connect_endpoint(record, self.endpoint)
+
+
+class EndpointSetSupervisor:
+    """Owns the lifecycle of one plugin that has **several** endpoints.
+
+    Built only for a plugin whose manifest declares ``plugin.urls``, which is
+    the workstation plugin and nothing else. It presents the same surface to
+    :class:`~personacore.plugins.host.PluginHost` as
+    :class:`PluginSupervisor` — ``record``, ``name``, ``tools``, ``state``,
+    ``health()``, ``is_callable``, ``start``, ``stop``, ``call`` — so the host
+    branches once, when it decides which to build, and never again.
+
+    **This is a second path, not a generalisation of the first.** The owner
+    approved adding an endpoint set beside the single ``url`` and refused the
+    tidier alternative of making every plugin a set with one entry (ADR-0048).
+    So :class:`PluginSupervisor` is untouched, and a plugin declaring one
+    ``url`` never reaches this class — it is not a set of one here, it is the
+    thing it always was.
+
+    What is genuinely shared is what should be: every endpoint's connection,
+    backoff, restart ceiling, contract reconciliation and containment are a
+    real :class:`PluginSupervisor`, because those are properties of *one
+    connection to one MCP server* and there is no second implementation of them
+    anywhere.
+    """
+
+    def __init__(
+        self,
+        record: PluginRecord,
+        factory: EndpointSessionFactory,
+        *,
+        config: SupervisorConfig | None = None,
+    ) -> None:
+        endpoints = record.manifest.plugin.urls
+        if not endpoints:
+            raise ValueError(
+                f"plugin {record.name!r} has no endpoint set; a plugin that declares "
+                "one url is supervised by PluginSupervisor"
+            )
+        if not hasattr(factory, "connect_endpoint"):
+            raise TypeError(
+                f"plugin {record.name!r} declares an endpoint set, which needs a "
+                "session factory that can open one endpoint (connect_endpoint)"
+            )
+        self._record = record
+        self._config = config or SupervisorConfig()
+        self._disabled = False
+        self._children: dict[str, PluginSupervisor] = {
+            endpoint.url: PluginSupervisor(
+                record, _BoundEndpointFactory(factory, endpoint), config=self._config
+            )
+            for endpoint in endpoints
+        }
+        """Keyed by the address as written. Two addresses for the same machine —
+        an IPv4 and an IPv6, which decision 0.4 of the reshape plan requires —
+        are two connections, and the key is what tells them apart."""
+
+    # -- read-only surface -------------------------------------------------
+
+    @property
+    def record(self) -> PluginRecord:
+        return self._record
+
+    @property
+    def name(self) -> str:
+        return self._record.name
+
+    @property
+    def endpoints(self) -> Mapping[str, PluginSupervisor]:
+        """The per-endpoint supervisors, by address. For the plugin's own
+        settings page and for a resolver that has picked one."""
+        return dict(self._children)
+
+    @property
+    def tools(self) -> Mapping[str, RemoteTool]:
+        """One flat catalogue for the plugin, merged across endpoints.
+
+        Owner decision: the machine is a tool *argument*, not part of the tool
+        name, so five machines running the same server publish one set of
+        tools, not five. Merged from the endpoints that are answering — a
+        machine that is offline does not remove the tool, because another
+        machine can still run it.
+        """
+        merged: dict[str, RemoteTool] = {}
+        for child in self._children.values():
+            if child.is_callable:
+                merged.update(child.tools)
+        return merged
+
+    @property
+    def state(self) -> PluginState:
+        return self._plugin_state()
+
+    @property
+    def is_callable(self) -> bool:
+        return any(child.is_callable for child in self._children.values())
+
+    def health(self) -> PluginHealth:
+        """One plugin row, carrying one endpoint row per address.
+
+        The plugin row deliberately does **not** name an address. Machines
+        belong to the plugin and appear on the plugin's own settings page, not
+        in the plugin list (reshape plan decision 0.1), so the list says how
+        many are not answering and the page says which.
+        """
+        children = {url: child.health() for url, child in self._children.items()}
+        rows = tuple(
+            EndpointHealth(
+                url=url,
+                state=row.state,
+                tools=row.tools,
+                restart_count=row.restart_count,
+                last_error=row.last_error,
+                last_error_at=row.last_error_at,
+                started_at=row.started_at,
+                next_retry_at=row.next_retry_at,
+                terminal=row.terminal,
+            )
+            for url, row in children.items()
+        )
+        # "Not answering" is asked of the live supervisor, not of the row's
+        # state: an endpoint waiting out a restart backoff reads DEGRADED,
+        # which is usable-if-it-comes-back on a plugin row and is plainly
+        # *down* when the question is how many machines are up right now.
+        down = sum(1 for child in self._children.values() if not child.is_callable)
+        stamps = [row.last_error_at for row in children.values() if row.last_error_at]
+        return PluginHealth(
+            name=self._record.name,
+            state=self._plugin_state(),
+            transport=self._record.manifest.plugin.transport.value,
+            tools=tuple(sorted(self.tools)),
+            restart_count=sum(row.restart_count for row in children.values()),
+            last_error=self._plugin_error(down, len(rows)),
+            last_error_at=max(stamps, default=None),
+            started_at=min(
+                (row.started_at for row in children.values() if row.started_at is not None),
+                default=None,
+            ),
+            next_retry_at=min(
+                (row.next_retry_at for row in children.values() if row.next_retry_at is not None),
+                default=None,
+            ),
+            terminal=all(row.terminal for row in children.values()),
+            waiting_for_secrets=tuple(
+                sorted({name for row in children.values() for name in row.waiting_for_secrets})
+            ),
+            endpoints=rows,
+        )
+
+    # -- lifecycle ---------------------------------------------------------
+
+    async def start(self) -> None:
+        """Connect every endpoint at once.
+
+        Concurrently, because one unreachable machine must not hold up the
+        others: ``PluginSupervisor.start`` already returns as soon as its own
+        first attempt has resolved either way, so the slowest endpoint sets the
+        pace rather than the sum of them.
+        """
+        self._disabled = False
+        await asyncio.gather(*(child.start() for child in self._children.values()))
+
+    async def stop(self, *, disable: bool = False) -> None:
+        self._disabled = disable
+        await asyncio.gather(
+            *(child.stop(disable=disable) for child in self._children.values())
+        )
+
+    async def call(
+        self,
+        tool: str,
+        arguments: Mapping[str, Any],
+        *,
+        timeout_seconds: float | None = None,
+        endpoint: str | None = None,
+    ) -> RemoteToolResult:
+        """One tool call, against one endpoint.
+
+        ``endpoint`` names the address to run it on. Choosing that address from
+        what the caller said is a resolver's job and is not done here — this
+        raises rather than guessing, because a wrong machine is a worse answer
+        than a question (reshape plan decision 0.3: never a default, never a
+        silent nearest-match).
+
+        **Ambiguity is a property of what is configured, not of what is
+        reachable.** Written out because the obvious version of this method is
+        wrong in a way that looks right: filter the endpoints down to the ones
+        currently answering, and if exactly one is left, use it. Three machines
+        with two asleep then reduces to one, the guard never fires, and a shell
+        command runs on whichever desktop happened to be awake — a default
+        chosen by chance, which is precisely what was ruled out. So the count
+        that decides is ``len(self._children)``, and being offline never
+        promotes a machine to the one that was meant.
+
+        Raises:
+            PluginTransportError: more than one machine is configured and none
+                was named; the named one is not reachable; or none is. Three
+                different things to the person on the other end, so three
+                different sentences — the host turns whichever it gets into
+                what the assistant says, and that is where the owner's "show
+                the list and ask" comes from.
+        """
+        if endpoint is not None:
+            child = self._children.get(endpoint)
+            if child is None:
+                raise PluginTransportError(
+                    f"the {self._record.name} plugin has nothing at {endpoint}"
+                )
+            if not child.is_callable:
+                raise PluginTransportError(self._machine_offline_message(tool, endpoint))
+            return await child.call(tool, arguments, timeout_seconds=timeout_seconds)
+
+        reachable = [url for url, child in self._children.items() if child.is_callable]
+        if len(self._children) > 1:
+            # Asked before "is anything up", because with several machines
+            # configured the answer is a question either way — but which
+            # question depends on whether any of them can be reached.
+            if not reachable:
+                raise PluginTransportError(self._nothing_reachable_message(tool))
+            raise PluginTransportError(self._which_machine_message(tool))
+
+        (only,) = self._children.values()
+        if not only.is_callable:
+            raise PluginTransportError(self._nothing_reachable_message(tool))
+        return await only.call(tool, arguments, timeout_seconds=timeout_seconds)
+
+    # -- the three refusals, which are three different things ---------------
+
+    def _listing(self) -> str:
+        """Every configured machine and whether it is answering.
+
+        Both halves are useful and neither is the core's to choose between: the
+        owner may want the one that is up, or may want to know the one he had
+        in mind is down. This is the list the assistant shows him, so the
+        addresses are in it — unlike the plugin list row, where a machine does
+        not belong.
+        """
+        return ", ".join(
+            f"{url} ({'online' if child.is_callable else 'offline'})"
+            for url, child in self._children.items()
+        )
+
+    def _which_machine_message(self, tool: str) -> str:
+        """More than one machine configured, and none named."""
+        return (
+            f"the {self._record.name} plugin has {len(self._children)} machines, so "
+            f"{tool} needs to say which one. Machines: {self._listing()}"
+        )
+
+    def _machine_offline_message(self, tool: str, endpoint: str) -> str:
+        """A machine was named, and it is not answering."""
+        return (
+            f"the {self._record.name} plugin cannot reach {endpoint} — that machine "
+            f"is offline, so {tool} did not run. It was not run anywhere else."
+        )
+
+    def _nothing_reachable_message(self, tool: str) -> str:
+        """No machine is answering at all."""
+        return (
+            f"the {self._record.name} plugin cannot reach any of its machines, so "
+            f"{tool} did not run. Machines: {self._listing()}"
+        )
+
+    # -- the plugin's own state, from its endpoints' ------------------------
+
+    def _plugin_state(self) -> PluginState:
+        states = [child.state for child in self._children.values()]
+        if self._disabled or all(state is PluginState.DISABLED for state in states):
+            return PluginState.DISABLED
+        if all(state is PluginState.HEALTHY for state in states):
+            return PluginState.HEALTHY
+        if any(state in (PluginState.HEALTHY, PluginState.DEGRADED) for state in states):
+            # Some machine is answering, so the plugin is usable and the
+            # assistant should keep offering its tools — the same reason
+            # `PluginHealth.is_callable` includes DEGRADED.
+            return PluginState.DEGRADED
+        if any(state is PluginState.STARTING for state in states):
+            return PluginState.STARTING
+        return PluginState.FAILED
+
+    def _plugin_error(self, down: int, total: int) -> str | None:
+        """The plugin row's one sentence — a count, never an address.
+
+        Machines belong to the plugin's own settings page (reshape plan
+        decision 0.1). An address in the plugin list would put a machine in the
+        one place the owner said machines do not appear, so the list says how
+        many and the page says which.
+        """
+        if not down:
+            return None
+        if down == total:
+            return (
+                f"The {self._record.name} plugin cannot reach any of its "
+                f"{total} machines. Open its settings to see why."
+            )
+        return (
+            f"The {self._record.name} plugin cannot reach {down} of its "
+            f"{total} machines. Open its settings to see which."
+        )
+
+
+# ---------------------------------------------------------------------------
 # Manifest / server reconciliation — spec section 5.1
 # ---------------------------------------------------------------------------
 
@@ -550,6 +881,7 @@ def _describe(exc: BaseException) -> str:
 
 
 __all__ = [
+    "EndpointSetSupervisor",
     "PluginSupervisor",
     "SupervisorConfig",
     "reconcile_tools",

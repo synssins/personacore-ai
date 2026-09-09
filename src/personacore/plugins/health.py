@@ -50,6 +50,62 @@ class PluginState(StrEnum):
 
 
 @dataclass(frozen=True)
+class EndpointHealth:
+    """One endpoint's status, inside one plugin's row — ADR-0048.
+
+    A plugin that declares ``plugin.urls`` holds one connection per entry, and
+    an operator looking at it needs to know which of them is up. This is that,
+    per entry.
+
+    **It is not a plugin row and must never become one.** The endpoints belong
+    to the plugin: they are listed inside its row and on its own settings page,
+    never alongside the other plugins in the list. A plugin that declares only
+    ``url`` has none of these at all — the field on
+    :class:`PluginHealth` is empty for it, and its ``to_dict`` does not mention
+    endpoints, so nothing that renders a plugin today learns a new key.
+
+    Inert, for the same reason :class:`PluginHealth` is.
+    """
+
+    url: str
+    """The address, exactly as the manifest wrote it. The identity of the row:
+    a set may hold two addresses for the same machine (an IPv4 and an IPv6),
+    and they are two connections and two rows."""
+
+    state: PluginState
+    tools: tuple[str, ...] = ()
+    restart_count: int = 0
+    last_error: str | None = None
+    """Plain English, safe to show verbatim. Never contains a secret value, and
+    never the pin or the bearer token this endpoint is reached with."""
+
+    last_error_at: datetime | None = None
+    started_at: datetime | None = None
+    next_retry_at: datetime | None = None
+    terminal: bool = False
+
+    @property
+    def is_callable(self) -> bool:
+        """Whether a call may be routed to this endpoint — see
+        :attr:`PluginHealth.is_callable`, which this mirrors."""
+        return self.state in (PluginState.HEALTHY, PluginState.DEGRADED)
+
+    def to_dict(self) -> dict[str, Any]:
+        """JSON-ready form, nested inside the plugin's own row."""
+        return {
+            "url": self.url,
+            "state": self.state.value,
+            "tools": list(self.tools),
+            "restart_count": self.restart_count,
+            "last_error": self.last_error,
+            "last_error_at": self.last_error_at.isoformat() if self.last_error_at else None,
+            "started_at": self.started_at.isoformat() if self.started_at else None,
+            "next_retry_at": self.next_retry_at.isoformat() if self.next_retry_at else None,
+            "terminal": self.terminal,
+        }
+
+
+@dataclass(frozen=True)
 class PluginHealth:
     """One plugin's status, as of the moment it was asked for."""
 
@@ -95,6 +151,16 @@ class PluginHealth:
     and was given all of them.
     """
 
+    endpoints: tuple[EndpointHealth, ...] = ()
+    """One row per entry of ``plugin.urls`` — ADR-0048. Empty for every plugin
+    that does not declare an endpoint set, which is every plugin but one.
+
+    :attr:`state`, :attr:`tools` and :attr:`restart_count` above still describe
+    *the plugin*: whether the assistant can use it at all, the one flat tool
+    catalogue it exposes, and how much trouble it has been. These say which
+    machine behind it is answering.
+    """
+
     @property
     def is_waiting_for_secrets(self) -> bool:
         """Whether this plugin is held up purely waiting for a credential.
@@ -115,8 +181,15 @@ class PluginHealth:
         return self.state in (PluginState.HEALTHY, PluginState.DEGRADED)
 
     def to_dict(self) -> dict[str, Any]:
-        """JSON-ready form for the admin API (spec section 9)."""
-        return {
+        """JSON-ready form for the admin API (spec section 9).
+
+        ``endpoints`` appears only when there are some. A plugin that declares
+        one ``url`` — every plugin installed today — produces exactly the keys
+        it produced before the endpoint set existed, so nothing reading this
+        has to learn about a feature it will never see. That is the same rule
+        the manifest field follows, applied where it is observable.
+        """
+        payload: dict[str, Any] = {
             "name": self.name,
             "state": self.state.value,
             "transport": self.transport,
@@ -129,6 +202,9 @@ class PluginHealth:
             "terminal": self.terminal,
             "waiting_for_secrets": list(self.waiting_for_secrets),
         }
+        if self.endpoints:
+            payload["endpoints"] = [endpoint.to_dict() for endpoint in self.endpoints]
+        return payload
 
 
 @dataclass(frozen=True)
@@ -169,4 +245,4 @@ class PluginOutput:
         return not (self.dropped or self.clipped)
 
 
-__all__ = ["PluginHealth", "PluginOutput", "PluginState"]
+__all__ = ["EndpointHealth", "PluginHealth", "PluginOutput", "PluginState"]

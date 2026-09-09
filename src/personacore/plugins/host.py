@@ -79,7 +79,11 @@ from personacore.plugins.mcp_client import (
     PluginTransportError,
     SessionFactory,
 )
-from personacore.plugins.supervisor import PluginSupervisor, SupervisorConfig
+from personacore.plugins.supervisor import (
+    EndpointSetSupervisor,
+    PluginSupervisor,
+    SupervisorConfig,
+)
 
 logger = get_logger(__name__)
 
@@ -128,7 +132,7 @@ class PluginHost:
         self._factory = session_factory or McpSessionFactory(
             secrets=secrets, request_timeout=self._config.supervisor.call_timeout
         )
-        self._supervisors: dict[str, PluginSupervisor] = {}
+        self._supervisors: dict[str, PluginSupervisor | EndpointSetSupervisor] = {}
         self._load_failures: list[PluginLoadFailure] = []
         self._disabled: set[str] = set(disabled)
         self._lock = asyncio.Lock()
@@ -273,7 +277,21 @@ class PluginHost:
                 forget(name)
 
     async def _start_one(self, record: PluginRecord) -> None:
-        supervisor = PluginSupervisor(record, self._factory, config=self._config.supervisor)
+        try:
+            supervisor = self._supervisor_for(record)
+        except (TypeError, ValueError) as exc:
+            # A manifest this core cannot supervise — today, an endpoint set on
+            # a session factory that cannot open one endpoint. A red row saying
+            # so, not an exception: one plugin that cannot be built must never
+            # abort the reload of the others (spec 5.1), and a plugin that is
+            # simply missing from the list is how a fault stays unnoticed.
+            logger.error("plugin_start_failed", plugin=record.name, error=repr(exc))
+            self._load_failures.append(
+                PluginLoadFailure(
+                    source=record.manifest_path, name=record.name, message=str(exc)
+                )
+            )
+            return
         self._supervisors[record.name] = supervisor
         try:
             await supervisor.start()
@@ -282,6 +300,25 @@ class PluginHost:
             # braces, because one plugin failing to start must never abort the
             # reload of the others (spec 5.1).
             logger.error("plugin_start_failed", plugin=record.name, error=repr(exc))
+
+    def _supervisor_for(self, record: PluginRecord) -> PluginSupervisor | EndpointSetSupervisor:
+        """The one branch between the single endpoint and the endpoint set.
+
+        Deliberately the *only* one. A plugin that declares ``url`` — every
+        plugin installed today — is built exactly as it always was, by
+        :class:`PluginSupervisor`, and nothing downstream of here asks the
+        question again: both classes present the same surface, so ``list_tools``,
+        ``call_tool``, ``health`` and ``reload`` are unchanged.
+
+        A plugin declaring ``urls`` is refused rather than quietly downgraded
+        when the session factory cannot open one endpoint — a fake factory in a
+        test, say. Falling back to :class:`PluginSupervisor` there would connect
+        the plugin to whatever ``url`` happened to be beside the set and report
+        it healthy, which is a worse answer than a red row saying why.
+        """
+        if record.manifest.plugin.urls:
+            return EndpointSetSupervisor(record, self._factory, config=self._config.supervisor)
+        return PluginSupervisor(record, self._factory, config=self._config.supervisor)
 
     async def _stop_one(self, name: str) -> None:
         supervisor = self._supervisors.pop(name, None)
