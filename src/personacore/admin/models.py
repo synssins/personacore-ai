@@ -744,6 +744,29 @@ class PairingIssued(BaseModel):
     expires_in_s: int
 
 
+class PairingRefusalView(BaseModel):
+    """Why a redeemed pairing code did not become a machine.
+
+    A code and a name. **Never the refusal sentence** — that was written for
+    the person standing at the workstation, it already went back to the Agent
+    over the wire, and it is free text that can name an *already enrolled*
+    machine and its address. The screen owns the wording it shows for each
+    reason, so there is one copy of it and it is the one that was reviewed.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str
+    """A short code — lowercase, digits and underscores. ``name_taken`` and
+    ``machine_unreachable`` are the two the refusal cards are built on;
+    ``refused`` is the generic, and the screen must render it, because a
+    refusal with no more specific code still has to close the dialog."""
+
+    machine: str | None = None
+    """What the machine called itself, or ``None`` if it was turned away before
+    it said. Held on the same terms as :attr:`PairingCurrent.claimed_by`."""
+
+
 class PairingCurrent(BaseModel):
     """``GET /admin/api/pairings/current`` — the pairing screen's poll.
 
@@ -759,9 +782,28 @@ class PairingCurrent(BaseModel):
     expires_in_s: int
 
     claimed_by: str | None = None
-    """Display name of the workstation that redeemed the code, or ``None``
-    while nothing has claimed it yet — including in the instant between a
-    successful redemption and the enroller learning a name to show."""
+    """Display name of the workstation that joined, or ``None`` under every
+    other status.
+
+    It used to be ``None`` under ``claimed`` as well, in the instant between a
+    successful redemption and the enroller learning a name — and under that same
+    status, permanently, when the machine had been *refused*. Both are their own
+    status now (``settling`` and ``refused``), so a name missing here no longer
+    means three different things.
+    """
+
+    refusal: PairingRefusalView | None = None
+    """Why the machine did not join. Set only under ``refused``.
+
+    Without it a code that was redeemed and then turned away looked exactly
+    like one redeemed a split second ago: the refusal goes back over the wire
+    to the Agent that caused it, and nothing carried it to this side, so the
+    dialog could neither close nor say what happened.
+
+    It tells an unauthenticated caller nothing. The refusal is written by the
+    core on the path that has already answered the Agent in full, and is read
+    here, on a surface that requires a signed-in user.
+    """
 
 
 # ---------------------------------------------------------------------------
@@ -1023,6 +1065,7 @@ __all__ = [
     "InstallResult",
     "PairingCurrent",
     "PairingIssued",
+    "PairingRefusalView",
     "PersonaDetail",
     "PersonaListing",
     "PersonaSelected",

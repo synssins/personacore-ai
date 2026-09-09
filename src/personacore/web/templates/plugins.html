@@ -43,5 +43,14 @@
   {% include "fragments/install_result.html" %}
 </form>
 
+{# The workstation plugin is not a plugin an operator installs by hand — it
+   is created the moment a computer joins (reshape plan decision 0.1), so it
+   never has a .zip to upload and never appears in the loaded/failed groups
+   below until then. This is its one, permanent way in: a computer to add is
+   always reachable from here, whether or not the plugin exists yet. #}
+<p style="margin:0">
+  <a href="/admin/plugins/workstation">{{ icon('plus') }} Add a workstation</a>
+</p>
+
 {% include "fragments/plugin_list.html" %}
 {% endblock %}

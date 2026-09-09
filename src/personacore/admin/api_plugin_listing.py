@@ -33,6 +33,7 @@ from personacore.plugins.packages import (
     PluginStateError,
     disabled_state_path,
     read_disabled_plugins,
+    switched_off_when_empty,
 )
 
 logger = get_logger(__name__)
@@ -63,6 +64,26 @@ Deliberately the same word the page uses, "waiting", and deliberately not
 sentence names *what* it is waiting for, because "waiting" on its own is the
 kind of status that gets ignored, and because that name is the whole of what
 the operator has to do next. A name, never a value (ADR-0025 section 5).
+"""
+
+
+EMPTIED_PLUGIN_DETAIL = (
+    "Switched off by the core because it has nothing to work with — the last "
+    "thing it held was removed. Its folder and its settings are still here. "
+    "Give it something to do on its settings page and it starts again on its "
+    "own."
+)
+"""Shown against a plugin the **core** switched off, rather than the operator.
+
+Both are "off", and until this existed both read as
+:data:`DISABLED_PLUGIN_DETAIL` — "switched off in the admin interface" — which
+is simply untrue when nobody went near the interface. The two are told apart by
+:func:`~personacore.plugins.packages.switched_off_when_empty`, which reads a
+marker the core writes into the plugin's own folder.
+
+The wording avoids "machine" on purpose: this row sits in the plugin list, where
+machines do not appear (reshape plan decision 0.1), and the mechanism is not
+specific to them.
 """
 
 
@@ -145,10 +166,18 @@ def build_plugin_listing(
         enabled = record.name not in switched_off
         if not enabled:
             state = HealthState.UNKNOWN
-            # Off on purpose outranks waiting in the sentence: the operator
-            # switched it off, so "it is not running" has an answer already, and
-            # the credential is still reported in `waiting_for_secrets`.
-            detail = DISABLED_PLUGIN_DETAIL
+            # Off on purpose outranks waiting in the sentence: it is not
+            # running for a reason that already has an answer, and the
+            # credential is still reported in `waiting_for_secrets`. *Which*
+            # reason is read from the plugin's folder rather than guessed --
+            # "the operator switched it off" is the wrong sentence for a plugin
+            # the core parked itself, and it is the sentence that used to be
+            # shown for both.
+            detail = (
+                EMPTIED_PLUGIN_DETAIL
+                if switched_off_when_empty(record.directory)
+                else DISABLED_PLUGIN_DETAIL
+            )
         plugins.append(
             PluginView(
                 name=record.name,
@@ -331,5 +360,6 @@ __all__ = [
     "WAITING_PLUGIN_DETAIL",
     "build_plugin_listing",
     "missing_secrets_source",
+    "EMPTIED_PLUGIN_DETAIL",
     "waiting_plugin_detail",
 ]

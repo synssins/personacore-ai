@@ -1,0 +1,38 @@
+{# workstation_pairing_dialog.html — "Add a workstation", the whole dialog.
+
+   #pairing-code-block holds the code itself, rendered exactly once — right
+   after `POST .../pairing` mints one — and never touched again by a poll:
+   `GET .../current` can never carry the code back
+   (personacore.enrolment.pairing's own rule). fragments/workstation_pairing_
+   status.html clears this block with an out-of-band swap the moment the
+   dialog leaves the 'waiting' state, because the design's own Joined and
+   Refusals artboards show no code at all.
+
+   One visual difference from the canvas, noted in the build report: the
+   canvas draws the code and the draining bar as one nested box. Here they
+   are two boxes stacked — the bar lives inside the region that polls itself
+   every two seconds, and the code cannot live inside that region without
+   the poll needing to keep re-sending it, which `personacore.enrolment.
+   pairing` will never do.
+
+   Context: code (str|None), plus everything fragments/workstation_pairing_
+   status.html takes (status, poll, percent, countdown, joined, claimed_by,
+   note). #}
+<div role="alertdialog" aria-labelledby="pairing-title" class="stack" style="gap:8px">
+  <div id="pairing-title" style="font-size:20px; font-weight:500">Add a workstation</div>
+
+  <div id="pairing-code-block">
+    {% if code %}
+    <p style="margin:0 0 8px; font-size:13.5px; color:color-mix(in srgb, var(--color-text) 70%, transparent)">
+      On the PC you want to add, open PersonaCore Agent and press Join. Type this code when it asks.
+    </p>
+    <div style="display:flex; justify-content:center; padding:14px 11px; border-radius:8px; background:var(--color-bg); border:1px solid var(--color-divider)">
+      <div style="font-family:var(--font-mono); font-size:32px; letter-spacing:0.12em">{{ code }}</div>
+    </div>
+    {% elif status == 'waiting' or status == 'expired' %}
+    <p style="margin:0; font-size:13px" class="meta">A code is waiting on this core, but a code is only shown once, right after it is made. If you did not catch it, press New code below.</p>
+    {% endif %}
+  </div>
+
+  {% include "fragments/workstation_pairing_status.html" %}
+</div>

@@ -79,9 +79,12 @@ from personacore.plugins.packages import (
     DEFAULT_PACKAGE_LIMITS,
     PackageLimits,
     PackageRejected,
+    clear_switched_off_when_empty,
     install_package,
+    mark_switched_off_when_empty,
     read_disabled_plugins,
     set_plugin_enabled,
+    switched_off_when_empty,
     uninstall_package,
 )
 
@@ -1086,6 +1089,18 @@ class EnrolmentService:
     enters core state, and it leaves again when the code expires.
     """
 
+    refuse: Callable[[str | None, str], None] = field(
+        default_factory=lambda: _default_refuse, repr=False
+    )
+    """Tell the pairing screen that a redeemed code did not become a machine.
+
+    The same seam as :attr:`claim` and the same store, for the other outcome.
+    Without it a refusal past the code is invisible on the admin side — the
+    refusal sentence goes back over the wire to the Agent, and the screen is
+    left holding a spent code with no name, which is indistinguishable from one
+    redeemed a split second ago.
+    """
+
     registry_factory: Callable[[], MachineRegistry] | None = None
 
     def registry(self) -> MachineRegistry:
@@ -1113,8 +1128,14 @@ class EnrolmentService:
         # one of them is marked as having got past the code, which is what tells
         # the route it is worth an audit row. Marked in one place rather than at
         # each `raise`, so a refusal added later cannot forget to.
+        # The name, as soon as there is one, so a refusal past this point can
+        # tell the pairing screen *which* machine was turned away. `None` until
+        # the body has been read: a request refused before it said what it is
+        # called leaves the dialog a refusal with no name, which is honest.
+        display_name: str | None = None
         try:
             payload = read_payload(document)
+            display_name = payload.display_name
             registry = self.registry()
             # Everything this core will refuse is refused **before** a
             # credential is minted for it. The registry checks the collision
@@ -1130,12 +1151,20 @@ class EnrolmentService:
             added = await asyncio.to_thread(self._add, registry, payload, token)
         except EnrolmentRefused as refused:
             refused.redeemed = True
+            # The code was burnt and no machine joined. Told to the pairing
+            # screen so the dialog can close saying so, rather than sitting on
+            # a spent code that looks exactly like one being redeemed right
+            # now. The *code* for the store, never the sentence — the sentence
+            # is already going back to the Agent that caused it.
+            self._refuse(display_name, refused.reason or GENERIC_REFUSAL)
             raise
 
         # The name reaches the pairing screen only once the machine is really
         # enrolled, so the screen can never name a machine that did not join.
         self._claim(payload.display_name)
-        state = await self._start(created=added.created_plugin)
+        state = await self._start(
+            created=added.created_plugin, reawakened=added.reawakened
+        )
         return Enrolled(
             plugin=PLUGIN_NAME,
             display_name=payload.display_name,
@@ -1146,6 +1175,112 @@ class EnrolmentService:
                 else SWITCHED_OFF.format(name=payload.display_name)
             ),
         )
+
+    # -- removing one, which is the mirror of adding one -------------------
+
+    async def remove_machine(self, machine_id: str) -> MachineRemoved:
+        """Forget one machine **and** rewrite the endpoint set. One operation.
+
+        The public counterpart of :meth:`enrol`, and it exists because the two
+        halves must not be reachable separately. Calling
+        :meth:`~personacore.enrolment.registry.MachineRegistry.remove` on its
+        own takes the row and the token out and leaves ``manifest.toml`` still
+        declaring that machine's addresses: the plugin host goes on dialling a
+        machine the owner deleted and the plugin row goes on counting it, with
+        nothing on any screen to say why.
+
+        Args:
+            machine_id: the opaque id from
+                :attr:`~personacore.enrolment.registry.Machine.id`, not the
+                machine's name. A name is the owner's to change; the id is what
+                the token is stored under.
+
+        Returns:
+            :class:`MachineRemoved` — whether there was a machine of that id,
+            how many are left, and whether the endpoint set is now stale.
+
+        Raises:
+            EnrolmentRefused: the plugin is not installed, is not this core's,
+                or the endpoint set could not be written. The machine is
+                already out of the registry when the write fails, so the
+                refusal says the list is short of one rewrite rather than
+                pretending nothing happened.
+
+        **The last machine switches the plugin off and leaves it in place** —
+        owner decision, 2026-09-09. Not uninstalled: the folder, the settings
+        and the row on the Plugins screen all survive, and the next machine to
+        join starts it again on its own. Two writes, in the order every other
+        toggle in this core uses — the recorded choice first, the running host
+        second — so a crash between them leaves a core that comes back off
+        rather than one running a plugin it has nothing for.
+
+        **manifest.toml is left exactly as it was**, and that is a decision
+        rather than an omission. Checked against the contract rather than
+        assumed: an http plugin is refused at load unless it declares ``url``
+        or a **non-empty** ``urls`` — see
+        :meth:`~personacore.contracts.manifest.PluginManifest` and
+        :data:`~personacore.contracts.manifest.ENDPOINT_SET_MUST_NOT_BE_EMPTY`
+        — so there is no document that means "no machines", and writing one
+        would leave the owner a plugin that will not load. That is the outcome
+        he did not pick. The last registration that was true therefore stands,
+        untouched, and :meth:`_publish` replaces it in full when a machine
+        joins. Nothing dials it in the meantime and nothing can: the plugin is
+        off, and each entry's bearer token went with the machine it belonged
+        to, so the client fails closed before a request is built.
+        """
+        result = await asyncio.to_thread(self._remove, machine_id)
+        if result.switched_off and self.set_enabled is not None:
+            try:
+                await self.set_enabled(PLUGIN_NAME, False)
+            except Exception as exc:  # noqa: BLE001 - the record is what persists
+                logger.error(
+                    "workstation_stop_failed", plugin=PLUGIN_NAME, error=repr(exc)
+                )
+        return result
+
+    def _remove(self, machine_id: str) -> MachineRemoved:
+        """The blocking half of :meth:`remove_machine`, on a worker thread."""
+        self._refuse_a_plugin_that_is_not_ours()
+        registry = self.registry()
+        try:
+            removed = registry.remove(machine_id)
+            left = registry.list()
+        except MachineRejected as exc:
+            raise _refused_from(exc) from None
+
+        if not removed:
+            # No such machine, so nothing changed and the endpoint set is
+            # already right. Reported rather than raised: a screen removing a
+            # row twice is a double click, not an error worth a red box.
+            return MachineRemoved(
+                removed=False, machines_left=len(left), switched_off=False
+            )
+        if not left:
+            self._park()
+            return MachineRemoved(removed=True, machines_left=0, switched_off=True)
+        self._publish(registry)
+        return MachineRemoved(
+            removed=True, machines_left=len(left), switched_off=False
+        )
+
+    def _park(self) -> None:
+        """Switch the plugin off because it has nothing left, and record who did it.
+
+        The marker goes down **before** the switch. A crash between the two then
+        leaves a plugin that is still on and merely marked, which the next
+        enrolment clears harmlessly — rather than one that is off with nothing
+        saying the core is what turned it off. That second state is the trap:
+        it is indistinguishable from a plugin the owner switched off himself,
+        and enrolment would then correctly refuse to turn it back on, leaving a
+        machine that joined sitting behind a plugin nobody knowingly disabled.
+        """
+        directory = self._directory()
+        if directory is not None:
+            mark_switched_off_when_empty(directory)
+        try:
+            set_plugin_enabled(self.layout, PLUGIN_NAME, enabled=False)
+        except Exception as exc:  # noqa: BLE001 - the machine is out either way
+            logger.error("workstation_park_failed", plugin=PLUGIN_NAME, error=repr(exc))
 
     # -- the checks that run before a token exists -------------------------
 
@@ -1250,6 +1385,12 @@ class EnrolmentService:
         read-modify-write rather than being taken and released around an await.
         """
         created = self._ensure_plugin(payload)
+        # Read before anything is written, because the answer stops being true
+        # the moment this machine lands: "the core parked it" and "it has no
+        # machines" are the same thing right up until one arrives, and inferring
+        # it afterwards is the trap the marker exists to close.
+        directory = self._directory()
+        parked = directory is not None and switched_off_when_empty(directory)
         try:
             machine = registry.add(
                 name=payload.display_name,
@@ -1275,37 +1416,53 @@ class EnrolmentService:
                 PLUGIN_WRITE_FAILED.format(name=payload.display_name),
                 reason="storage",
             ) from None
-        return _Added(machine=machine, created_plugin=created)
+        if parked and directory is not None:
+            # It has something to do again, so the core's own note about why it
+            # parked this plugin has stopped being true. Cleared on the path
+            # that already succeeded rather than beside the switch-on: the
+            # marker describes what the plugin holds, not whether a later step
+            # worked.
+            clear_switched_off_when_empty(directory)
+        return _Added(machine=machine, created_plugin=created, reawakened=parked)
 
     def _publish(
         self, registry: MachineRegistry, *, version: str | None = None
     ) -> None:
         """Write ``manifest.toml`` from the registry. The endpoint set, derived.
 
-        Called after every change to the machine list. The registry is the
-        source of truth; this document is how the plugin host learns to open a
-        connection per machine, and rewriting it is the whole of "the plugin's
-        endpoints follow the registry".
+        Called after **every** change to the machine list — :meth:`_add` and
+        :meth:`remove_machine` both end here. The registry is the source of
+        truth; this document is how the plugin host learns to open a connection
+        per machine, and rewriting it is the whole of "the plugin's endpoints
+        follow the registry". A change that skipped it would leave the core
+        dialling a machine the owner deleted and counting it on the plugin row.
 
-        ``version`` is the joining Agent's, so the plugin's version tracks the
-        machines behind it. ``contract`` and ``tools`` are carried over from the
+        ``version`` is the joining Agent's when a machine is joining, and the
+        installed document's otherwise — a removal does not change what version
+        the plugin is. ``contract`` and ``tools`` are carried over from the
         installed document, which is the only place they live once the request
         that supplied them is gone — and every machine agrees on both, because
         :meth:`_refuse_mismatch` refuses one that does not.
+
+        **Never called with nothing left.** An http plugin declaring an empty
+        endpoint set is refused at load (``ENDPOINT_SET_MUST_NOT_BE_EMPTY``), so
+        there is no document that means "no machines" and this method has none
+        to write. :meth:`remove_machine` is what notices, and it reports the
+        fact rather than deciding what to do about it.
         """
         machines = registry.list()
+        if not machines:
+            raise EnrolmentRefused(
+                500,
+                "The workstation plugin has no machines left, so there is no "
+                "registration to write for it.",
+                reason="no_address",
+            )
         installed = self._read_manifest() or {}
         plugin = installed.get("plugin")
         plugin = plugin if isinstance(plugin, Mapping) else {}
         tools = installed.get("tools")
         tools = tools if isinstance(tools, Mapping) else {}
-        if not machines:
-            # An http plugin declaring an empty endpoint set is refused at load
-            # (``ENDPOINT_SET_MUST_NOT_BE_EMPTY``), so there is no document to
-            # write for no machines. Enrolment only ever adds, so this is the
-            # guard rather than the path; removing the last machine is the
-            # settings screen's to answer.
-            return
         document = build_manifest_document(
             machines,
             version=version or str(plugin.get("version") or "0.0.0"),
@@ -1474,8 +1631,21 @@ class EnrolmentService:
         except Exception as exc:  # noqa: BLE001 - the machine did join
             logger.warning("workstation_claim_failed", error=repr(exc))
 
-    async def _start(self, *, created: bool) -> str:
-        """Rescan, and switch the plugin on if this call created it.
+    def _refuse(self, display_name: str | None, reason: str) -> None:
+        """Close the pairing dialog on a refusal. Never replaces the refusal.
+
+        Swallowing a failure here is deliberate and is the same judgement
+        :meth:`_claim` makes: the caller already has an answer to give, and a
+        pairing store that would not take the news must not turn one refusal
+        into a different one.
+        """
+        try:
+            self.refuse(display_name, reason)
+        except Exception as exc:  # noqa: BLE001 - see docstring
+            logger.warning("workstation_refusal_not_recorded", error=repr(exc))
+
+    async def _start(self, *, created: bool, reawakened: bool = False) -> str:
+        """Rescan, and switch the plugin on when it is this core's to switch on.
 
         A failure to *start* is not a failure to enrol: the record, the
         credential and the endpoint set are all on disk, and the supervisor will
@@ -1483,19 +1653,30 @@ class EnrolmentService:
         honestly — ``unknown`` rather than ``ok`` — is the whole reason the
         health enum has three values.
 
-        **A plugin the owner switched off is left switched off.** Enrolment
-        turning it back on would be this core overriding a decision he made by
-        clicking, to serve a machine that has just joined and can wait. The
-        answer says so instead, which is the rule about the interface stating
-        what happened rather than fixing things quietly.
+        **Off is two different facts, and only one of them is the owner's.**
+
+        * ``created`` or ``reawakened`` — the core made this plugin, or the core
+          parked it when its last machine was removed. Switching it on undoes
+          the core's own housekeeping and overrides nobody.
+        * anything else — the owner switched it off by clicking. It stays off.
+          The machine still joins, the state is reported as ``disabled``, and
+          the answer says the plugin is off and where to switch it on.
+
+        The difference is **read from the marker in the plugin's own folder**
+        (:data:`~personacore.plugins.packages.EMPTY_MARKER`), not inferred from
+        the plugin being empty. Inferring it would be the same trap in another
+        coat: a plugin the owner switched off and then enrolled into stops being
+        empty at exactly the moment the question is asked, so "it has no
+        machines" cannot answer "who turned it off".
         """
-        if created:
+        if created or reawakened:
             # The recorded choice first, the running core second -- the same
             # order `admin/api_plugins.py` toggles a plugin in, so a crash
             # between the halves leaves a core that comes back switched on. A
             # stale entry in the disabled list can outlive the plugin that put
-            # it there, and without this a freshly created workstation plugin
-            # would install correctly and never start.
+            # it there, and without this a freshly created workstation plugin --
+            # or one the core parked when it emptied -- would be correct on disk
+            # and never start.
             try:
                 await asyncio.to_thread(
                     set_plugin_enabled, self.layout, PLUGIN_NAME, enabled=True
@@ -1537,11 +1718,51 @@ class EnrolmentService:
 
 
 @dataclass(frozen=True, slots=True)
+class MachineRemoved:
+    """What :meth:`EnrolmentService.remove_machine` did.
+
+    Three facts, because the caller has a different decision to make on each.
+    """
+
+    removed: bool
+    """Whether there was a machine of that id. ``False`` is a screen removing a
+    row that had already gone, which is a double click rather than a fault."""
+
+    machines_left: int
+    """How many are enrolled now. What the plugin's own page counts, and what
+    an audit row may carry — it identifies no machine."""
+
+    switched_off: bool
+    """**True when that was the last machine and the core parked the plugin.**
+
+    Owner decision, 2026-09-09: the last machine leaving switches the plugin
+    off and leaves it in place. Not uninstalled — the folder, its settings and
+    its row on the Plugins screen all survive, and a machine joining starts it
+    again.
+
+    This replaces the ``endpoints_stale`` alarm that stood here for one round.
+    That field existed because the hook noticed a consequence it was not
+    allowed to act on and had to hand it to the caller; the hook acts on it
+    now, so what is left is a fact about what happened rather than something
+    the caller must go and finish. The manifest is indeed left as it was — see
+    :meth:`EnrolmentService.remove_machine` — but nothing dials it and nothing
+    has to be done about it.
+    """
+
+
+@dataclass(frozen=True, slots=True)
 class _Added:
     """What :meth:`EnrolmentService._add` did, for the steps that follow it."""
 
     machine: Machine
     created_plugin: bool
+
+    reawakened: bool = False
+    """Whether the plugin had been parked by the core for having no machines.
+
+    The one fact that separates "switch it back on" from "leave the owner's
+    switch alone", read before the write that makes it stop being true.
+    """
 
 
 def _provisional(payload: EnrolmentPayload) -> Machine:
@@ -1577,6 +1798,25 @@ def _tool_difference(ours: set[str], theirs: set[str]) -> str:
     return " ".join(parts)
 
 
+GENERIC_REFUSAL = "refused"
+"""What a refusal with no code of its own is recorded as on the pairing screen.
+
+Deliberately uninformative rather than guessed at. A refusal that predates the
+registry's vocabulary is still a refusal and still has to close the dialog; the
+useful sentence went to the Agent that caused it.
+"""
+
+
+def _default_refuse(display_name: str | None, reason: str) -> None:
+    """Record a refusal on the pairing screen, through the module that owns it.
+
+    Imported inside the function for the reason :func:`_default_claim` gives.
+    """
+    from personacore.enrolment.pairing import mark_refused  # noqa: PLC0415 - see docstring
+
+    mark_refused(display_name, reason)
+
+
 def _default_claim(display_name: str) -> None:
     """Name the machine on the pairing screen, through the module that owns it.
 
@@ -1604,6 +1844,7 @@ __all__ = [
     "CREDENTIAL_IN_REQUEST",
     "ENROL_PATH",
     "ENTRY_FIELDS",
+    "GENERIC_REFUSAL",
     "MANIFEST_FILENAME",
     "MAX_BODY_BYTES",
     "PLUGIN_NAME",
@@ -1616,6 +1857,7 @@ __all__ = [
     "EnrolmentPayload",
     "EnrolmentRefused",
     "EnrolmentService",
+    "MachineRemoved",
     "build_manifest_document",
     "decode_body",
     "mint_token",

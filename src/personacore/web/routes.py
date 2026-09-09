@@ -114,6 +114,7 @@ from personacore.web.screens import review_workspace as review_workspace_screen
 from personacore.web.screens import runbooks as runbooks_screen
 from personacore.web.screens import voice as voice_screen
 from personacore.web.screens import voice_library as voice_library_screen
+from personacore.web.screens import workstation as workstation_screen
 from personacore.web.screens.chat import (
     CHAT_HISTORY_MESSAGES,
     CHAT_TRANSCRIPT_WINDOW,
@@ -632,6 +633,13 @@ def create_admin_ui_router(
     chat_run_screen.register(router, ctx)
     health_screen.register(router, ctx)
     plugins_screen.register(router, ctx)
+    # A literal path, registered ahead of `plugin_detail_screen` below —
+    # `/admin/plugins/workstation` must win the match against the generic
+    # `/admin/plugins/{name}` the same way `/admin/plugins/install` already
+    # does, because this plugin's own page is nothing like the generic one
+    # (web/screens/workstation.py's module docstring). Every other plugin's
+    # name still falls through to `plugin_detail_screen` untouched.
+    workstation_screen.register(router, ctx)
     plugin_install_screen.register(router, ctx)
     plugin_status_screen.register(router, ctx)
     plugin_detail_screen.register(router, ctx)

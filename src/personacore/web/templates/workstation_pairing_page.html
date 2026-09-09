@@ -1,0 +1,19 @@
+{# workstation_pairing_page.html — the no-script fallback (ADR-0020) for the
+   "Add a workstation" dialog. Reached by the exact `<a href>` the main
+   page's own form decorates when JS never ran, and by a plain (non-htmx)
+   form submit landing here directly with a freshly issued code.
+
+   Same content as the dialog (fragments/workstation_pairing_dialog.html),
+   as a real page: nothing on it needs a script to work, though without one
+   the countdown and the machine list behind it stop updating on their own —
+   a manual refresh of this page is the whole of the degradation.
+
+   Context: everything fragments/workstation_pairing_dialog.html takes. #}
+{% extends "base.html" %}
+{% block title %}Add a workstation — PersonaCore admin{% endblock %}
+{% block content %}
+<p style="margin:0"><a href="/admin/plugins/workstation">← workstation</a></p>
+<section class="card elev-sm" style="max-width:480px">
+  {% include "fragments/workstation_pairing_dialog.html" %}
+</section>
+{% endblock %}

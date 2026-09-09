@@ -1,0 +1,182 @@
+{# workstation_pairing_status.html — the pairing dialog's own polled region.
+
+   NEVER THE CODE. It lives outside this element
+   (fragments/workstation_pairing_dialog.html's own #pairing-code-block),
+   because `GET .../current` can never carry it
+   (personacore.enrolment.pairing's own rule — "the code leaves this module
+   in exactly one shape"). See web/screens/workstation.py's module docstring
+   for the whole shape of this.
+
+   Rendered from the SAME context whether this is the initial open (embedded
+   inside fragments/workstation_pairing_dialog.html) or a later poll of
+   #pairing-status alone, so the two can never say something different about
+   the same state.
+
+   Every control here is a real `<form>`/`<a>`, not a bare scripted button:
+   this fragment is also reused, unmodified, by workstation_pairing_page.html
+   — the no-script fallback — so nothing in it may depend on admin.js beyond
+   the modal-close bookkeeping, which only matters when a dialog exists to
+   close (ADR-0020).
+
+   Context: status ('waiting'|'settling'|'claimed'|'refused'|'expired'|
+   'none'|'unavailable'), note?, percent?, countdown?, joined? (a machine
+   row, see machine_row()), claimed_by?, refusal? ({reason, title, body,
+   machine, existing_machine_id?} — see refusal_card()), poll (bool — keep
+   polling). #}
+{% from "_controls.html" import icon %}
+<div id="pairing-status"
+     {% if poll %}hx-get="/admin/plugins/workstation/pairing/fragment" hx-trigger="every 2s" hx-swap="outerHTML"{% endif %}>
+
+  {% if status == 'waiting' %}
+  <div class="stack" style="gap:8px">
+    <div style="display:flex; flex-direction:column; align-items:center; gap:8px; padding:22px 11px; border-radius:8px; background:var(--color-bg); border:1px solid var(--color-divider)">
+      <div style="width:100%; height:3px; border-radius:2px; background:var(--color-divider); overflow:hidden">
+        <div style="width:{{ percent }}%; height:100%; background:var(--color-accent)"></div>
+      </div>
+      <div class="meta">expires in {{ countdown }}</div>
+    </div>
+    <div class="hrow" style="padding:8px 11px; border-radius:8px; font-size:13.5px; background:color-mix(in srgb, var(--color-neutral-500) 9%, transparent); border:1px solid color-mix(in srgb, var(--color-neutral-500) 35%, transparent)">
+      <span class="dot warn"></span>
+      <span style="flex:1">Waiting for a workstation…</span>
+    </div>
+    <p class="meta" style="margin:0">The code works once. Leave this open — the machine appears in the list by itself.</p>
+    <div class="hrow" style="margin-top:6px">
+      <span style="flex:1"></span>
+      <form method="post" action="/admin/plugins/workstation/pairing/cancel"
+            hx-post="/admin/plugins/workstation/pairing/cancel" hx-target="#modal" hx-swap="innerHTML"
+            data-modal-close-after style="display:contents">
+        <button type="submit" class="btn btn-secondary">Cancel</button>
+      </form>
+      <form method="post" action="/admin/plugins/workstation/pairing"
+            hx-post="/admin/plugins/workstation/pairing" hx-target="#modal" hx-swap="innerHTML"
+            style="display:contents">
+        <button type="submit" class="btn btn-primary">New code</button>
+      </form>
+    </div>
+  </div>
+
+  {% elif status == 'settling' %}
+  <div class="stack" style="gap:8px">
+    <div class="hrow" style="padding:8px 11px; border-radius:8px; font-size:13.5px; background:color-mix(in srgb, var(--color-neutral-500) 9%, transparent); border:1px solid color-mix(in srgb, var(--color-neutral-500) 35%, transparent)">
+      <span class="dot warn"></span>
+      <span style="flex:1">A workstation used the code — finishing up…</span>
+    </div>
+    <div class="hrow" style="margin-top:6px">
+      <form method="post" action="/admin/plugins/workstation/pairing/cancel"
+            hx-post="/admin/plugins/workstation/pairing/cancel" hx-target="#modal" hx-swap="innerHTML"
+            data-modal-close-after style="display:contents">
+        <button type="submit" class="btn btn-secondary">Cancel</button>
+      </form>
+    </div>
+  </div>
+  <div id="pairing-code-block" hx-swap-oob="true"></div>
+
+  {% elif status == 'claimed' %}
+  <div class="stack" style="gap:8px">
+    <div class="hrow" style="align-items:flex-start; padding:8px 11px; border-radius:8px; font-size:13.5px; background:color-mix(in srgb, var(--color-ok) 9%, transparent); border:1px solid color-mix(in srgb, var(--color-ok) 35%, transparent)">
+      {{ icon('check') }}
+      <div style="flex:1">
+        <div class="state-word ok">{{ claimed_by }} joined.</div>
+        {% if joined %}
+        <p style="margin:3px 0 0; line-height:1.5">It is in the machine list, {{ joined.word }} and answering. {{ joined.tool_count }} tool{{ '' if joined.tool_count == 1 else 's' }}.</p>
+        {% else %}
+        <p style="margin:3px 0 0; line-height:1.5">It is in the machine list.</p>
+        {% endif %}
+      </div>
+    </div>
+    {% if joined %}
+    <div class="stack" style="gap:6px; padding:11px; border-radius:8px; background:var(--color-bg); border:1px solid var(--color-divider)">
+      <div class="hrow">
+        <span class="dot {{ joined.tone }}"></span>
+        <span>{{ joined.name }}</span>
+        <span class="state-word {{ joined.tone }}" style="font-size:12px">{{ joined.word }}</span>
+        <span class="meta">{{ joined.tool_count }} tool{{ '' if joined.tool_count == 1 else 's' }}</span>
+      </div>
+      <div class="hrow" style="font-family:var(--font-mono); font-size:12px; color:color-mix(in srgb, var(--color-text) 50%, transparent)">
+        {% for address in joined.addresses %}<span>{{ address }}</span>{% endfor %}
+      </div>
+      <p class="meta" style="margin:0">Say “on {{ joined.name|lower }}, …” in chat to give it something to do.</p>
+    </div>
+    {% endif %}
+    <div class="hrow" style="margin-top:6px">
+      <span style="flex:1"></span>
+      <button type="button" class="btn btn-ghost" disabled>Machine settings</button>
+      <span class="later">later</span>
+      <a class="btn btn-primary" href="/admin/plugins/workstation">Done</a>
+    </div>
+  </div>
+  <div id="pairing-code-block" hx-swap-oob="true"></div>
+  {% if machines_oob is defined %}
+  {% with machines = machines_oob, list_error = none, oob = true %}
+  {% include "fragments/workstation_machines.html" %}
+  {% endwith %}
+  {% endif %}
+
+  {% elif status == 'expired' %}
+  <div class="stack" style="gap:8px">
+    <div class="hrow" style="align-items:flex-start; padding:8px 11px; border-radius:8px; font-size:13.5px; background:color-mix(in srgb, var(--color-warn) 9%, transparent); border:1px solid color-mix(in srgb, var(--color-warn) 35%, transparent)">
+      {{ icon('warn') }}
+      <div style="flex:1">
+        <div class="state-word warn">The code ran out.</div>
+        <p style="margin:3px 0 0; line-height:1.5">Nobody joined in five minutes. Get a fresh code and type it again.</p>
+      </div>
+    </div>
+    <div class="hrow" style="margin-top:6px">
+      <a class="btn btn-secondary" href="/admin/plugins/workstation">Cancel</a>
+      <span style="flex:1"></span>
+      <form method="post" action="/admin/plugins/workstation/pairing"
+            hx-post="/admin/plugins/workstation/pairing" hx-target="#modal" hx-swap="innerHTML"
+            style="display:contents">
+        <button type="submit" class="btn btn-primary">New code</button>
+      </form>
+    </div>
+  </div>
+  <div id="pairing-code-block" hx-swap-oob="true"></div>
+
+  {% elif status == 'refused' %}
+  <div class="stack" style="gap:8px">
+    <div class="hrow" style="align-items:flex-start; padding:8px 11px; border-radius:8px; font-size:13.5px; background:color-mix(in srgb, var(--color-danger) 9%, transparent); border:1px solid color-mix(in srgb, var(--color-danger) 35%, transparent)">
+      {{ icon('warn') }}
+      <div style="flex:1">
+        <div class="state-word down">{{ refusal.title }}</div>
+        <p style="margin:3px 0 0; line-height:1.5">{{ refusal.body }}</p>
+      </div>
+    </div>
+    <div class="hrow" style="margin-top:6px">
+      {% if refusal.reason == 'name_taken' %}
+        {% if refusal.existing_machine_id %}
+        <a class="btn btn-ghost" href="/admin/plugins/workstation#workstation-row-{{ refusal.existing_machine_id }}">Show the old one</a>
+        {% endif %}
+        <span style="flex:1"></span>
+        <a class="btn btn-secondary" href="/admin/plugins/workstation">Close</a>
+      {% else %}
+        <a class="btn btn-secondary" href="/admin/plugins/workstation">Cancel</a>
+        <span style="flex:1"></span>
+        <form method="post" action="/admin/plugins/workstation/pairing"
+              hx-post="/admin/plugins/workstation/pairing" hx-target="#modal" hx-swap="innerHTML"
+              style="display:contents">
+          <button type="submit" class="btn btn-primary">New code</button>
+        </form>
+      {% endif %}
+    </div>
+  </div>
+  <div id="pairing-code-block" hx-swap-oob="true"></div>
+
+  {% else %}
+  <div class="stack" style="gap:8px">
+    <p class="meta" style="margin:0">{{ note or "Nothing is waiting to join right now." }}</p>
+    <div class="hrow" style="margin-top:6px">
+      <a class="btn btn-secondary" href="/admin/plugins/workstation">Close</a>
+      <span style="flex:1"></span>
+      {% if status != 'unavailable' %}
+      <form method="post" action="/admin/plugins/workstation/pairing"
+            hx-post="/admin/plugins/workstation/pairing" hx-target="#modal" hx-swap="innerHTML"
+            style="display:contents">
+        <button type="submit" class="btn btn-primary">New code</button>
+      </form>
+      {% endif %}
+    </div>
+  </div>
+  <div id="pairing-code-block" hx-swap-oob="true"></div>
+  {% endif %}
+</div>

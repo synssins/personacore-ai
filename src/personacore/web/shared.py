@@ -660,6 +660,17 @@ API_HANDLERS: dict[str, str] = {
     "list_keys": "list_api_keys",
     "issue_key": "issue_api_key",
     "revoke_key": "revoke_api_key",
+    # Workstation pairing (reshape plan R4). Issuing, polling and cancelling a
+    # pairing code all touch the audit log — `issue_pairing` and
+    # `cancel_pairing` write a record, and the code itself must never leave
+    # `personacore.enrolment.pairing` by a second path (that module's own
+    # docstring: "the code leaves this module in exactly one shape"). So the
+    # workstation screen reaches these the same way every other control on
+    # this surface reaches its own JSON handler, rather than importing
+    # `personacore.enrolment.pairing` and calling it directly.
+    "issue_pairing": "issue_pairing",
+    "current_pairing": "get_current_pairing",
+    "cancel_pairing": "cancel_pairing",
 }
 """Every ``/admin/api`` handler an HTML screen drives, by the name this surface
 calls it.
@@ -730,6 +741,14 @@ NO_PERSONA_OPERATIONS = (
     "This core was assembled without its persona API, so the default persona "
     "cannot be changed from here. The personas themselves still list and edit."
 )
+
+NO_PAIRING_OPERATIONS = (
+    "This core was assembled without its pairing API, so no workstation can be "
+    "added from here."
+)
+"""Said when :func:`api_handler` finds none of the ``*_pairing`` handlers.
+Every control that needs one is disabled and marked ``later`` — the same
+treatment :data:`NO_PLUGIN_OPERATIONS` gets, for the same reason."""
 
 NO_KEY_OPERATIONS = (
     "API key management is not switched on in this core, so no key can be "

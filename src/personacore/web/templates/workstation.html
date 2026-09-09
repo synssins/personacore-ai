@@ -1,0 +1,60 @@
+{# workstation.html — the workstation plugin's own settings page (reshape
+   plan R4). Registered on a literal path ahead of the generic
+   `/admin/plugins/{name}`, because this plugin's page is nothing like the
+   generic one: no schema-driven form, no raw editor — a machine list instead.
+   See web/screens/workstation.py's module docstring.
+
+   Context: plugin {name, version, state ('new'|'running'|'off'|'failed'),
+   fail_reason?}, machines: [machine_row()], machine_count, list_error?,
+   notice? ({kind, message}), can_add.
+
+   No "Ask before anything risky" switch. It was built, greyed and marked
+   "later", then removed on the owner's own ruling (three options put to
+   him — greyed with a reason, removed until it works, shipped live anyway —
+   and he chose removed): nothing behind it exists yet — no confirmation
+   channel in this core, no path to the Agent's own screen — and a control
+   with nothing behind it is absent, not disabled. Do not re-add it greyed
+   "to be helpful"; it comes back the day issue #6 gives it something to
+   control. #}
+{% extends "base.html" %}
+{% from "_controls.html" import icon %}
+{% block title %}workstation — PersonaCore admin{% endblock %}
+{% block content %}
+<p style="margin:0"><a href="/admin/plugins">← Plugins</a></p>
+
+<header class="hrow">
+  <h3 style="margin:0">workstation</h3>
+  {% if plugin.version %}<span class="meta">{{ plugin.version }}</span>{% endif %}
+  {% if plugin.state == 'new' %}<span class="state-word off">not added yet</span>
+  {% elif plugin.state == 'failed' %}<span class="state-word down">failed to load</span>
+  {% elif plugin.state == 'off' %}<span class="state-word off">switched off</span>
+  {% else %}<span class="state-word ok">running</span>{% endif %}
+</header>
+<p class="meta" style="margin:-4px 0 0">Acts on the owner's workstation and the devices plugged into it.</p>
+{% if plugin.fail_reason %}<p style="margin:0; color:var(--color-danger)">{{ plugin.fail_reason }}</p>{% endif %}
+
+{% if notice %}
+<div class="banner {{ 'danger' if notice.kind == 'refused' else 'ok' }}" role="status">
+  {{ icon('warn' if notice.kind == 'refused' else 'check') }}
+  <p style="margin:0">{{ notice.message }}</p>
+</div>
+{% endif %}
+
+<div class="hrow" style="margin-top:6px">
+  <h6 class="text-muted" style="margin:0">Machines</h6>
+  <span class="meta" style="padding:2px 8px; border-radius:6px; background:var(--color-neutral-700, var(--color-divider))">{{ machine_count }}</span>
+  <span style="flex:1"></span>
+  {% if can_add %}
+  <form method="post" action="/admin/plugins/workstation/pairing"
+        hx-post="/admin/plugins/workstation/pairing" hx-target="#modal" hx-swap="innerHTML"
+        style="display:contents">
+    <button type="submit" class="btn btn-primary">{{ icon('plus') }} Add a workstation</button>
+  </form>
+  {% else %}
+  <button type="button" class="btn btn-primary" disabled>{{ icon('plus') }} Add a workstation</button>
+  <span class="later">later</span>
+  {% endif %}
+</div>
+
+{% include "fragments/workstation_machines.html" %}
+{% endblock %}

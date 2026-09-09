@@ -1,0 +1,59 @@
+{# workstation_machines.html — the machine list, on its own so the pairing
+   dialog's own poll can refresh it out of band the moment a machine joins
+   (the same `{% if oob %}hx-swap-oob="true"{% endif %}` idiom
+   fragments/run_status.html uses).
+
+   Context: machines: [machine_row()], machine_count, list_error?, oob? #}
+<div id="workstation-machines" {% if oob %}hx-swap-oob="true"{% endif %}>
+  {% if list_error %}
+  <div class="banner danger" role="alert">
+    {% from "_controls.html" import icon %}
+    {{ icon('warn') }}
+    <p style="margin:0">{{ list_error }}</p>
+  </div>
+  {% elif not machines %}
+  <div class="empty">
+    {% from "_controls.html" import icon %}
+    {{ icon('puzzle') }}
+    <div>
+      <p style="margin:0; font-size:15px">No workstations yet.</p>
+      <p class="text-muted" style="margin:4px 0 0; font-size:13px; max-width:54ch">Add one to give the assistant a computer to act on.</p>
+    </div>
+  </div>
+  {% else %}
+  {% for machine in machines %}
+  <div class="row hrow" style="align-items:flex-start; gap:14px" id="workstation-row-{{ machine.id }}">
+    <span class="dot {{ machine.tone }}" style="margin-top:7px"></span>
+    <div style="flex:1; min-width:0">
+      <div class="hrow" style="gap:10px">
+        <span style="font-size:14.5px">{{ machine.name }}</span>
+        <span class="state-word {{ machine.tone }}" style="font-size:12px">{{ machine.word }}</span>
+        <span class="meta">{{ machine.tool_count }} tool{{ '' if machine.tool_count == 1 else 's' }}</span>
+      </div>
+      <div class="hrow" style="font-family:var(--font-mono); font-size:12px; color:color-mix(in srgb, var(--color-text) 50%, transparent); flex-wrap:wrap">
+        {% for address in machine.addresses %}<span>{{ address }}</span>{% endfor %}
+        <span style="color:color-mix(in srgb, var(--color-text) 35%, transparent)">{{ machine.listening }}</span>
+      </div>
+      <p class="meta" style="margin:3px 0 0">
+        Joined {{ machine.joined }}{% if machine.activity %} — {{ machine.activity }}{% endif %}
+      </p>
+    </div>
+    {# Logs and permissions: drawn where the design puts them, disabled and
+       marked "later" — neither has a backend yet (see web/screens/
+       workstation.py's module docstring: R6 owns the log read path and is
+       blocked on the Agent shipping the tool; "permissions" is not a
+       deliverable of any subtask yet). Rendering them live would be exactly
+       the dead control CLAUDE.md's brief warns against; removing them would
+       be silent drift from the approved canvas. #}
+    <button type="button" class="btn btn-ghost" disabled title="Reading a machine's own log needs a tool the Agent does not ship yet.">Logs</button>
+    <button type="button" class="btn btn-ghost" disabled title="Per-machine permissions are not built yet.">permissions</button>
+    <span class="later">later</span>
+    <a class="btn btn-danger" href="/admin/plugins/workstation/machines/{{ machine.id }}/remove"
+       hx-get="/admin/plugins/workstation/machines/{{ machine.id }}/remove/fragment"
+       hx-target="#modal" hx-swap="innerHTML">
+      {% from "_controls.html" import icon %}{{ icon('trash') }} remove
+    </a>
+  </div>
+  {% endfor %}
+  {% endif %}
+</div>

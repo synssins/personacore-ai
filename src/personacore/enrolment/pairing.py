@@ -89,12 +89,38 @@ this subtask's spec."""
 
 
 class PairingState(StrEnum):
-    """What the pairing screen renders. The four values this subtask's spec
-    names for ``GET .../current``."""
+    """What the pairing screen renders.
+
+    The first four are this subtask's spec for ``GET .../current``. The last
+    two exist because *spent* turned out to be three different things to the
+    person watching the dialog, and the screen was rendering all three as
+    ``claimed``:
+
+    * a machine redeemed the code and joined — :data:`CLAIMED`;
+    * a machine redeemed the code and was refused — :data:`REFUSED`;
+    * a machine redeemed the code a moment ago and the answer is not back yet
+      — :data:`SETTLING`.
+
+    Collapsing the last two into ``claimed`` produced a dialog that said a
+    machine had joined when one had been turned away, with no name to show for
+    it. The distinction is read from what the enroller reported, never guessed
+    from a timer.
+    """
 
     NONE = "none"
     WAITING = "waiting"
+    SETTLING = "settling"
+    """Redeemed, outcome unknown. **Never fabricates either answer.** It is
+    what the store knows between :meth:`PairingStore.redeem` returning true and
+    the enroller saying how it went — ordinarily a split second, and for as
+    long as the code's own TTL if the enroller never says at all."""
+
     CLAIMED = "claimed"
+    REFUSED = "refused"
+    """A machine redeemed the code and did not join. Carries
+    :class:`PairingRefusal`, which says what happened in a form the dialog can
+    render without inventing one."""
+
     EXPIRED = "expired"
 
 
@@ -112,6 +138,41 @@ class IssuedPairing:
 
 
 @dataclass(frozen=True, slots=True)
+class PairingRefusal:
+    """Why a redeemed code did not become a machine — for the dialog to render.
+
+    **A code and a name, never a sentence.** The refusal's own wording is
+    written for the person standing at the *workstation* and goes back over the
+    wire to the Agent; it is free text, it can be long, and it is not this
+    module's to carry. What crosses to the admin screen is the short reason
+    code the enroller already records in its audit row, plus the name the
+    machine gave — and the screen owns the sentence it renders for each.
+
+    That split is what keeps the wording in one place. Two copies of "That
+    name is taken" would drift, and the copy on this side would be the one
+    nobody reviewed.
+    """
+
+    reason: str
+    """A short code — lowercase, digits and underscores, no spaces. The same
+    vocabulary the enrolment audit row uses, checked through
+    :func:`personacore.enrolment.registry.safe_reason` so a sentence cannot be
+    passed off as one. ``refused`` is the generic, and the screen must have a
+    rendering for it: a refusal with no more specific code is still a refusal
+    and still has to close the dialog."""
+
+    machine: str | None
+    """What the machine called itself, normalised, or ``None`` if it was turned
+    away before it said.
+
+    Held on exactly the same terms as :attr:`PairingSnapshot.claimed_by` — in
+    memory, never written to a file, dropped with the code's own TTL. A machine
+    that was refused is *not* enrolled, so this name belongs to no registry and
+    to nothing that outlives the dialog it is drawn in.
+    """
+
+
+@dataclass(frozen=True, slots=True)
 class PairingSnapshot:
     """What :meth:`PairingStore.current` returns — the screen's poll.
 
@@ -122,6 +183,15 @@ class PairingSnapshot:
     expires_at: datetime | None
     expires_in_s: int
     claimed_by: str | None
+    """The machine that joined. Set only under :data:`PairingState.CLAIMED`,
+    so a screen reading it never has to decide what a missing name means."""
+
+    refusal: PairingRefusal | None = None
+    """Why it did not join. Set only under :data:`PairingState.REFUSED`.
+
+    Defaulted, so every caller written before this field existed builds the
+    same snapshot it always did.
+    """
 
 
 @dataclass
@@ -137,6 +207,10 @@ class _ActiveCode:
     attempts: int = 0
     spent: bool = False
     claimed_by: str | None = None
+    refusal: PairingRefusal | None = None
+    """Set by :meth:`PairingStore.mark_refused`. Mutually exclusive with
+    ``claimed_by`` — one code has one outcome, and whichever lands first is the
+    one the dialog shows."""
 
 
 def _encode(raw: bytes) -> str:
@@ -260,19 +334,30 @@ class PairingStore:
             if active is None:
                 return PairingSnapshot(PairingState.NONE, None, 0, None)
             if active.spent:
-                # A claimed code is dropped once its own TTL has run out, and
-                # the display name goes with it. `claimed_by` is a machine's
-                # name held in core memory: nothing writes it to disk, and this
-                # is what stops it outliving the code it belongs to and being
-                # readable from the pairing screen long after the plugin that
-                # machine belongs to has been uninstalled. Five minutes is the
-                # dialog's own lifetime, not a new number.
+                # A spent code is dropped once its own TTL has run out, and the
+                # display name goes with it — under either outcome. A machine's
+                # name is held in core memory here: nothing writes it to disk,
+                # and this is what stops it outliving the code it belongs to and
+                # being readable from the pairing screen long after the plugin
+                # that machine belongs to has been uninstalled. Five minutes is
+                # the dialog's own lifetime, not a new number.
                 if moment >= active.expires_at:
                     self._active = None
                     return PairingSnapshot(PairingState.NONE, None, 0, None)
-                return PairingSnapshot(
-                    PairingState.CLAIMED, active.expires_at, 0, active.claimed_by
-                )
+                if active.claimed_by is not None:
+                    return PairingSnapshot(
+                        PairingState.CLAIMED, active.expires_at, 0, active.claimed_by
+                    )
+                if active.refusal is not None:
+                    return PairingSnapshot(
+                        PairingState.REFUSED, active.expires_at, 0, None, active.refusal
+                    )
+                # Redeemed, and the enroller has not said how it went. **Not
+                # reported as claimed.** It was, and a dialog rendering the
+                # claimed state printed a machine name that was `None` — which
+                # is also exactly what a refusal looked like, so the screen
+                # could not tell a machine joining from a machine turned away.
+                return PairingSnapshot(PairingState.SETTLING, active.expires_at, 0, None)
             if self._is_live(active, moment):
                 return PairingSnapshot(
                     PairingState.WAITING,
@@ -312,8 +397,51 @@ class PairingStore:
         """
         with self._lock:
             active = self._active
-            if active is not None and active.spent:
+            if active is not None and active.spent and active.refusal is None:
                 active.claimed_by = display_name
+
+    def mark_refused(self, display_name: str | None, reason: str) -> None:
+        """Record that the machine which redeemed the live code did not join.
+
+        The other half of :meth:`mark_claimed`, and the reason the dialog can
+        close honestly. Without it a redeemed-then-refused code is
+        indistinguishable from a code redeemed a split second ago, because both
+        are spent with no name — so the screen either waits forever or claims a
+        machine joined when one was turned away.
+
+        Args:
+            display_name: what the machine called itself, or ``None`` if it was
+                refused before it said. Normalised by the enroller.
+            reason: a short code from the enrolment vocabulary. Anything that is
+                not a code becomes ``refused`` —
+                :func:`personacore.enrolment.registry.safe_reason` is the one
+                place that rule lives, and it is applied rather than trusted,
+                because a caller passing the refusal *sentence* is exactly how a
+                machine's name and an address would reach this screen.
+
+        A no-op if nothing is spent right now, or if the code has already been
+        claimed: one code has one outcome, and a success that has already landed
+        is not overwritten by a straggler.
+
+        **This tells an unauthenticated caller nothing.** The refusal is written
+        by the core, on the path that already answered the Agent with the full
+        sentence, and is read only on the admin surface, which is guarded. The
+        direction that needed guarding is this one, and nothing here travels
+        back out through the enrolment route.
+        """
+        from personacore.enrolment.registry import safe_reason  # noqa: PLC0415 - see below
+
+        # Imported inside the call rather than at module scope: this module is
+        # deliberately free of every other part of enrolment (see the module
+        # docstring — it must never import the half that acts on a redemption),
+        # and the one thing it borrows is a shared rule about what a reason code
+        # may look like, not a collaborator.
+        with self._lock:
+            active = self._active
+            if active is not None and active.spent and active.claimed_by is None:
+                active.refusal = PairingRefusal(
+                    reason=safe_reason(reason), machine=display_name
+                )
 
     # -- redemption ---------------------------------------------------------
 
@@ -387,6 +515,11 @@ def mark_claimed(display_name: str) -> None:
     _default_store.mark_claimed(display_name)
 
 
+def mark_refused(display_name: str | None, reason: str) -> None:
+    """Record that the machine which redeemed the live code did not join."""
+    _default_store.mark_refused(display_name, reason)
+
+
 def redeem(code: str) -> bool:
     """Burn a pairing code. True if it was the live code and is now spent.
 
@@ -404,6 +537,7 @@ __all__ = [
     "DEFAULT_MAX_ATTEMPTS",
     "DEFAULT_TTL_SECONDS",
     "IssuedPairing",
+    "PairingRefusal",
     "PairingSnapshot",
     "PairingState",
     "PairingStore",
@@ -411,5 +545,6 @@ __all__ = [
     "current",
     "issue",
     "mark_claimed",
+    "mark_refused",
     "redeem",
 ]

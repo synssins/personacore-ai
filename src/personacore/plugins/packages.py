@@ -383,6 +383,84 @@ def write_disabled_plugins(layout: AppdataLayout, names: set[str]) -> None:
         ) from exc
 
 
+EMPTY_MARKER = ".switched-off-when-empty"
+"""Written into a plugin's own folder when **the core** switched it off because
+it had nothing left to work with — not because anybody clicked.
+
+Two facts have to be told apart, and the disabled list holds only one of them.
+It records *that* a plugin is off; it cannot say *who* turned it off, and the
+answer changes what the core is allowed to do next. A plugin the operator
+switched off must stay off until he says otherwise — overriding a click is the
+one thing this core does not do. A plugin the core parked because it was empty
+is the core's own housekeeping, and undoing it when the plugin has something to
+do again overrides nobody.
+
+**In the plugin's folder, so it dies with the plugin.** The disabled list lives
+in ``config/`` and outlives an uninstall; a marker there would survive a
+reinstall and park a fresh plugin for a reason that no longer existed. This is
+also why the fact is recorded rather than inferred: "the plugin is off and has
+nothing in it" stops being true the instant something is added, which is
+precisely the moment the answer is needed.
+
+The file's *content* is prose for whoever finds it, and nothing reads it.
+"""
+
+_EMPTY_MARKER_NOTE = """\n# This plugin was switched off by the core, not by anybody clicking.
+# It had nothing left to work with. Give it something to do and it starts
+# again on its own; this file goes when it does.
+#
+# manifest.toml beside this file is the last registration that was true.
+# It is not rewritten while the plugin is empty, because a registration
+# that declares nothing at all is refused when it loads -- so it is left
+# as it was and replaced in full the moment the plugin is used again.
+"""
+
+
+def mark_switched_off_when_empty(directory: Path) -> None:
+    """Record that the core parked this plugin. Never raises.
+
+    A marker that could not be written is a plugin that will be switched on by
+    hand instead of switching itself on, which is a worse day than the failure
+    that caused it — but it is not a reason to fail the operation that had
+    already succeeded.
+    """
+    try:
+        (directory / EMPTY_MARKER).write_text(_EMPTY_MARKER_NOTE, encoding="utf-8")
+    except OSError as exc:  # noqa: BLE001 - see docstring
+        logger.warning(
+            "plugin_empty_marker_not_written", directory=str(directory), error=str(exc)
+        )
+
+
+def switched_off_when_empty(directory: Path) -> bool:
+    """Whether the core is the one that switched this plugin off."""
+    try:
+        return (directory / EMPTY_MARKER).is_file()
+    except OSError:  # pragma: no cover - a directory that cannot be stat'd
+        return False
+
+
+def clear_switched_off_when_empty(directory: Path) -> bool:
+    """Forget that the core parked this plugin. Returns whether there was a mark.
+
+    Called when the plugin has something to do again. **Cleared even when the
+    switch-on that follows fails**, because the marker's meaning is "the core
+    parked this and nobody has touched it since", and it stops being true the
+    moment the plugin is used.
+    """
+    path = directory / EMPTY_MARKER
+    try:
+        if not path.is_file():
+            return False
+        path.unlink()
+    except OSError as exc:  # noqa: BLE001 - the plugin is usable either way
+        logger.warning(
+            "plugin_empty_marker_not_cleared", directory=str(directory), error=str(exc)
+        )
+        return False
+    return True
+
+
 def set_plugin_enabled(layout: AppdataLayout, name: str, *, enabled: bool) -> bool:
     """Record that ``name`` is on or off. Returns whether anything changed.
 
@@ -1394,6 +1472,7 @@ def _human_bytes(count: int) -> str:
 __all__ = [
     "DEFAULT_PACKAGE_LIMITS",
     "DISABLED_STATE_FILENAME",
+    "EMPTY_MARKER",
     "PLUGIN_NAME_PATTERN",
     "REPLACED_DIRNAME_PREFIX",
     "STAGING_DIRNAME",
@@ -1411,11 +1490,14 @@ __all__ = [
     "PLUGIN_WORDS",
     "PluginStateError",
     "UninstalledPackage",
+    "clear_switched_off_when_empty",
     "disabled_state_path",
     "install_package",
+    "mark_switched_off_when_empty",
     "read_disabled_plugins",
     "require_plugin_name",
     "set_plugin_enabled",
+    "switched_off_when_empty",
     "uninstall_package",
     "write_disabled_plugins",
 ]

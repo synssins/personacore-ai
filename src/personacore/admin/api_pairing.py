@@ -19,7 +19,11 @@ from __future__ import annotations
 from fastapi import APIRouter, Request, Response, status
 
 from personacore.admin.api_shared import AdminApiContext, _record_change
-from personacore.admin.models import PairingCurrent, PairingIssued
+from personacore.admin.models import (
+    PairingCurrent,
+    PairingIssued,
+    PairingRefusalView,
+)
 from personacore.audit import AuditOutcome
 from personacore.enrolment import pairing
 
@@ -71,11 +75,20 @@ def register(router: APIRouter, ctx: AdminApiContext) -> None:
         """What the screen renders while it waits — never the code itself."""
         require_user(request)
         snapshot = pairing.current()
+        refusal = snapshot.refusal
         return PairingCurrent(
             status=snapshot.status,
             expires_at=snapshot.expires_at,
             expires_in_s=snapshot.expires_in_s,
             claimed_by=snapshot.claimed_by,
+            # Mapped field by field rather than handed over whole: the store's
+            # own dataclass is free to grow something this surface has not
+            # agreed to publish, and a spread would publish it the day it did.
+            refusal=(
+                PairingRefusalView(reason=refusal.reason, machine=refusal.machine)
+                if refusal is not None
+                else None
+            ),
         )
 
     @api.delete(
