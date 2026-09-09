@@ -43,7 +43,7 @@ with everything reported honestly as unknown rather than guessed:
 
 * **Online, per machine.** The registry's own ``connection_state`` seam
   (``MachineRegistry(connection_state=...)``) is wired here from the live
-  host's ``PluginHealth.endpoints`` — one entry per address, ADR-0048 — rather
+  host's ``PluginHealth.endpoints`` — one row per machine, ADR-0048 — rather
   than polled: a machine is online when *any* of its addresses answers, and
   unknown (never offline) when this core has no host to ask at all.
 * **Tool count, per machine.** The union of ``EndpointHealth.tools`` across a
@@ -205,9 +205,14 @@ def relative_moment(moment: datetime, now: datetime) -> str:
 
 
 def endpoint_index(request: Request) -> Mapping[str, EndpointHealth]:
-    """``{address -> its EndpointHealth}`` for the ``workstation`` plugin, or
-    ``{}`` when this core has no plugin host, the host has no opinion, or the
-    plugin has not loaded (never installed, or installed but not yet started).
+    """``{address -> its machine's EndpointHealth}`` for the ``workstation``
+    plugin, or ``{}`` when this core has no plugin host, the host has no
+    opinion, or the plugin has not loaded (never installed, or installed but
+    not yet started).
+
+    One row per machine, and a machine with three addresses appears under all
+    three keys — ``EndpointHealth.every_address`` is the machine's own list, so
+    a row is found by whichever address is looked up.
 
     Read off ``request.app.state.plugin_host`` with ``getattr`` — the same
     duck-typed, optional read ``plugin_detail.py``'s ``_runbooks_store`` uses
@@ -227,7 +232,11 @@ def endpoint_index(request: Request) -> Mapping[str, EndpointHealth]:
         return {}
     for row in rows:
         if row.name == PLUGIN_NAME:
-            return {endpoint.url: endpoint for endpoint in row.endpoints}
+            return {
+                address: endpoint
+                for endpoint in row.endpoints
+                for address in endpoint.every_address
+            }
     return {}
 
 
@@ -237,10 +246,14 @@ def make_connection_state(index: Mapping[str, EndpointHealth]):
 
     ``None`` when none of a machine's own addresses appear in the index at
     all — no host, or the plugin has never started — never guessed as
-    offline. Otherwise online when *any* of its addresses currently answers:
-    a machine's own several addresses (an IPv4 and an IPv6 on one interface)
-    are separate connections (``EndpointSetSupervisor``'s own doc), and one of
-    them answering is what "online" means to somebody looking at one machine.
+    offline. Otherwise online when *any* of its addresses currently answers.
+
+    A machine's several addresses (an IPv4 and an IPv6 on one interface) are
+    one connection tried in declared order (``EndpointSetSupervisor``'s own
+    doc), so they resolve to one row and ``any`` is reading one answer rather
+    than combining several. It stays written as ``any`` because the registry's
+    address list and the manifest's are written at different moments, and a
+    machine part-way through a rewrite must not read as offline.
     """
 
     def _connection_state(machine: Machine) -> bool | None:

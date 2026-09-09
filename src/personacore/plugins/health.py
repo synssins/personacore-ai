@@ -51,13 +51,18 @@ class PluginState(StrEnum):
 
 @dataclass(frozen=True)
 class EndpointHealth:
-    """One endpoint's status, inside one plugin's row — ADR-0048.
+    """One **machine's** status, inside one plugin's row — ADR-0048.
 
-    A plugin that declares ``plugin.urls`` holds one connection per entry, and
+    A plugin that declares ``plugin.urls`` holds one connection per machine, and
     an operator looking at it needs to know which of them is up. This is that,
-    per entry.
+    per machine.
 
-    **It is not a plugin row and must never become one.** The endpoints belong
+    **A machine is the unit; its addresses are alternatives for reaching it.**
+    A workstation listening on an IPv4, an IPv6 and a hostname is three entries
+    in the manifest and **one** of these rows, with all three in
+    :attr:`addresses`. Counting rows counts machines.
+
+    **It is not a plugin row and must never become one.** The machines belong
     to the plugin: they are listed inside its row and on its own settings page,
     never alongside the other plugins in the list. A plugin that declares only
     ``url`` has none of these at all — the field on
@@ -68,9 +73,10 @@ class EndpointHealth:
     """
 
     url: str
-    """The address, exactly as the manifest wrote it. The identity of the row:
-    a set may hold two addresses for the same machine (an IPv4 and an IPv6),
-    and they are two connections and two rows."""
+    """This machine's **first** declared address, exactly as the manifest wrote
+    it. The identity of the row, and stable whichever route is currently up, so
+    a row does not move about when a machine falls through to another address.
+    Every way to reach it is in :attr:`addresses`."""
 
     state: PluginState
     tools: tuple[str, ...] = ()
@@ -84,15 +90,46 @@ class EndpointHealth:
     next_retry_at: datetime | None = None
     terminal: bool = False
 
+    addresses: tuple[str, ...] = ()
+    """Every address this machine can be reached at, in the order the manifest
+    declared them — the owner's own preference order, never sorted here.
+
+    Empty means "just :attr:`url`", which is what a machine with one address
+    has and what a row built by hand gets. Any of these names this machine, so
+    a screen indexing rows by address indexes all of them.
+    """
+
+    connected_url: str | None = None
+    """The address this machine is currently reached at, or ``None`` when it is
+    not connected. Which of several routes answered — the fact an operator with
+    a machine on two networks needs and cannot work out from the state alone."""
+
     @property
     def is_callable(self) -> bool:
-        """Whether a call may be routed to this endpoint — see
+        """Whether a call may be routed to this machine — see
         :attr:`PluginHealth.is_callable`, which this mirrors."""
         return self.state in (PluginState.HEALTHY, PluginState.DEGRADED)
 
+    @property
+    def every_address(self) -> tuple[str, ...]:
+        """:attr:`addresses` if it was filled in, otherwise just :attr:`url`.
+
+        The one place that reconciles the two, so nothing downstream has to
+        remember that a single-address machine may not bother listing itself.
+        """
+        return self.addresses or (self.url,)
+
     def to_dict(self) -> dict[str, Any]:
-        """JSON-ready form, nested inside the plugin's own row."""
-        return {
+        """JSON-ready form, nested inside the plugin's own row.
+
+        ``addresses`` and ``connected_url`` appear only for a machine that has
+        more than one way in, following the same rule
+        :meth:`PluginHealth.to_dict` follows for ``endpoints``: a reader that
+        will never meet a multi-homed machine is never shown a key for one, and
+        the row a single-address machine serialises to is exactly the row it
+        serialised to before.
+        """
+        payload: dict[str, Any] = {
             "url": self.url,
             "state": self.state.value,
             "tools": list(self.tools),
@@ -103,6 +140,10 @@ class EndpointHealth:
             "next_retry_at": self.next_retry_at.isoformat() if self.next_retry_at else None,
             "terminal": self.terminal,
         }
+        if len(self.every_address) > 1:
+            payload["addresses"] = list(self.every_address)
+            payload["connected_url"] = self.connected_url
+        return payload
 
 
 @dataclass(frozen=True)
@@ -152,8 +193,13 @@ class PluginHealth:
     """
 
     endpoints: tuple[EndpointHealth, ...] = ()
-    """One row per entry of ``plugin.urls`` — ADR-0048. Empty for every plugin
-    that does not declare an endpoint set, which is every plugin but one.
+    """One row per **machine** behind ``plugin.urls`` — ADR-0048. Empty for
+    every plugin that does not declare an endpoint set, which is every plugin
+    but one.
+
+    Not one row per entry: a machine listening on several addresses writes
+    several entries and is one row here, so the length of this tuple is the
+    number of machines.
 
     :attr:`state`, :attr:`tools` and :attr:`restart_count` above still describe
     *the plugin*: whether the assistant can use it at all, the one flat tool

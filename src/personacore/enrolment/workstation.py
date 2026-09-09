@@ -569,8 +569,9 @@ def read_addresses(document: Mapping[str, Any]) -> tuple[tuple[str, str], ...]:
     and the machine already knows how to spell its own address.
 
     Exact repeats are dropped rather than refused. A machine listing its
-    preferred address again inside ``urls`` is being thorough, not wrong, and
-    two records for one address would be two connections to one machine.
+    preferred address again inside ``urls`` is being thorough, not wrong, and a
+    duplicated record would put the same address twice in the list of ways to
+    reach that machine — dialled twice, in turn, for no gain.
     """
     entries: list[tuple[object, object]] = []
     raw_url = document.get("url")
@@ -736,6 +737,15 @@ def build_manifest_document(
     machine — ADR-0048's additive endpoint set, which each machine's record maps
     onto with nothing to translate: the address, the pin for the certificate
     served there, and the *name* of the token that machine will accept.
+
+    **The token name is also what puts a machine's addresses back together.**
+    Every entry written for one machine carries that machine's own
+    ``machine_<id>_token``, and the plugin host groups by it
+    (:func:`personacore.plugins.supervisor.group_endpoints_by_machine`), so a PC
+    on three addresses is three entries here and one machine there — one
+    connection, one health row, counted and asked about once. Writing a machine
+    without its token name, or two machines under one, would be writing that a
+    machine is something it is not.
 
     The registry is the source of truth and this document is derived from it, so
     the two cannot drift: rewriting it is how a machine that was added or

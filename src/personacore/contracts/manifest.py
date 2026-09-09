@@ -506,6 +506,13 @@ class EndpointDeclaration(BaseModel):
     already per-plugin, so N named secrets under one plugin need no new
     machinery.
 
+    **It is also what says which entries are one machine.** Because the token
+    is minted per machine, entries carrying the same name are that machine's
+    several addresses and are held as one connection and one health row
+    (:func:`personacore.plugins.supervisor.group_endpoints_by_machine`). That is
+    a consequence of what the field already means rather than a second job given
+    to it — a machine is the only thing that can accept its own token.
+
     Optional. An entry that does not name one is sent the plugin's own
     :attr:`PluginIdentity.auth_secret`, if it has one — which is what a set of
     machines standing behind a single shared credential looks like.
@@ -557,10 +564,16 @@ class PluginIdentity(BaseModel):
 
     It exists for the one plugin that fronts several machines. Each entry
     carries its own address and its own :attr:`EndpointDeclaration.pin`,
-    because each machine terminates TLS itself with its own certificate. The
-    core holds one connection and one health row per entry, all under this one
-    plugin record: the machines are part of the plugin, not plugins of their
-    own.
+    because each machine terminates TLS itself with its own certificate. All of
+    them sit under this one plugin record: the machines are part of the plugin,
+    not plugins of their own.
+
+    **An entry is an address, not a machine.** A machine that listens on an
+    IPv4, an IPv6 and a hostname writes three entries, and the core holds one
+    connection and one health row for it, trying its addresses in the order
+    written until one answers. What tells the entries of one machine apart from
+    another machine's is :attr:`EndpointDeclaration.auth_secret` — see
+    :func:`personacore.plugins.supervisor.group_endpoints_by_machine`.
 
     ``None`` (absent) and ``[]`` are different: absent is the ordinary case,
     empty is refused (:data:`ENDPOINT_SET_MUST_NOT_BE_EMPTY`).
