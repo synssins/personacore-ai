@@ -44,8 +44,13 @@ read the other nine to make.
 * :mod:`personacore.admin.api_config` — core settings, and the one function
   that writes them.
 * :mod:`personacore.admin.api_keys` — issue, list, revoke.
+* :mod:`personacore.admin.api_pairing` — workstation enrolment's pairing
+  code: issue, show, cancel (``working/team/enrolment/PLAN.md``).
 * :mod:`personacore.admin.api_accounts` — who this request is, and the core's
   own sign-in.
+* :mod:`personacore.admin.api_enrol` — workstation enrolment: the one route in
+  this core that writes without a credential, gated by a pairing code the owner
+  is looking at.
 
 **The split moved code and changed no route.** ADR-0032 is why that matters
 more here than in the other three splits: authorisation on this surface is a
@@ -74,8 +79,10 @@ from fastapi.templating import Jinja2Templates
 # store. The rest follow the same shape so the register calls read alike.
 from personacore.admin import api_accounts as accounts_api
 from personacore.admin import api_config as config_api
+from personacore.admin import api_enrol as enrol_api
 from personacore.admin import api_health as health_api
 from personacore.admin import api_keys as keys_api
+from personacore.admin import api_pairing as pairing_api
 from personacore.admin import api_personas as personas_api
 from personacore.admin import api_plugin_config as plugin_config_api
 from personacore.admin import api_plugins as plugins_api
@@ -405,6 +412,7 @@ def create_admin_router(
     trace_api.register(api, ctx)
     config_api.register(api, ctx)
     keys_api.register(api, ctx)
+    pairing_api.register(api, ctx)
     accounts_api.register(api, ctx)
 
     # -- assembly ----------------------------------------------------------
@@ -417,6 +425,18 @@ def create_admin_router(
     # a core assembled without one has no sign-in surface to probe rather than
     # one that answers 503.
     accounts_api.register_public(router, ctx)
+
+    # Workstation enrolment, `POST /enrol/workstation` — the fourth and last
+    # unauthenticated route, and the only one that writes anything. It is here
+    # rather than mounted from the application for the same reason everything
+    # else is: this factory is where the door decision is made, so every route
+    # that deliberately has no door is visible in this one file. Its path is
+    # top level rather than under `/admin/api` because it has to be reachable
+    # from the LAN at the moment the owner presses Join, and `/admin` is the
+    # namespace an operator is most likely to have fenced off.
+    #
+    # Read `personacore.admin.api_enrol`'s module docstring before touching it.
+    enrol_api.register_public(router, ctx)
 
     # The designed admin UI (ADR-0020). It is mounted here, from the same
     # factory, so it is built with **the same `require_user`** the API above is

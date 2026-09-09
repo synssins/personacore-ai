@@ -41,6 +41,7 @@ take it with it, and "switched off" has to outlive the thing it is about.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import stat
 import tomllib
@@ -304,6 +305,17 @@ class UninstalledPackage(BaseModel):
 
     files_removed: int
 
+    copies_removed: int = 0
+    """How many set-aside copies of this plugin went with it.
+
+    A replace moves the installed folder to a ``.replaced-<name>-<hex>`` sibling
+    and normally deletes it on success — but not when the replacement failed and
+    could not be rolled back, and not when the delete itself was refused, which
+    on Windows is any file another process still has open. Such a folder is a
+    complete copy of the plugin *including its settings*, so an uninstall that
+    left one behind removed the plugin from the screen and not from the disk.
+    Usually ``0``; anything else is a copy that had outlived its install."""
+
 
 # ---------------------------------------------------------------------------
 # Enable / disable — persisted in appdata
@@ -495,6 +507,22 @@ def uninstall_package(layout: AppdataLayout, name: str) -> UninstalledPackage:
     The plugin's ``config.toml`` lives inside the folder, so it always goes with
     it; :attr:`UninstalledPackage.config_removed` says whether there was one, so
     the UI can tell the operator what they are losing before they confirm.
+
+    **Any copy set aside by a replace goes too.** A replace renames the
+    installed folder to a ``.replaced-<name>-<hex>`` sibling and deletes it once
+    the new one is in place; one that survives — a replacement that failed and
+    could not be rolled back, or a delete Windows refused because a file was
+    open — is a complete copy of the plugin and its settings sitting next to it.
+    Removing the plugin folder alone left that copy behind, so "uninstalled"
+    meant gone from the screen rather than gone from the disk. It is the same
+    call, because the operator asked for one thing.
+
+    **A copy can be all there is.** A replacement that failed and could not be
+    rolled back leaves the ``.replaced-`` folder and *no* main folder — the
+    exact state the sweep was written for — and looking only for the main folder
+    refused the uninstall outright and left the copy sitting there. So
+    :class:`PackageNotInstalled` now means what it says: nothing of this plugin
+    is on disk at all, neither a folder nor a copy of one.
     """
     require_plugin_name(name)
     for root in (layout.plugins, layout.plugins_http):
@@ -502,9 +530,7 @@ def uninstall_package(layout: AppdataLayout, name: str) -> UninstalledPackage:
         if directory.exists():
             break
     else:
-        raise PackageNotInstalled(
-            f"No plugin named {name!r} is installed, so there is nothing to remove."
-        )
+        return _uninstall_copies_only(layout, name)
 
     if directory.is_symlink():
         raise PackageUnsafe(
@@ -533,6 +559,8 @@ def uninstall_package(layout: AppdataLayout, name: str) -> UninstalledPackage:
             "Check the appdata volume is writable by the user the core runs as."
         ) from exc
 
+    copies_removed = len(_remove_set_aside_copies(layout, name))
+
     # A name that is no longer installed must not stay on the switched-off list:
     # a later install of the same name would arrive already off, with nothing on
     # screen explaining why.
@@ -541,13 +569,119 @@ def uninstall_package(layout: AppdataLayout, name: str) -> UninstalledPackage:
     except PluginStateError as exc:  # pragma: no cover - the folder is already gone
         logger.error("plugin_state_cleanup_failed", plugin=name, error=str(exc))
 
-    logger.info("plugin_uninstalled", plugin=name, files=files_removed)
+    logger.info(
+        "plugin_uninstalled", plugin=name, files=files_removed, copies=copies_removed
+    )
     return UninstalledPackage(
         name=name,
         directory=resolved,
         config_removed=config_removed,
         files_removed=files_removed,
+        copies_removed=copies_removed,
     )
+
+
+def _uninstall_copies_only(layout: AppdataLayout, name: str) -> UninstalledPackage:
+    """The plugin's own folder is gone; remove whatever copies of it are not.
+
+    This is the failed-rollback state: ``install_package`` moved the working
+    plugin to a ``.replaced-`` sibling, could not put it back, and said so in a
+    sentence naming the folder. Everything the plugin had — its settings
+    included — is in that folder and nowhere else, so an uninstall that refused
+    because ``plugins/<name>`` was missing removed nothing and reported failure
+    while a complete copy sat beside it.
+
+    Reports success with ``config_removed`` false and ``files_removed`` zero,
+    both of which count the *installed* folder — there was none. What went is in
+    ``copies_removed``, which is the honest place for it.
+    """
+    removed = _remove_set_aside_copies(layout, name)
+    if not removed:
+        raise PackageNotInstalled(
+            f"No plugin named {name!r} is installed, so there is nothing to remove."
+        )
+
+    # A stale switched-off entry outlives the folder either way, and a later
+    # install of this name must not arrive already off (see `uninstall_package`).
+    try:
+        set_plugin_enabled(layout, name, enabled=True)
+    except PluginStateError as exc:  # pragma: no cover - nothing is on disk now
+        logger.error("plugin_state_cleanup_failed", plugin=name, error=str(exc))
+
+    logger.info("plugin_uninstalled", plugin=name, files=0, copies=len(removed))
+    return UninstalledPackage(
+        name=name,
+        # Where the plugin would have been. It never was, in this state — the
+        # copy's own parent is the root it would have been installed into.
+        directory=removed[0].parent / name,
+        config_removed=False,
+        files_removed=0,
+        copies_removed=len(removed),
+    )
+
+
+def _remove_set_aside_copies(layout: AppdataLayout, name: str) -> list[Path]:
+    """Delete every ``.replaced-<name>-<hex>`` folder left by an earlier replace.
+
+    Both plugin roots are searched, because a plugin that changed transport
+    between versions can have left a copy under the other one.
+
+    The containment rules are :func:`uninstall_package`'s and are applied again
+    rather than assumed: the entry must be a real directory, not a symbolic
+    link, resolving to a direct child of the root it was found in. The name is
+    matched against the prefix plus the plugin's own name plus a hex suffix, so
+    a plugin called ``weather`` cannot reach a copy of ``weather-radar``.
+
+    Never raises. The plugin itself is already gone by the time this runs, and
+    turning a leftover copy that will not delete into a failed uninstall would
+    report the plugin as still installed when it is not — the list returned and
+    the log line are how a copy that survived is findable instead.
+
+    Returns the copies actually removed, so a caller that found no main folder
+    can say which root the plugin would have been installed into.
+    """
+    removed: list[Path] = []
+    for root in (layout.plugins, layout.plugins_http):
+        try:
+            candidates = sorted(root.glob(f"{REPLACED_DIRNAME_PREFIX}{name}-*"))
+        except OSError:  # pragma: no cover - the root is the one just written to
+            continue
+        for candidate in candidates:
+            if candidate.is_symlink() or not candidate.is_dir():
+                continue
+            if not _SET_ASIDE_SUFFIX_RE.fullmatch(
+                candidate.name[len(REPLACED_DIRNAME_PREFIX) + len(name) + 1 :]
+            ):
+                continue
+            try:
+                resolved = layout.require_inside(
+                    candidate, what=f"A set-aside copy of plugin {name!r}"
+                )
+            except AppdataError:  # pragma: no cover - it came from a glob of the root
+                continue
+            if resolved.parent != root.resolve():
+                continue
+            try:
+                shutil.rmtree(resolved)
+            except OSError as exc:
+                logger.error(
+                    "plugin_set_aside_copy_remove_failed",
+                    plugin=name,
+                    copy=str(resolved),
+                    error=str(exc),
+                )
+                continue
+            removed.append(resolved)
+    if removed:
+        logger.info(
+            "plugin_set_aside_copies_removed", plugin=name, copies=len(removed)
+        )
+    return removed
+
+
+_SET_ASIDE_SUFFIX_RE = re.compile(r"[0-9a-f]+")
+"""What ``token_hex`` produces, and nothing else. Without it, the glob would
+also match a folder somebody named ``.replaced-weather-keep-this``."""
 
 
 # ---------------------------------------------------------------------------

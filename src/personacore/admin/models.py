@@ -30,6 +30,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from personacore.audit import Surface
 from personacore.auth.method import AuthMethod
 from personacore.contracts.policy import PolicyProfile
+from personacore.enrolment.pairing import PairingState
 
 # ---------------------------------------------------------------------------
 # Identity
@@ -718,6 +719,52 @@ class ApiKeyIssued(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Pairing — workstation enrolment, working/team/enrolment/PLAN.md and
+# working/team/enrolment/s1-pairing/SPEC.md
+# ---------------------------------------------------------------------------
+
+
+class PairingIssued(BaseModel):
+    """``POST /admin/api/pairings`` response — **the only place the code ever
+    appears.**
+
+    Same rule as :class:`ApiKeyIssued`: this is not a convenience view of
+    something retrievable, it is the one moment the code exists outside
+    :mod:`personacore.enrolment.pairing`. It is not in
+    :class:`PairingCurrent`, not in the audit record, and not in any log line.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    code: str
+    """The code the owner reads off his screen and types into the
+    workstation's Agent. Shown once, here, and never again."""
+
+    expires_at: datetime
+    expires_in_s: int
+
+
+class PairingCurrent(BaseModel):
+    """``GET /admin/api/pairings/current`` — the pairing screen's poll.
+
+    **Never carries the code, under any ``status``.** The screen renders this
+    on a timer; the code itself was already handed to the owner once, in
+    :class:`PairingIssued`, and has no reason to cross the wire again.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: PairingState
+    expires_at: datetime | None
+    expires_in_s: int
+
+    claimed_by: str | None = None
+    """Display name of the workstation that redeemed the code, or ``None``
+    while nothing has claimed it yet — including in the instant between a
+    successful redemption and the enroller learning a name to show."""
+
+
+# ---------------------------------------------------------------------------
 # Core config — spec section 9's "validation and plain-English errors"
 # ---------------------------------------------------------------------------
 
@@ -974,6 +1021,8 @@ __all__ = [
     "ConfigUpdateResponse",
     "HealthState",
     "InstallResult",
+    "PairingCurrent",
+    "PairingIssued",
     "PersonaDetail",
     "PersonaListing",
     "PersonaSelected",

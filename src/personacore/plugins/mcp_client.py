@@ -64,7 +64,7 @@ from mcp.client.streamable_http import streamable_http_client
 from personacore.agent.protocols import ToolFile
 from personacore.audit import get_logger
 from personacore.config.secrets import SecretError, SecretStore
-from personacore.contracts.manifest import Transport
+from personacore.contracts.manifest import EndpointDeclaration, Transport
 from personacore.plugins.discovery import PluginRecord
 from personacore.plugins.health import PluginOutput
 from personacore.workspaces import FILENAME_PATTERN
@@ -300,23 +300,37 @@ def build_http_auth_headers(
     name = record.manifest.plugin.auth_secret
     if not name:
         return {}
+    return build_bearer_header(record.name, name, secrets)
+
+
+def build_bearer_header(
+    plugin: str, secret_name: str, secrets: SecretStore | None
+) -> dict[str, str]:
+    """One named secret in one plugin's namespace, as an ``Authorization`` header.
+
+    The body of :func:`build_http_auth_headers`, lifted out so the endpoint set
+    can send *its* named secret through the same lookup, the same fail-closed
+    posture and the same three sentences. What is not shared is the decision of
+    which name to send: the single path still reads ``plugin.auth_secret`` and
+    nothing else, and an entry still reads its own.
+    """
     if secrets is None:
         raise ChildEnvironmentError(
-            f"Plugin {record.name!r} asks for the secret {name!r} to send as a "
+            f"Plugin {plugin!r} asks for the secret {secret_name!r} to send as a "
             "bearer token, but this core was started without a secret store, so "
             "it cannot be given it. It has not been started."
         )
     try:
-        scoped = secrets.scoped(record.name, [name])
+        scoped = secrets.scoped(plugin, [secret_name])
     except SecretError as exc:
-        raise ChildEnvironmentError(f"Plugin {record.name!r} cannot start: {exc}") from None
+        raise ChildEnvironmentError(f"Plugin {plugin!r} cannot start: {exc}") from None
     if scoped.missing():
-        raise MissingPluginSecrets(record.name, [name])
+        raise MissingPluginSecrets(plugin, [secret_name])
     try:
-        value = scoped.get(name).get_secret_value()
+        value = scoped.get(secret_name).get_secret_value()
     except SecretError as exc:
         raise ChildEnvironmentError(
-            f"Plugin {record.name!r} cannot start: it declares the secret {name!r} "
+            f"Plugin {plugin!r} cannot start: it declares the secret {secret_name!r} "
             f"in its manifest, and {exc}"
         ) from None
     return {"Authorization": f"Bearer {value}"}
@@ -430,6 +444,38 @@ class _PinnedCertTransport(httpx2.AsyncHTTPTransport):
         _check_tls_fingerprint(der, self._pinned, self._url)
 
 
+def build_pinned_client_kwargs(
+    url: str, fingerprint: str, **transport_options: Any
+) -> dict[str, Any]:
+    """``verify`` and ``transport`` for a client pinned to one certificate.
+
+    Split out of :func:`build_http_client_kwargs` rather than duplicated,
+    because there is now a second caller with a url and a pin but no installed
+    plugin to read them off: workstation enrolment pushes a bearer token to an
+    address it has only just been handed, and it must use *this* transport —
+    the same inverted verification, the same trace-hook pin check, and the same
+    scheme and host guards in :meth:`_PinnedCertTransport.handle_async_request`
+    — rather than a second implementation of certificate handling.
+
+    ``transport_options`` reach :class:`httpx2.AsyncHTTPTransport` unchanged, so
+    a caller that wants ``trust_env=False`` can say so without this function
+    deciding it for the plugin path that has always had the default.
+    """
+    # The trust store's own verification must not run at all: it would
+    # refuse a self-signed pinned certificate before the pin is ever
+    # checked, for the plugin this field exists for. The pin is the only
+    # check now, and `_PinnedCertTransport` is what performs it.
+    ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ssl_context.check_hostname = False
+    ssl_context.verify_mode = ssl.CERT_NONE
+    return {
+        "verify": ssl_context,
+        "transport": _PinnedCertTransport(
+            pinned=fingerprint, url=url, verify=ssl_context, **transport_options
+        ),
+    }
+
+
 def build_http_client_kwargs(record: PluginRecord, secrets: SecretStore | None) -> dict[str, Any]:
     """Everything ``httpx2.AsyncClient`` needs for one http plugin's manifest.
 
@@ -442,18 +488,42 @@ def build_http_client_kwargs(record: PluginRecord, secrets: SecretStore | None) 
     kwargs: dict[str, Any] = {"headers": build_http_auth_headers(record, secrets)}
     fingerprint = record.manifest.plugin.tls_fingerprint
     if fingerprint is not None:
-        url = record.manifest.plugin.url or ""
-        # The trust store's own verification must not run at all: it would
-        # refuse a self-signed pinned certificate before the pin is ever
-        # checked, for the plugin this field exists for. The pin is the only
-        # check now, and `_PinnedCertTransport` is what performs it.
-        ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        ssl_context.check_hostname = False
-        ssl_context.verify_mode = ssl.CERT_NONE
-        kwargs["verify"] = ssl_context
-        kwargs["transport"] = _PinnedCertTransport(
-            pinned=fingerprint, url=url, verify=ssl_context
+        kwargs.update(
+            build_pinned_client_kwargs(record.manifest.plugin.url or "", fingerprint)
         )
+    return kwargs
+
+
+def build_endpoint_client_kwargs(
+    record: PluginRecord, endpoint: EndpointDeclaration, secrets: SecretStore | None
+) -> dict[str, Any]:
+    """The same, for one entry of a plugin's endpoint set — ADR-0048.
+
+    A sibling of :func:`build_http_client_kwargs`, not a generalisation of it.
+    The two differ in exactly one thing — where the address and the pin come
+    from — and that one thing is the whole reason the endpoint set exists, so
+    it is the thing that gets its own function rather than an argument threaded
+    through the path every other plugin uses.
+
+    Three facts belong to one machine and travel together: the address, the pin
+    for the certificate served there, and the name of the token it will accept.
+    Each machine issues its own token, so sending one plugin-wide credential to
+    all of them is a credential the others refuse. The name is looked up in the
+    *plugin's* secret namespace, which is already per-plugin, so N named secrets
+    under one plugin need nothing new.
+
+    An entry that names no secret falls back to the plugin's own
+    ``auth_secret`` — a set of machines standing behind one shared credential —
+    and that fallback runs in this direction only. The single-``url`` path
+    reads ``plugin.auth_secret`` directly and never consults an entry.
+    """
+    if endpoint.auth_secret is not None:
+        headers = build_bearer_header(record.name, endpoint.auth_secret, secrets)
+    else:
+        headers = build_http_auth_headers(record, secrets)
+    kwargs: dict[str, Any] = {"headers": headers}
+    if endpoint.pin is not None:
+        kwargs.update(build_pinned_client_kwargs(endpoint.url, endpoint.pin))
     return kwargs
 
 
@@ -522,6 +592,24 @@ class SessionFactory(Protocol):
     """
 
     def connect(self, record: PluginRecord) -> AbstractAsyncContextManager[PluginSession]:
+        ...
+
+
+@runtime_checkable
+class EndpointSessionFactory(Protocol):
+    """A factory that can also open one *named endpoint* of a plugin — ADR-0048.
+
+    Separate from :class:`SessionFactory` rather than an extra method on it,
+    and ``runtime_checkable`` so the caller can ask. A factory that only knows
+    how to connect a plugin is still a complete factory: every plugin in the
+    house is reached through :meth:`SessionFactory.connect` and always was.
+    Widening that protocol would have made every existing fake — and every
+    existing implementation — owe a method for a feature one plugin uses.
+    """
+
+    def connect_endpoint(
+        self, record: PluginRecord, endpoint: EndpointDeclaration
+    ) -> AbstractAsyncContextManager[PluginSession]:
         ...
 
 
@@ -1040,6 +1128,54 @@ class McpSessionFactory:
         except BaseExceptionGroup as group:
             raise PluginTransportError(f"{url}: {_flatten(group)}") from None
 
+    # -- http, one endpoint of a set (ADR-0048) ----------------------------
+
+    def connect_endpoint(
+        self, record: PluginRecord, endpoint: EndpointDeclaration
+    ) -> AbstractAsyncContextManager[PluginSession]:
+        return self._connect_endpoint(record, endpoint)
+
+    @asynccontextmanager
+    async def _connect_endpoint(
+        self, record: PluginRecord, endpoint: EndpointDeclaration
+    ) -> AsyncIterator[PluginSession]:
+        """Open one entry of ``plugin.urls``.
+
+        A second path beside :meth:`_connect_http`, which is left exactly as it
+        was. The resemblance between the two is real and is the price of the
+        shape the owner chose: the alternative was to give ``_connect_http`` an
+        optional endpoint argument, at which point every plugin in the house
+        connects through code written for the one plugin that has a set. What
+        is *not* duplicated is anything that decides: the scheme guard, the
+        certificate handling (:func:`build_pinned_client_kwargs`), the bearer
+        header and the handshake are all the same functions both paths call.
+        """
+        url = endpoint.url
+        scheme = urlparse(url).scheme.lower()
+        if scheme not in ("http", "https"):
+            # Fail closed, identically to the single path: a manifest naming
+            # file:// or anything else is not a network address.
+            raise PluginTransportError(
+                f"Plugin {record.name!r} declares the address {url!r}, which is not "
+                "an http:// or https:// URL. HTTP plugins are reached over the "
+                "network and nothing else."
+            )
+        client_kwargs = build_endpoint_client_kwargs(record, endpoint, self._secrets)
+        try:
+            async with AsyncExitStack() as stack:
+                client = await stack.enter_async_context(httpx2.AsyncClient(**client_kwargs))
+                try:
+                    streams = await stack.enter_async_context(
+                        streamable_http_client(url, http_client=client)
+                    )
+                except PluginTransportError:
+                    raise
+                except Exception as exc:
+                    raise PluginTransportError(f"could not reach {url}: {exc}") from exc
+                yield await self._open_session(streams, stack)
+        except BaseExceptionGroup as group:
+            raise PluginTransportError(f"{url}: {_flatten(group)}") from None
+
     # -- shared handshake --------------------------------------------------
 
     async def _open_session(
@@ -1109,6 +1245,7 @@ __all__ = [
     "FORCED_ENV",
     "PLUGIN_OUTPUT_CHARS",
     "ChildEnvironmentError",
+    "EndpointSessionFactory",
     "McpPluginSession",
     "McpSessionFactory",
     "MissingPluginSecrets",
@@ -1119,8 +1256,11 @@ __all__ = [
     "RemoteTool",
     "RemoteToolResult",
     "SessionFactory",
+    "build_bearer_header",
     "build_child_environment",
+    "build_endpoint_client_kwargs",
     "build_http_auth_headers",
     "build_http_client_kwargs",
+    "build_pinned_client_kwargs",
     "render_call_result",
 ]
