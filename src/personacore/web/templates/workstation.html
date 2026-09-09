@@ -20,7 +20,15 @@
 {% from "_controls.html" import icon %}
 {% block title %}workstation — PersonaCore admin{% endblock %}
 {% block content %}
-<p style="margin:0"><a href="/admin/plugins">← Plugins</a></p>
+{# The canvas's own breadcrumb ("Plugins / workstation"), not the generic
+   plugin screens' "← Plugins" back-link — a verifier compared this page
+   against the artboard string for string and this was one of the three
+   real differences it found. #}
+<div class="hrow" style="gap:10px; font-size:12px; color:color-mix(in srgb, var(--color-text) 50%, transparent)">
+  <a href="/admin/plugins" style="text-decoration:none">Plugins</a>
+  <span>/</span>
+  <span>workstation</span>
+</div>
 
 <header class="hrow">
   <h3 style="margin:0">workstation</h3>

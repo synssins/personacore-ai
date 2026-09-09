@@ -340,35 +340,32 @@ def find_view(views: Sequence[MachineView], name: str) -> MachineView | None:
 
 
 def refusal_card(reason: str, machine: str | None) -> dict[str, Any]:
-    """One refusal card's title and body, built from the short code alone.
+    """One refusal card's title and which reason it is, built from the short
+    code alone.
 
     **Never the sentence the Agent got.** That sentence is free text written
     for the person standing at the workstation, it already crossed the wire
     to the Agent, and it can name an already-enrolled machine and its
     address — precisely the two facts ``PairingRefusal`` deliberately does
-    not carry to this side (module docstring). So this writes prose from
-    ``reason`` and ``machine`` — the joining machine's own name, which for a
-    collision is the same string the row already in the list is using —
-    never from anything this screen would have to go and read the sentence
-    to know, such as an address.
+    not carry to this side (module docstring).
+
+    **The body is not built here.** The canvas's own wording for
+    ``name_taken`` bolds the machine's name with a real ``<strong>``, and
+    Jinja is what is allowed to put a variable inside markup safely — a
+    Python f-string doing it would either escape the tags into visible text
+    or skip escaping the name itself, and a name is the one field on this
+    card that a joining machine chose, not the owner. So the template
+    (``fragments/workstation_pairing_status.html``) holds the canvas's exact
+    sentences and interpolates ``machine`` into them the same way it already
+    interpolates a name anywhere else on this screen.
 
     ``name_taken`` and ``machine_unreachable`` are the two the canvas draws a
-    card for; every other code, including the generic ``refused``, gets the
-    fallback the canvas has no card for a specific reason. That default is
-    load-bearing: a refusal this screen cannot name still has to close the
-    dialog with something true.
+    card for; every other code, including the generic ``refused``, collapses
+    to a title this screen still has to close the dialog with something true
+    for.
     """
     if reason == "name_taken" and machine:
-        return {
-            "reason": reason,
-            "title": NAME_TAKEN_TITLE,
-            "body": (
-                f"A machine called {machine!r} is already on this core, so this "
-                "one could not join under that name. Remove the one that is "
-                "there, or rename this machine and try again."
-            ),
-            "machine": machine,
-        }
+        return {"reason": reason, "title": NAME_TAKEN_TITLE, "machine": machine}
     if reason == "machine_unreachable":
         return {
             "reason": reason,
@@ -377,23 +374,9 @@ def refusal_card(reason: str, machine: str | None) -> dict[str, Any]:
                 if machine
                 else "Could not reach it."
             ),
-            "body": (
-                f"The core could not hand {machine or 'the workstation'} its "
-                "credential — the connection failed. Nothing was installed. "
-                "Check it is running and reachable, then get a fresh code and "
-                "press Join again."
-            ),
             "machine": machine,
         }
-    return {
-        "reason": "refused",
-        "title": GENERIC_REFUSAL_TITLE,
-        "body": (
-            "It was turned away, and this screen has no card written for that "
-            "particular reason yet. Get a fresh code and try again."
-        ),
-        "machine": machine,
-    }
+    return {"reason": "refused", "title": GENERIC_REFUSAL_TITLE, "machine": machine}
 
 
 # ---------------------------------------------------------------------------

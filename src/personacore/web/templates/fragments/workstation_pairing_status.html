@@ -139,7 +139,13 @@
       {{ icon('warn') }}
       <div style="flex:1">
         <div class="state-word down">{{ refusal.title }}</div>
-        <p style="margin:3px 0 0; line-height:1.5">{{ refusal.body }}</p>
+        {% if refusal.reason == 'name_taken' %}
+        <p style="margin:3px 0 0; line-height:1.5">A machine called <strong style="font-weight:500">{{ refusal.machine }}</strong> is already in this list, so this one cannot join under that name. Remove the old one first, or rename this machine and try again.</p>
+        {% elif refusal.reason == 'machine_unreachable' %}
+        <p style="margin:3px 0 0; line-height:1.5">The core could not hand the credential to {{ refusal.machine or "the workstation" }}: the connection failed. Nothing was installed. Check the workstation is running and reachable, then get a fresh code and press Join again.</p>
+        {% else %}
+        <p style="margin:3px 0 0; line-height:1.5">It was turned away, and this screen has no card written for that particular reason yet. Get a fresh code and try again.</p>
+        {% endif %}
       </div>
     </div>
     <div class="hrow" style="margin-top:6px">
