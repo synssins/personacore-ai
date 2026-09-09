@@ -35,7 +35,7 @@ name = "example-plugin"
 # It has NOTHING TO DO with `contract` below. They are two independent numbers:
 # this one moves when YOUR files change; `contract` moves only when the CORE
 # changes its plugin contract, which is rare and not up to you.
-version = "0.3.0"
+version = "0.4.0"
 
 # LEAVE THIS unless you know why you are changing it. Which version of the
 # PersonaCore plugin contract you were written against.
