@@ -38,6 +38,7 @@ from typing import Any
 
 from personacore.audit import get_logger
 from personacore.contracts.manifest import EndpointDeclaration
+from personacore.enrolment.registry import is_machine_secret_name
 from personacore.plugins.discovery import PluginRecord
 from personacore.plugins.health import EndpointHealth, PluginHealth, PluginState
 from personacore.plugins.mcp_client import (
@@ -450,6 +451,20 @@ class PluginSupervisor:
 # The second path: one plugin, several endpoints (ADR-0048)
 # ---------------------------------------------------------------------------
 
+MACHINE_CREDENTIAL_MISSING = (
+    "This core has no credential for this machine, so it cannot connect to it. "
+    "There is nothing to type in — a machine's credential is created by this "
+    "core and sent to the machine when it joins. Remove the machine here and "
+    "join it again from the machine itself."
+)
+"""What a machine whose token has gone missing says, instead of asking for it.
+
+The plain-English half of the rule in
+:meth:`EndpointSetSupervisor._endpoint_error`: it names what is wrong, says why
+there is nothing to supply, and gives the one action that fixes it. It names
+neither the secret nor its value.
+"""
+
 
 @dataclass(frozen=True)
 class _BoundEndpointFactory:
@@ -543,8 +558,16 @@ class EndpointSetSupervisor:
 
     @property
     def endpoints(self) -> Mapping[str, PluginSupervisor]:
-        """The per-endpoint supervisors, by address. For the plugin's own
-        settings page and for a resolver that has picked one."""
+        """The per-endpoint supervisors, by address. For a resolver that has
+        picked one.
+
+        **Not the source of what a screen shows.** A child's own ``health()``
+        is a plugin row written for a plugin, and for a missing credential it
+        says to paste the value into the field asking for it — which is right
+        for an API key and wrong for a machine token nobody can supply. The rows
+        meant for rendering are ``health().endpoints``, which have been through
+        :meth:`_endpoint_error`.
+        """
         return dict(self._children)
 
     @property
@@ -578,6 +601,10 @@ class EndpointSetSupervisor:
         belong to the plugin and appear on the plugin's own settings page, not
         in the plugin list (reshape plan decision 0.1), so the list says how
         many are not answering and the page says which.
+
+        **A missing machine token is not a credential anybody can supply**, and
+        it is filtered out of ``waiting_for_secrets`` here rather than rendered
+        like one — see :meth:`_endpoint_error`.
         """
         children = {url: child.health() for url, child in self._children.items()}
         rows = tuple(
@@ -586,7 +613,7 @@ class EndpointSetSupervisor:
                 state=row.state,
                 tools=row.tools,
                 restart_count=row.restart_count,
-                last_error=row.last_error,
+                last_error=self._endpoint_error(row),
                 last_error_at=row.last_error_at,
                 started_at=row.started_at,
                 next_retry_at=row.next_retry_at,
@@ -618,7 +645,14 @@ class EndpointSetSupervisor:
             ),
             terminal=all(row.terminal for row in children.values()),
             waiting_for_secrets=tuple(
-                sorted({name for row in children.values() for name in row.waiting_for_secrets})
+                sorted(
+                    {
+                        name
+                        for row in children.values()
+                        for name in row.waiting_for_secrets
+                        if not is_machine_secret_name(name)
+                    }
+                )
             ),
             endpoints=rows,
         )
@@ -699,6 +733,31 @@ class EndpointSetSupervisor:
         if not only.is_callable:
             raise PluginTransportError(self._nothing_reachable_message(tool))
         return await only.call(tool, arguments, timeout_seconds=timeout_seconds)
+
+    # -- a missing machine token is not a credential to ask for -------------
+
+    def _endpoint_error(self, row: PluginHealth) -> str | None:
+        """One machine's error, with the one sentence that must never be shown.
+
+        A supervisor that cannot find a plugin's declared secret says so by
+        name and tells the operator to paste the value into the field asking for
+        it. That is exactly right for an API key somebody signed up for, and it
+        is exactly wrong here: **a machine's bearer token is minted by this core
+        and pushed to the machine, so there is nothing for anybody to paste**,
+        no field asking for it, and an interface that asks for one is asking the
+        owner to repair by hand the thing enrolment exists to stop him repairing
+        by hand.
+
+        So a machine whose token is missing is reported as what it is — a broken
+        machine, with the one action that fixes it — and its name is kept out of
+        ``waiting_for_secrets`` so no row above renders it as a credential
+        request. The secret's *name* is not in the sentence either: it is a
+        lookup key nobody types, and printing it invites a search for a box to
+        type it into.
+        """
+        if any(is_machine_secret_name(name) for name in row.waiting_for_secrets):
+            return MACHINE_CREDENTIAL_MISSING
+        return row.last_error
 
     # -- the three refusals, which are three different things ---------------
 

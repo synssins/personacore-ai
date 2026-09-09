@@ -1,20 +1,19 @@
 """Enrolling a workstation from a pairing code — the one unauthenticated call.
 
 What the owner sees is in ``docs/wiki``: a code on the Plugins screen, a Join
-button on the workstation, and a named healthy row a moment later. What this
-module is responsible for is everything between those two, and the property it
-exists to hold is this one:
+button on the workstation, and a named machine on the workstation plugin's own
+settings screen a moment later. What this module is responsible for is
+everything between those two, and the property it exists to hold is this one:
 
 **The workstation's bearer token never travels over the plaintext wire.**
 
 The core's own surface is plain HTTP on a household LAN. The enrolment request
-therefore carries no credential at all — a pairing code, an address, a
-certificate fingerprint and a tool list, nothing more. The core *mints* the
-token and pushes it back to the workstation over the workstation's own TLS,
-pinned to the fingerprint the request just supplied, with the pairing code
-alongside it so the Agent can tell the push came from the console its owner is
-standing at rather than from a stranger. Only if that push succeeds is anything
-written to disk.
+therefore carries no credential at all — a pairing code, addresses, certificate
+fingerprints and a tool list, nothing more. The core *mints* the token and
+pushes it back to the workstation over the workstation's own TLS, pinned to the
+fingerprint the request just supplied, with the pairing code alongside it so the
+Agent can tell the push came from the console its owner is standing at rather
+than from a stranger. Only if that push succeeds is anything written to disk.
 
 The residual risk is stated where it belongs, in the ADR: an attacker already
 present on the LAN and actively interfering can substitute their own address and
@@ -22,7 +21,15 @@ fingerprint and receive a token, enrolling a counterfeit workstation. They gain
 nothing on the real one, and the real one visibly fails to join. Passive
 observation of the wire yields nothing usable. That was weighed and accepted.
 
-**Order is the design.** Redeem, validate, derive, mint, push, *then* persist.
+**A machine is not a plugin.** Every enrolled machine is a row inside the one
+``workstation`` plugin — owner decision, 2026-09-09 — so this module derives no
+plugin name, mints no per-machine plugin and builds no package per enrolment.
+:mod:`personacore.enrolment.registry` owns where a machine lives and how it
+dies; enrolment adds one to it. What this module still owns is the manifest that
+tells the plugin host how to *reach* those machines, and that manifest's
+endpoint set is derived from the registry rather than kept beside it.
+
+**Order is the design.** Redeem, validate, mint, push, *then* persist.
 Persisting after the push means a failed push has nothing to roll back, which is
 better than a rollback that has to be specified and tested. The only residue is
 an Agent holding a token for an enrolment that did not complete, which is inert
@@ -39,12 +46,16 @@ import asyncio
 import io
 import ipaddress
 import json
+import os
 import re
 import secrets as secrets_module
 import ssl
+import tomllib
 import zipfile
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse, urlunparse
 
@@ -53,14 +64,23 @@ import tomli_w
 
 from personacore.audit import get_logger
 from personacore.config.appdata import AppdataLayout
-from personacore.config.secrets import SecretError, SecretStore
+from personacore.config.secrets import SecretStore
 from personacore.contracts.manifest import PluginManifest, RiskLevel
+from personacore.enrolment.registry import (
+    MAX_ADDRESSES,
+    PLUGIN_NAME,
+    Machine,
+    MachineAddress,
+    MachineRegistry,
+    MachineRejected,
+)
 from personacore.plugins.mcp_client import PluginTransportError, build_pinned_client_kwargs
 from personacore.plugins.packages import (
     DEFAULT_PACKAGE_LIMITS,
     PackageLimits,
     PackageRejected,
     install_package,
+    read_disabled_plugins,
     set_plugin_enabled,
     uninstall_package,
 )
@@ -86,9 +106,20 @@ namespace whose whole purpose is to require one.
 AGENT_TOKEN_PATH = "/enrol/token"  # noqa: S105 - a url path, not a credential
 """Where the core pushes the minted token, on the Agent's own origin."""
 
-PLUGIN_NAME_PREFIX = "workstation"
-"""Every enrolled machine is ``workstation-<slug>`` so it is recognisable in a
-flat plugin catalogue that also holds weather and timers."""
+MANIFEST_FILENAME = "manifest.toml"
+"""The plugin document this module writes, beside the registry's own file."""
+
+WORKSTATION_DESCRIPTION = (
+    "Workstations enrolled with this core. Each one acts on that machine and "
+    "the devices plugged into it. Add and remove them on this page."
+)
+"""The one plugin's description. **It names no machine.**
+
+The description is rendered in the plugin list, and machines do not appear there
+(reshape plan decision 0.1) — they are rows on this plugin's own settings page.
+A description that grew a machine's name would put one in the single place the
+owner said they do not go.
+"""
 
 TOKEN_BYTES = 48
 """Bytes of entropy in the minted bearer token — 384 bits, ~64 characters of
@@ -148,7 +179,14 @@ class EnrolmentRefused(Exception):
     about it, and it never quotes the token or the code.
     """
 
-    def __init__(self, status_code: int, message: str, *, redeemed: bool = False) -> None:
+    def __init__(
+        self,
+        status_code: int,
+        message: str,
+        *,
+        redeemed: bool = False,
+        reason: str | None = None,
+    ) -> None:
         super().__init__(message)
         self.status_code = status_code
         self.message = message
@@ -164,6 +202,34 @@ class EnrolmentRefused(Exception):
         bounded by the number of codes the owner issued.
         """
 
+        self.reason = reason
+        """A short stable code for the log line and the audit row, or ``None``.
+
+        **The message is for the caller; this is for the store.** A refusal
+        sentence is free text and may name an already-enrolled machine — the
+        collision refusal has to, to be worth reading — and both the log file
+        and the audit store are core state that outlives the plugin. So the
+        sentence is answered over the wire and a code is what is recorded.
+
+        ``None`` means this refusal predates the registry's vocabulary and the
+        route falls back to deriving one from the status
+        (:func:`personacore.admin.api_enrol._refusal_code`). Every refusal
+        raised from a :class:`~personacore.enrolment.registry.MachineRejected`
+        carries the registry's own code instead, which is the more precise one.
+        """
+
+
+def _refused_from(exc: MachineRejected) -> EnrolmentRefused:
+    """One registry refusal, as an enrolment refusal, with both halves kept.
+
+    The sentence and the code travel together the whole way: the registry
+    decides what to say and what to record, this carries both to the route, and
+    the route answers with one and stores the other. Rewriting the sentence here
+    would put a second author on a message the registry has already written for
+    the person who hit it.
+    """
+    return EnrolmentRefused(exc.status_code, exc.message, reason=exc.reason)
+
 
 # ---------------------------------------------------------------------------
 # Validation — everything here arrives from an unauthenticated caller
@@ -173,30 +239,29 @@ _DISPLAY_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}$")
 """What a machine may call itself.
 
 A hostname, in other words, with room for a space. Deliberately narrow rather
-than escaped-on-render: this string ends up in a manifest description, an audit
-record, a log line and a plugin page, and the cheapest way to be sure it is
-harmless in all four is for it never to contain anything that needs thinking
+than escaped-on-render: this string ends up in an audit-free registry row, a
+refusal sentence and a settings page, and the cheapest way to be sure it is
+harmless in all three is for it never to contain anything that needs thinking
 about. A name outside this set is refused with a sentence saying so, not
 silently mangled.
 """
 
 _VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$")
-_SLUG_STRIP_RE = re.compile(r"[^a-z0-9]+")
 _FINGERPRINT_RE = re.compile(r"^(?:sha256:)?([0-9a-fA-F]{64})$")
-
-MAX_SLUG_CHARS = 64 - len(PLUGIN_NAME_PREFIX) - 1
-"""How much of a normalised name fits after ``workstation-`` inside the
-manifest's 64-character plugin-name limit."""
 
 
 def normalise_display_name(raw: object) -> str:
     """The name the owner is shown, normalised rather than applied silently.
 
     Windows hostnames are commonly uppercase and may contain underscores, so
-    what a machine calls itself and what reads well in a plugin list are not
-    the same string. The normalisation here is only whitespace — case is left
-    alone, because the uppercase form is what is printed on the machine and quietly
+    what a machine calls itself and what reads well in a list are not the same
+    string. The normalisation here is only whitespace — case is left alone,
+    because the uppercase form is what is printed on the machine and quietly
     lowercasing it makes the row harder to recognise, not easier.
+
+    This is the single answer to what a workstation may be called:
+    :func:`personacore.enrolment.registry.normalise_name` imports it rather than
+    restating the rule.
     """
     if not isinstance(raw, str):
         raise EnrolmentRefused(400, "This machine did not say what it is called.")
@@ -211,43 +276,6 @@ def normalise_display_name(raw: object) -> str:
             "starting with a letter or a digit.",
         )
     return collapsed
-
-
-def derive_plugin_name(display_name: str) -> str:
-    """``FRONT-DESK`` becomes ``workstation-front-desk``.
-
-    Lowercase, runs of anything that is not a letter or a digit become a single
-    hyphen, and the result is prefixed. The prefix is what guarantees the
-    manifest's "starts with a letter" rule holds even for a machine called
-    ``2ND-FLOOR``, and what makes an enrolled machine recognisable beside the
-    weather plugin.
-
-    **Never auto-suffixed.** Two machines whose names normalise to the same
-    slug collide, and the collision is refused rather than turned into
-    ``…-2``: a wiped and reinstalled workstation would otherwise become a
-    silent second row beside a dead one, which is worse than being told.
-    """
-    slug = _SLUG_STRIP_RE.sub("-", display_name.lower()).strip("-")
-    if not slug:
-        raise EnrolmentRefused(
-            400,
-            f"{display_name!r} has no letters or digits in it, so there is no name "
-            "to give this workstation. Rename the machine and try again.",
-        )
-    slug = slug[:MAX_SLUG_CHARS].strip("-")
-    return f"{PLUGIN_NAME_PREFIX}-{slug}"
-
-
-def auth_secret_name(plugin_name: str) -> str:
-    """The name the minted token is stored under: ``workstation_front_desk_token``.
-
-    The plugin's own name with hyphens turned into underscores, plus
-    ``_token``. Underscores because that is how every other credential in the
-    store is spelled, and the plugin name because the secret is scoped to that
-    plugin and a constant ``workstation_token`` stopped being usable the moment
-    a household could have two machines.
-    """
-    return f"{plugin_name.replace('-', '_')}_token"
 
 
 def normalise_fingerprint(raw: object) -> str:
@@ -420,8 +448,8 @@ def validate_tools(raw: object) -> dict[str, dict[str, str]]:
     if not raw:
         raise EnrolmentRefused(
             400,
-            "This machine offers no tools, so enrolling it would add a plugin that "
-            "can do nothing.",
+            "This machine offers no tools, so enrolling it would add a workstation "
+            "that can do nothing.",
         )
     if len(raw) > MAX_TOOLS:
         raise EnrolmentRefused(
@@ -464,15 +492,30 @@ class EnrolmentPayload:
     """One Join, with every field already checked and normalised."""
 
     display_name: str
-    plugin_name: str
-    secret_name: str
-    url: str
-    origin: str
-    tls_fingerprint: str
+
+    addresses: tuple[tuple[str, str], ...]
+    """The machine's whole listening set as ``(url, tls_fingerprint)`` pairs, in
+    the machine's own order with the preferred address first.
+
+    **N addresses, not two slots** (reshape plan decision 0.4). Windows hands a
+    machine an IPv4 and an IPv6 address per interface and the owner may say
+    which machine he means by either, so the set is the record and there is no
+    "the" address.
+    """
+
+    push_origin: str
+    """The origin the minted token is pushed to — the preferred address's."""
+
+    push_fingerprint: str
+    """The pin that push is made against. The preferred address's own, because
+    each address carries its own certificate."""
+
     agent_version: str
     contract_version: str
     tools: dict[str, dict[str, str]]
-    host: str
+
+    hosts: tuple[str, ...]
+    """Every host in :attr:`addresses`, for ``permissions.network``."""
 
 
 def read_code(document: object) -> str:
@@ -490,6 +533,102 @@ def read_code(document: object) -> str:
     return raw[:MAX_CODE_CHARS] if isinstance(raw, str) else ""
 
 
+ENTRY_FIELDS = frozenset({"url", "tls_fingerprint"})
+"""Every field one ``urls`` entry may carry.
+
+The same two words the singular form uses, deliberately: an Agent author who has
+written ``url`` and ``tls_fingerprint`` at the top level should not have to learn
+that an entry spells the pin differently. The manifest calls it ``pin``; that is
+the core's own document and the translation happens here, once.
+"""
+
+FINGERPRINT_WITHOUT_ADDRESS = (
+    "This machine sent a certificate fingerprint with no address to go with it. "
+    "Every address carries its own fingerprint: send 'url' and "
+    "'tls_fingerprint' together, or list them as entries in 'urls'."
+)
+
+NO_ADDRESS = (
+    "This machine did not send an address to reach it on. Send its https "
+    "address as 'url' with the fingerprint of the certificate it serves there, "
+    "and any further addresses it listens on as entries in 'urls'."
+)
+
+
+def read_addresses(document: Mapping[str, Any]) -> tuple[tuple[str, str], ...]:
+    """The machine's listening set, validated, de-duplicated, order preserved.
+
+    ``url`` and ``tls_fingerprint`` are the **preferred** address and stay first:
+    it is the one the token is pushed to, and an Agent that has one address sends
+    exactly what it always sent. ``urls`` carries the rest, each entry complete —
+    a whole URL and its own pin, never a bare host and a port to be reassembled.
+    Rebuilding an address from parts is where IPv6 bracket notation goes wrong,
+    and the machine already knows how to spell its own address.
+
+    Exact repeats are dropped rather than refused. A machine listing its
+    preferred address again inside ``urls`` is being thorough, not wrong, and
+    two records for one address would be two connections to one machine.
+    """
+    entries: list[tuple[object, object]] = []
+    raw_url = document.get("url")
+    raw_pin = document.get("tls_fingerprint")
+    if raw_url is not None:
+        entries.append((raw_url, raw_pin))
+    elif raw_pin is not None:
+        raise EnrolmentRefused(400, FINGERPRINT_WITHOUT_ADDRESS)
+
+    listed = document.get("urls")
+    if listed is not None:
+        if not isinstance(listed, list):
+            raise EnrolmentRefused(
+                400,
+                "'urls' must be a list of addresses, each one an object with a "
+                "'url' and the 'tls_fingerprint' of the certificate served there.",
+            )
+        for entry in listed:
+            if not isinstance(entry, Mapping):
+                raise EnrolmentRefused(
+                    400,
+                    "Each entry in 'urls' must be an object with a 'url' and a "
+                    "'tls_fingerprint'.",
+                )
+            unknown = sorted(str(key) for key in entry if key not in ENTRY_FIELDS)
+            if unknown:
+                raise EnrolmentRefused(
+                    400,
+                    f"An entry in 'urls' carries fields the core does not take: "
+                    f"{', '.join(repr(key) for key in unknown[:5])}. An entry takes "
+                    f"{', '.join(sorted(ENTRY_FIELDS))} and nothing else.",
+                )
+            entries.append((entry.get("url"), entry.get("tls_fingerprint")))
+
+    if not entries:
+        raise EnrolmentRefused(400, NO_ADDRESS)
+
+    resolved: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for raw_entry_url, raw_entry_pin in entries:
+        url, _origin = validate_url(raw_entry_url)
+        pin = normalise_fingerprint(raw_entry_pin)
+        if url in seen:
+            continue
+        seen.add(url)
+        resolved.append((url, pin))
+
+    if len(resolved) > MAX_ADDRESSES:
+        # Refused here as well as in the registry, and for the reason every
+        # other check runs before the mint: a machine that is going to be turned
+        # away must not first be handed a live credential.
+        raise EnrolmentRefused(
+            409,
+            f"This machine sent {len(resolved)} addresses, and this core keeps at "
+            f"most {MAX_ADDRESSES} for one workstation. Have it listen on fewer, "
+            "or send the ones it is actually reached at.",
+            reason="too_many_addresses",
+        )
+    return tuple(resolved)
+
+
 def read_payload(document: object) -> EnrolmentPayload:
     """Everything but the code, checked and normalised.
 
@@ -501,23 +640,23 @@ def read_payload(document: object) -> EnrolmentPayload:
     _refuse_unknown_fields(document)
 
     display_name = normalise_display_name(document.get("display_name"))
-    plugin_name = derive_plugin_name(display_name)
-    url, origin = validate_url(document.get("url"))
-    payload = EnrolmentPayload(
+    addresses = read_addresses(document)
+    preferred_url, preferred_pin = addresses[0]
+    _url, origin = validate_url(preferred_url)
+    return EnrolmentPayload(
         display_name=display_name,
-        plugin_name=plugin_name,
-        secret_name=auth_secret_name(plugin_name),
-        url=url,
-        origin=origin,
-        tls_fingerprint=normalise_fingerprint(document.get("tls_fingerprint")),
+        addresses=addresses,
+        push_origin=origin,
+        push_fingerprint=preferred_pin,
         agent_version=validate_version(document.get("agent_version"), what="The Agent version"),
         contract_version=validate_version(
             document.get("contract_version"), what="The contract version"
         ),
         tools=validate_tools(document.get("tools")),
-        host=urlparse(url).hostname or "",
+        hosts=tuple(
+            dict.fromkeys(urlparse(url).hostname or "" for url, _pin in addresses)
+        ),
     )
-    return payload
 
 
 REQUEST_FIELDS = frozenset(
@@ -525,6 +664,7 @@ REQUEST_FIELDS = frozenset(
         "code",
         "display_name",
         "url",
+        "urls",
         "tls_fingerprint",
         "agent_version",
         "contract_version",
@@ -537,8 +677,8 @@ CREDENTIAL_IN_REQUEST = (
     "An enrolment request must not carry a credential. The core mints the "
     "workstation's token itself and pushes it back over the workstation's own "
     "TLS connection, so nothing secret crosses the wire in this direction. "
-    "Send the pairing code, the machine's name, its https address, its "
-    "certificate fingerprint, its version and its tools, and nothing else."
+    "Send the pairing code, the machine's name, its https addresses, their "
+    "certificate fingerprints, its version and its tools, and nothing else."
 )
 
 
@@ -576,42 +716,74 @@ def decode_body(body: bytes) -> object:
 
 
 # ---------------------------------------------------------------------------
-# The manifest this writes
+# The manifest this writes — one plugin, N endpoints
 # ---------------------------------------------------------------------------
 
 
-def build_manifest_document(payload: EnrolmentPayload) -> dict[str, Any]:
-    """The registration, as the contract's section 2 writes it.
+def build_manifest_document(
+    machines: Sequence[Machine],
+    *,
+    version: str,
+    contract: str,
+    tools: Mapping[str, Mapping[str, str]],
+) -> dict[str, Any]:
+    """The ``workstation`` plugin's registration, **derived from the registry**.
 
-    Built as a document and validated by the core's own
-    :class:`~personacore.contracts.manifest.PluginManifest` before it is
-    serialised, so the tool-name rule, the risk levels, the contract version and
-    the "a pin needs an https url" rule are the manifest's own and not a second
-    copy of them living here.
+    One plugin, one entry in ``plugin.urls`` per address of every enrolled
+    machine — ADR-0048's additive endpoint set, which each machine's record maps
+    onto with nothing to translate: the address, the pin for the certificate
+    served there, and the *name* of the token that machine will accept.
+
+    The registry is the source of truth and this document is derived from it, so
+    the two cannot drift: rewriting it is how a machine that was added or
+    removed becomes a connection that is opened or closed.
+
+    ``plugin.url`` is **not** declared. An http plugin reaches its addresses
+    through ``url`` or through ``urls``, and declaring both here would name an
+    address the endpoint-set supervisor never dials — a row in the manifest that
+    nothing connects to. ``plugin.auth_secret`` is not declared either: there is
+    no credential shared across these machines, because each one issues its own.
     """
+    endpoints: list[dict[str, str]] = []
+    hosts: list[str] = []
+    for machine in machines:
+        for address in machine.addresses:
+            entry = {"url": address.url, "pin": address.tls_fingerprint}
+            if machine.token_secret:
+                # Omitted rather than blank when there is none. A blank
+                # ``auth_secret`` is refused by the contract, correctly — it is
+                # the *name* of a secret and an empty name is a defect. A
+                # machine the registry has not given an id to yet has no name
+                # for its token, and an entry without the field is the honest
+                # spelling of "no bearer token here"; the real one is written a
+                # moment later by ``EnrolmentService._publish``.
+                entry["auth_secret"] = machine.token_secret
+            endpoints.append(entry)
+            host = urlparse(address.url).hostname
+            if host:
+                hosts.append(host)
     return {
         "plugin": {
-            "name": payload.plugin_name,
-            "version": payload.agent_version,
-            "contract": payload.contract_version,
+            "name": PLUGIN_NAME,
+            "version": version,
+            "contract": contract,
             "transport": "http",
-            "url": payload.url,
-            "auth_secret": payload.secret_name,
-            "tls_fingerprint": payload.tls_fingerprint,
-            "description": (
-                f"Workstation {payload.display_name} — acts on that machine and the "
-                "devices plugged into it."
-            ),
+            "urls": endpoints,
+            "description": WORKSTATION_DESCRIPTION,
         },
-        # A declaration rather than a gate (ADR-0012), written down because the
-        # plugin page shows an operator what the manifest asked for.
-        "permissions": {"network": [payload.host], "secrets": [], "paths": []},
-        "tools": payload.tools,
+        # A declaration rather than a gate (ADR-0012), written down because a
+        # plugin's own page shows what the manifest asked for.
+        "permissions": {
+            "network": sorted(dict.fromkeys(hosts)),
+            "secrets": [],
+            "paths": [],
+        },
+        "tools": {name: dict(tool) for name, tool in tools.items()},
         "events": {"publishes": [], "subscribes": []},
     }
 
 
-def render_manifest(payload: EnrolmentPayload) -> str:
+def render_manifest(document: Mapping[str, Any]) -> str:
     """Validate the document, then serialise it with ``tomli_w``.
 
     Never string-formatted by hand. The contract's own section 2 carries a
@@ -620,16 +792,25 @@ def render_manifest(payload: EnrolmentPayload) -> str:
     cannot make that mistake, and it cannot be made to emit a value a caller
     smuggled quotes or newlines into either.
     """
-    document = build_manifest_document(payload)
     try:
-        PluginManifest.model_validate(document)
+        PluginManifest.model_validate(dict(document))
     except Exception as exc:  # noqa: BLE001 - pydantic's own message is the useful one
         raise EnrolmentRefused(
             400,
             "The details this machine sent do not make a valid plugin registration: "
             f"{_first_problem(exc)}",
         ) from None
-    return tomli_w.dumps(document)
+    return _MANIFEST_HEADER + tomli_w.dumps(dict(document))
+
+
+_MANIFEST_HEADER = (
+    "# The workstation plugin. Written by the core — every address below is an\n"
+    "# enrolled machine, and machines are added and removed on this plugin's\n"
+    "# own settings screen rather than by editing this file.\n"
+    "#\n"
+    "# auth_secret is the NAME a machine's token is stored under. The value is\n"
+    "# in the secret store, was minted by this core, and is never in this file.\n\n"
+)
 
 
 def _first_problem(exc: Exception) -> str:
@@ -645,27 +826,29 @@ def _first_problem(exc: Exception) -> str:
     return str(exc).splitlines()[0]
 
 
-def build_package(payload: EnrolmentPayload, manifest: str | None = None) -> bytes:
-    """The registration folder, as bytes ``install_package`` accepts.
+def _bootstrap_package(manifest: str) -> bytes:
+    """The ``workstation`` folder, as bytes ``install_package`` accepts.
+
+    **Once, for the first machine that joins** — not once per enrolment. There
+    is one workstation plugin and every machine after the first is a row inside
+    the folder this creates.
 
     An archive built in memory and handed straight to the installer, rather than
-    a folder written into ``plugins-http.d/`` from here. That is deliberate and
-    it is the point of the whole function: :func:`install_package` stages inside
-    appdata, validates with the real scanner *before* anything moves into place,
-    checks the name against the manifest's rule on the line that joins it to a
-    directory, refuses a collision, and clears an orphaned secret namespace
-    left by a previous plugin of the same name. Writing the folder here would
-    be a second opinion about which directory is safe to write, which is exactly
-    what spec section 7 wants none of.
+    a folder written into ``plugins-http/`` from here. That is the point of the
+    function: :func:`install_package` stages inside appdata, validates with the
+    real scanner *before* anything moves into place, checks the name against the
+    manifest's rule on the line that joins it to a directory, refuses a
+    collision, and clears an orphaned secret namespace left behind by a previous
+    plugin of the same name. Writing the folder here would be a second opinion
+    about which directory is safe to write, which is exactly what spec section 7
+    wants none of.
 
     The zip is not a *format* this feature has: nothing is uploaded, exported or
     kept. It is the argument type the one safe installer takes.
     """
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr(
-            f"{payload.plugin_name}/manifest.toml", manifest or render_manifest(payload)
-        )
+        archive.writestr(f"{PLUGIN_NAME}/{MANIFEST_FILENAME}", manifest)
     return buffer.getvalue()
 
 
@@ -706,7 +889,7 @@ def _pinned_client(origin: str, fingerprint: str) -> httpx2.AsyncClient:
 
 PUSH_FAILED = (
     "The core could not hand the credential to {name} at {origin}: {reason}. "
-    "Nothing was installed. Check the workstation is running and reachable, then "
+    "Nothing was enrolled. Check the workstation is running and reachable, then "
     "get a fresh code and press Join again."
 )
 
@@ -726,14 +909,20 @@ async def push_token(
     push quoting its own code knows the push came from the console the owner is
     standing at rather than from something else that answered.
 
+    **One address, not the set.** The push goes to the machine's preferred
+    address, because it is one machine and one token: succeeding on any of its
+    addresses means the machine has the credential, and trying the rest would
+    hand the same token to whatever else answered at an address that turned out
+    not to be it.
+
     Raises :class:`EnrolmentRefused` on every failure, with the reason in it.
     Nothing has been written when this raises, which is why it runs before the
     writes rather than after them.
     """
     factory = client_factory or _pinned_client
-    target = f"{payload.origin}{AGENT_TOKEN_PATH}"
+    target = f"{payload.push_origin}{AGENT_TOKEN_PATH}"
     try:
-        async with factory(payload.origin, payload.tls_fingerprint) as client:
+        async with factory(payload.push_origin, payload.push_fingerprint) as client:
             # Streamed rather than `client.post`, which buffers the whole reply
             # before this code sees any of it -- a cap applied after buffering
             # is a cap that has already been exceeded, and this address came
@@ -753,9 +942,10 @@ async def push_token(
                         502,
                         PUSH_FAILED.format(
                             name=payload.display_name,
-                            origin=payload.origin,
+                            origin=payload.push_origin,
                             reason=f"it answered {status}",
                         ),
+                        reason="machine_unreachable",
                     )
                 await _read_capped(response)
     except EnrolmentRefused:
@@ -765,22 +955,26 @@ async def push_token(
         # operator's incident turns on, so it is passed through unchanged.
         raise EnrolmentRefused(
             502,
-            PUSH_FAILED.format(name=payload.display_name, origin=payload.origin, reason=str(exc)),
+            PUSH_FAILED.format(
+                name=payload.display_name, origin=payload.push_origin, reason=str(exc)
+            ),
+            reason="machine_unreachable",
         ) from None
     except (httpx2.HTTPError, ssl.SSLError, OSError) as exc:
         raise EnrolmentRefused(
             502,
             PUSH_FAILED.format(
                 name=payload.display_name,
-                origin=payload.origin,
+                origin=payload.push_origin,
                 reason=f"the connection failed ({type(exc).__name__})",
             ),
+            reason="machine_unreachable",
         ) from None
 
     logger.info(
         "workstation_token_pushed",
-        plugin=payload.plugin_name,
-        origin=payload.origin,
+        plugin=PLUGIN_NAME,
+        origin=payload.push_origin,
         status=status,
     )
 
@@ -800,7 +994,8 @@ async def _read_capped(response: httpx2.Response) -> None:
             raise EnrolmentRefused(
                 502,
                 "The workstation sent back more than the core is willing to read. "
-                "Nothing was installed.",
+                "Nothing was enrolled.",
+                reason="machine_unreachable",
             )
 
 
@@ -814,19 +1009,61 @@ class Enrolled:
     """What the Agent is told when it worked. Never the token, never the code."""
 
     plugin: str
+    """Always ``workstation``. A machine joins that plugin; it never becomes
+    one. Kept in the answer because the Agent's own log says where it landed,
+    and because an Agent built against the per-machine naming rule that was
+    withdrawn on 2026-09-09 reads this field and finds the constant."""
+
     display_name: str
     state: str
     message: str
+
+
+TOOLS_DIFFER = (
+    "{name} offers a different set of tools than the workstations already "
+    "enrolled on this core, so it was not added. Every machine in the "
+    "workstation plugin has to offer the same tools: the core holds one tool "
+    "list for the plugin and checks each machine against it, and a machine that "
+    "does not match would join and then refuse everything. {difference} Update "
+    "the Agent on whichever machine is behind, then press Join again."
+)
+
+CONTRACT_DIFFERS = (
+    "{name} speaks contract version {theirs}, and the workstations already "
+    "enrolled on this core speak {ours}, so it was not added. The core holds "
+    "one contract version for the workstation plugin. Update the Agent on "
+    "whichever machine is behind, then press Join again."
+)
+
+PLUGIN_NOT_OURS = (
+    "There is already a plugin called 'workstation' on this core that this core "
+    "did not create, so no machine was added to it. Remove that plugin from the "
+    "Plugins screen, then press Join again."
+)
+
+PLUGIN_WRITE_FAILED = (
+    "The core enrolled {name} and then could not write the workstation plugin's "
+    "registration, so it removed the machine again. Nothing is half-enrolled. "
+    "Check the appdata volume is mounted and writable, then get a fresh code and "
+    "press Join again."
+)
+
+SWITCHED_OFF = (
+    "{name} joined this core. The workstation plugin is switched off, so nothing "
+    "is connected to it yet — switch it on from the Plugins screen."
+)
+
+JOINED = "{name} joined this core as a workstation."
 
 
 @dataclass
 class EnrolmentService:
     """Everything the route needs, so the route itself is twenty lines.
 
-    Every collaborator is passed in rather than built here. ``redeem`` in
-    particular is a seam: the pairing store is a sibling module, and taking it
-    as a callable is what lets this half be built, tested and reviewed without
-    reaching into the other half's file.
+    Every collaborator is passed in rather than built here. ``redeem`` and
+    ``claim`` in particular are seams: the pairing store is a sibling module,
+    and taking its two calls as callables is what lets this half be built,
+    tested and reviewed without reaching into the other half's file.
     """
 
     layout: AppdataLayout
@@ -836,15 +1073,29 @@ class EnrolmentService:
     set_enabled: Callable[[str, bool], Awaitable[None]] | None = None
     package_limits: PackageLimits = DEFAULT_PACKAGE_LIMITS
     client_factory: ClientFactory | None = None
-    installed_names: Callable[[], Awaitable[Sequence[str]]] | None = None
     #: ``default_factory`` rather than ``default``, and it matters: a plain
     #: function as a dataclass ``default`` becomes a *class* attribute, and
     #: ``self.mint`` would then bind as a method and be called with ``self``.
     #: A factory puts it on the instance, where it stays a plain callable.
     mint: Callable[[], str] = field(default_factory=lambda: mint_token, repr=False)
+    claim: Callable[[str], None] = field(default_factory=lambda: _default_claim, repr=False)
+    """Tell the pairing screen which machine redeemed the live code.
+
+    Memory-only and bounded by the code's own TTL, which is the whole reason it
+    is allowed to hold a machine's name at all: it is the one place a name
+    enters core state, and it leaves again when the code expires.
+    """
+
+    registry_factory: Callable[[], MachineRegistry] | None = None
+
+    def registry(self) -> MachineRegistry:
+        """The machine registry for the one ``workstation`` plugin."""
+        if self.registry_factory is not None:
+            return self.registry_factory()
+        return MachineRegistry(layout=self.layout, secrets=self.secrets)
 
     async def enrol(self, body: bytes) -> Enrolled:
-        """Redeem, validate, derive, mint, push, persist, rescan, enable.
+        """Redeem, validate, mint, push, add, publish.
 
         The order is the design and is written out in the module docstring. The
         one thing worth repeating here is that the code is redeemed **first**,
@@ -864,65 +1115,278 @@ class EnrolmentService:
         # each `raise`, so a refusal added later cannot forget to.
         try:
             payload = read_payload(document)
-            # The registration is built and validated **here**, not inside the
-            # persist step where it is written. Everything this core will refuse
-            # has to be refused before a credential is minted for it: leaving
-            # the manifest's own validation until after the push handed a live
-            # token to a machine that was then not enrolled, over a tool name.
-            manifest = render_manifest(payload)
-            await self._refuse_collision(payload)
+            registry = self.registry()
+            # Everything this core will refuse is refused **before** a
+            # credential is minted for it. The registry checks the collision
+            # again under its own lock, which is the check that actually guards
+            # the file; this one exists so a machine that is going to be turned
+            # away is never first handed a live token.
+            await asyncio.to_thread(self._refuse_mismatch, registry, payload)
 
             token = self.mint()
             await push_token(
                 payload, code=code, token=token, client_factory=self.client_factory
             )
-            await self._persist(payload, token, manifest)
+            added = await asyncio.to_thread(self._add, registry, payload, token)
         except EnrolmentRefused as refused:
             refused.redeemed = True
             raise
 
-        state = await self._start(payload)
+        # The name reaches the pairing screen only once the machine is really
+        # enrolled, so the screen can never name a machine that did not join.
+        self._claim(payload.display_name)
+        state = await self._start(created=added.created_plugin)
         return Enrolled(
-            plugin=payload.plugin_name,
+            plugin=PLUGIN_NAME,
             display_name=payload.display_name,
             state=state,
             message=(
-                f"{payload.display_name} joined as {payload.plugin_name} and is "
-                "switched on."
+                JOINED.format(name=payload.display_name)
+                if state != "disabled"
+                else SWITCHED_OFF.format(name=payload.display_name)
             ),
         )
 
-    async def _refuse_collision(self, payload: EnrolmentPayload) -> None:
-        """Refuse a name already taken, before a token is minted for it.
+    # -- the checks that run before a token exists -------------------------
 
-        :func:`install_package` refuses this too, and that refusal is the one
-        that actually guards the directory. This one exists so a collision is
-        found *before* a credential is minted and pushed to a machine that is
-        not going to be enrolled — the check is cheap and the alternative leaves
-        a live token on somebody's desktop for nothing.
+    def _refuse_mismatch(
+        self, registry: MachineRegistry, payload: EnrolmentPayload
+    ) -> None:
+        """Refuse a machine this core cannot hold, before it is minted a token.
+
+        Three refusals, and each one is a thing the core would otherwise
+        discover after the machine was already carrying a credential:
+
+        * **a name or an address already taken** — the registry's rule, checked
+          here early and enforced there authoritatively;
+        * **a different tool list** — the plugin holds one tool table and
+          :func:`personacore.plugins.supervisor.reconcile_tools` checks every
+          endpoint against it in both directions, so a machine offering a
+          different set would connect and then be refused for not matching its
+          own manifest;
+        * **a different contract version** — the plugin holds one, for the same
+          reason.
+
+        The last two are refusals this core did not need while a machine was its
+        own plugin with its own manifest. They are the honest cost of one plugin
+        holding N machines, and they are made at the door rather than at the
+        connection, because a machine that joins and then never runs is a
+        failure landing a long way from its cause.
         """
-        if self.installed_names is not None:
-            names = await self.installed_names()
-            if payload.plugin_name in set(names):
-                raise EnrolmentRefused(409, _collision_message(payload))
-        for root in (self.layout.plugins, self.layout.plugins_http):
-            if (root / payload.plugin_name).exists():
-                raise EnrolmentRefused(409, _collision_message(payload))
-
-    async def _persist(self, payload: EnrolmentPayload, token: str, manifest: str) -> None:
-        """Install the registration, then store the token. Undo both or neither.
-
-        The push has already succeeded, so there is a working credential on the
-        workstation either way; what must not survive a failure here is a
-        half-enrolled core — a manifest folder with no token beside it, or a
-        secret owned by a plugin that is not installed. Both are silent, and
-        both make the next attempt fail for a reason that has nothing to do with
-        the attempt.
-        """
-        package = build_package(payload, manifest)
+        # Ownership first. Everything below this line reads the installed
+        # manifest as though this core wrote it, and a plugin of that name it
+        # did not write is neither a comparison to make nor a document to edit.
+        self._refuse_a_plugin_that_is_not_ours()
         try:
-            await asyncio.to_thread(
-                install_package,
+            existing = registry.list()
+        except MachineRejected as exc:
+            if exc.reason == "not_installed":
+                # Nothing is enrolled because there is no plugin yet. That is
+                # the ordinary first Join, not a refusal.
+                return
+            raise _refused_from(exc) from None
+
+        clash = registry.find(payload.display_name)
+        if clash is not None:
+            raise EnrolmentRefused(
+                409,
+                f"A workstation called {clash.name!r} is already on this core, so "
+                f"{payload.display_name!r} cannot join under that name. Remove the "
+                "one that is there, or rename this machine and try again.",
+                reason="name_taken",
+            )
+        taken = {
+            address.url for machine in existing for address in machine.addresses
+        }
+        for url, _pin in payload.addresses:
+            if url in taken:
+                raise EnrolmentRefused(
+                    409,
+                    "Another workstation on this core is already reached at that "
+                    "address, so this one did not join. Remove the one that is "
+                    "there first, or give this machine an address of its own.",
+                    reason="address_taken",
+                )
+
+        installed = self._read_manifest()
+        if installed is None:
+            return
+        plugin = installed.get("plugin")
+        declared = installed.get("tools")
+        if isinstance(declared, Mapping):
+            theirs = set(payload.tools)
+            ours = set(declared)
+            if theirs != ours:
+                raise EnrolmentRefused(
+                    409,
+                    TOOLS_DIFFER.format(
+                        name=payload.display_name,
+                        difference=_tool_difference(ours, theirs),
+                    ),
+                    reason="tools_differ",
+                )
+        if isinstance(plugin, Mapping):
+            contract = plugin.get("contract")
+            if isinstance(contract, str) and contract != payload.contract_version:
+                raise EnrolmentRefused(
+                    409,
+                    CONTRACT_DIFFERS.format(
+                        name=payload.display_name,
+                        theirs=payload.contract_version,
+                        ours=contract,
+                    ),
+                    reason="contract_differs",
+                )
+
+    # -- the writes --------------------------------------------------------
+
+    def _add(
+        self, registry: MachineRegistry, payload: EnrolmentPayload, token: str
+    ) -> _Added:
+        """Add the machine, then rewrite the plugin's endpoint set from the registry.
+
+        Runs on a worker thread: every call under it is blocking file work, and
+        doing it in one hop keeps the registry's own lock covering the whole
+        read-modify-write rather than being taken and released around an await.
+        """
+        created = self._ensure_plugin(payload)
+        try:
+            machine = registry.add(
+                name=payload.display_name,
+                addresses=payload.addresses,
+                token=token,
+            )
+        except MachineRejected as exc:
+            if created:
+                self._undo_plugin()
+            raise _refused_from(exc) from None
+
+        try:
+            self._publish(registry, version=payload.agent_version)
+        except EnrolmentRefused:
+            # The endpoint set is how a machine is *reached*. A record the host
+            # will never dial is a machine that looks enrolled and does nothing,
+            # so it goes back out rather than being left on the screen.
+            registry.remove(machine.id)
+            if created:
+                self._undo_plugin()
+            raise EnrolmentRefused(
+                500,
+                PLUGIN_WRITE_FAILED.format(name=payload.display_name),
+                reason="storage",
+            ) from None
+        return _Added(machine=machine, created_plugin=created)
+
+    def _publish(
+        self, registry: MachineRegistry, *, version: str | None = None
+    ) -> None:
+        """Write ``manifest.toml`` from the registry. The endpoint set, derived.
+
+        Called after every change to the machine list. The registry is the
+        source of truth; this document is how the plugin host learns to open a
+        connection per machine, and rewriting it is the whole of "the plugin's
+        endpoints follow the registry".
+
+        ``version`` is the joining Agent's, so the plugin's version tracks the
+        machines behind it. ``contract`` and ``tools`` are carried over from the
+        installed document, which is the only place they live once the request
+        that supplied them is gone — and every machine agrees on both, because
+        :meth:`_refuse_mismatch` refuses one that does not.
+        """
+        machines = registry.list()
+        installed = self._read_manifest() or {}
+        plugin = installed.get("plugin")
+        plugin = plugin if isinstance(plugin, Mapping) else {}
+        tools = installed.get("tools")
+        tools = tools if isinstance(tools, Mapping) else {}
+        if not machines:
+            # An http plugin declaring an empty endpoint set is refused at load
+            # (``ENDPOINT_SET_MUST_NOT_BE_EMPTY``), so there is no document to
+            # write for no machines. Enrolment only ever adds, so this is the
+            # guard rather than the path; removing the last machine is the
+            # settings screen's to answer.
+            return
+        document = build_manifest_document(
+            machines,
+            version=version or str(plugin.get("version") or "0.0.0"),
+            contract=str(plugin.get("contract") or ""),
+            tools=tools,
+        )
+        text = render_manifest(document)
+        self._write_manifest(text)
+
+    # -- the plugin folder -------------------------------------------------
+
+    def _directory(self) -> Path | None:
+        """Where the ``workstation`` plugin is installed, or ``None``."""
+        for root in (self.layout.plugins, self.layout.plugins_http):
+            candidate = root / PLUGIN_NAME
+            if candidate.is_dir():
+                return candidate
+        return None
+
+    def _read_manifest(self) -> dict[str, Any] | None:
+        """The installed plugin document, or ``None`` if there is not one."""
+        directory = self._directory()
+        if directory is None:
+            return None
+        try:
+            return tomllib.loads(
+                (directory / MANIFEST_FILENAME).read_text(encoding="utf-8")
+            )
+        except (OSError, tomllib.TOMLDecodeError, ValueError):
+            return None
+
+    def _refuse_a_plugin_that_is_not_ours(self) -> None:
+        """Refuse a ``workstation`` plugin this core did not write.
+
+        Discovering somebody else's plugin folder and rewriting its manifest is
+        the kind of helpfulness that destroys work, and the signature is cheap
+        to check: the core's own workstation plugin is an http plugin declaring
+        an endpoint set. A folder with no readable manifest counts as not ours
+        for the same reason — nothing in it can be trusted to say otherwise.
+        """
+        directory = self._directory()
+        if directory is None:
+            return
+        installed = self._read_manifest()
+        if installed is None:
+            raise EnrolmentRefused(409, PLUGIN_NOT_OURS, reason="name_taken")
+        plugin = installed.get("plugin")
+        if not isinstance(plugin, Mapping) or not plugin.get("urls"):
+            raise EnrolmentRefused(409, PLUGIN_NOT_OURS, reason="name_taken")
+
+    def _ensure_plugin(self, payload: EnrolmentPayload) -> bool:
+        """Create the one ``workstation`` plugin if it is not there. Once, ever.
+
+        Returns whether this call created it, so a later failure in the same
+        call can take it back out again and leave the core exactly as it found
+        it.
+
+        **A plugin of that name this core did not write is refused, not
+        overwritten.** Discovering somebody else's plugin folder and rewriting
+        its manifest is the kind of helpfulness that destroys work, and the
+        signature is cheap to check: the core's own workstation plugin is an
+        http plugin declaring an endpoint set.
+        """
+        self._refuse_a_plugin_that_is_not_ours()
+        if self._directory() is not None:
+            return False
+
+        # The document the folder is created with names this machine's own
+        # addresses and no credential: the machine has no id until the registry
+        # gives it one, and the id is what its token is stored under. The full
+        # document — every machine, every address, every secret name — is written
+        # by ``_publish`` a moment later, before anything reloads.
+        document = build_manifest_document(
+            [_provisional(payload)],
+            version=payload.agent_version,
+            contract=payload.contract_version,
+            tools=payload.tools,
+        )
+        package = _bootstrap_package(render_manifest(document))
+        try:
+            install_package(
                 self.layout,
                 package,
                 replace=False,
@@ -930,100 +1394,201 @@ class EnrolmentService:
                 secrets=self.secrets,
             )
         except PackageRejected as exc:
-            raise EnrolmentRefused(409, str(exc)) from None
+            raise EnrolmentRefused(409, str(exc), reason="name_taken") from None
         except Exception as exc:  # noqa: BLE001 - the volume, not the caller
             logger.error(
-                "workstation_enrol_install_failed",
-                plugin=payload.plugin_name,
-                error=repr(exc),
+                "workstation_plugin_install_failed", plugin=PLUGIN_NAME, error=repr(exc)
             )
             raise EnrolmentRefused(
                 500,
-                "The core could not write the workstation's registration. Nothing "
-                "was installed. Check the appdata volume is mounted and writable.",
+                "The core could not write the workstation plugin. Nothing was "
+                "enrolled. Check the appdata volume is mounted and writable.",
+                reason="storage",
             ) from None
+        return True
 
+    def _write_manifest(self, text: str) -> None:
+        """Replace ``manifest.toml`` atomically, or leave the old one alone.
+
+        A temporary file **in the same directory** — a rename is only atomic
+        within one filesystem and appdata is a mounted volume — flushed, fsynced
+        and moved with :func:`os.replace`. A crash leaves either the old
+        endpoint set or the new one, never half of either. The same reasoning as
+        ``registry.MachineRegistry._write``, on the sibling file.
+        """
+        directory = self._directory()
+        if directory is None:  # pragma: no cover - _ensure_plugin ran first
+            raise EnrolmentRefused(
+                500, PLUGIN_NOT_OURS, reason="storage"
+            )
+        path = directory / MANIFEST_FILENAME
+        temporary = path.with_name(path.name + ".new")
         try:
-            await asyncio.to_thread(
-                self.secrets.set, payload.secret_name, token, payload.plugin_name
-            )
-        except (SecretError, OSError) as exc:
-            await self._undo(payload)
+            with temporary.open("w", encoding="utf-8", newline="") as handle:
+                handle.write(text)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, path)
+        except OSError as exc:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:  # pragma: no cover - the real failure is being raised
+                pass
             logger.error(
-                "workstation_enrol_secret_failed",
-                plugin=payload.plugin_name,
-                error=str(exc),
+                "workstation_manifest_write_failed", plugin=PLUGIN_NAME, error=str(exc)
             )
             raise EnrolmentRefused(
                 500,
-                "The core installed the workstation's registration but could not "
-                "store its credential, so it removed the registration again. "
-                "Nothing is half-installed. Get a fresh code and press Join again.",
+                "The workstation plugin's registration could not be saved. Check "
+                "the appdata volume is mounted and writable.",
+                reason="storage",
             ) from None
 
-    async def _undo(self, payload: EnrolmentPayload) -> None:
-        """Take back everything :meth:`_persist` had written. Never raises."""
+    def _undo_plugin(self) -> None:
+        """Take back a plugin **this call** created. Never raises.
+
+        Only ever called when ``_ensure_plugin`` returned ``True``, so there is
+        nothing of the owner's in the folder: it was made moments ago and the
+        machine that was going to be in it was refused.
+        """
         for step, action in (
-            ("uninstall", lambda: uninstall_package(self.layout, payload.plugin_name)),
-            ("secrets", lambda: self.secrets.delete_namespace(payload.plugin_name)),
+            ("uninstall", lambda: uninstall_package(self.layout, PLUGIN_NAME)),
+            ("secrets", lambda: self.secrets.delete_namespace(PLUGIN_NAME)),
         ):
             try:
-                await asyncio.to_thread(action)
+                action()
             except Exception as exc:  # noqa: BLE001 - already failing; say so and move on
                 logger.error(
-                    "workstation_enrol_rollback_failed",
-                    plugin=payload.plugin_name,
+                    "workstation_plugin_rollback_failed",
+                    plugin=PLUGIN_NAME,
                     step=step,
                     error=repr(exc),
                 )
 
-    async def _start(self, payload: EnrolmentPayload) -> str:
-        """Rescan and switch it on, through the paths the admin surface uses.
+    # -- telling the rest of the core -------------------------------------
 
-        A failure to *start* is not a failure to enrol: the registration and the
-        credential are both on disk, the row exists, and the supervisor will
-        pick it up at the next reload or restart. Reporting the state honestly —
-        ``unknown`` rather than ``ok`` — is the whole reason the health enum has
-        three values.
-        """
-        # The recorded choice first, the running core second, the listing third
-        # -- the same order `admin/api_plugins.py` toggles a plugin in, so a
-        # crash between the halves leaves a core that comes back switched on.
-        # A stale entry in the disabled list can outlive the plugin that put it
-        # there, and without this a freshly enrolled workstation would install
-        # correctly and never start.
+    def _claim(self, display_name: str) -> None:
+        """Name the machine on the pairing screen. Never fails the enrolment."""
         try:
-            await asyncio.to_thread(
-                set_plugin_enabled, self.layout, payload.plugin_name, enabled=True
-            )
-        except Exception as exc:  # noqa: BLE001 - it is installed either way
-            logger.error(
-                "workstation_enrol_enable_failed",
-                plugin=payload.plugin_name,
-                error=repr(exc),
-            )
+            self.claim(display_name)
+        except Exception as exc:  # noqa: BLE001 - the machine did join
+            logger.warning("workstation_claim_failed", error=repr(exc))
+
+    async def _start(self, *, created: bool) -> str:
+        """Rescan, and switch the plugin on if this call created it.
+
+        A failure to *start* is not a failure to enrol: the record, the
+        credential and the endpoint set are all on disk, and the supervisor will
+        pick the machine up at the next reload or restart. Reporting the state
+        honestly — ``unknown`` rather than ``ok`` — is the whole reason the
+        health enum has three values.
+
+        **A plugin the owner switched off is left switched off.** Enrolment
+        turning it back on would be this core overriding a decision he made by
+        clicking, to serve a machine that has just joined and can wait. The
+        answer says so instead, which is the rule about the interface stating
+        what happened rather than fixing things quietly.
+        """
+        if created:
+            # The recorded choice first, the running core second -- the same
+            # order `admin/api_plugins.py` toggles a plugin in, so a crash
+            # between the halves leaves a core that comes back switched on. A
+            # stale entry in the disabled list can outlive the plugin that put
+            # it there, and without this a freshly created workstation plugin
+            # would install correctly and never start.
+            try:
+                await asyncio.to_thread(
+                    set_plugin_enabled, self.layout, PLUGIN_NAME, enabled=True
+                )
+            except Exception as exc:  # noqa: BLE001 - it is enrolled either way
+                logger.error(
+                    "workstation_enable_failed", plugin=PLUGIN_NAME, error=repr(exc)
+                )
+        elif await asyncio.to_thread(self._switched_off):
+            return "disabled"
+
         if self.set_enabled is not None:
             try:
-                await self.set_enabled(payload.plugin_name, True)
+                await self.set_enabled(PLUGIN_NAME, True)
             except Exception as exc:  # noqa: BLE001 - one plugin, spec section 5.1
                 logger.error(
-                    "workstation_enrol_start_failed",
-                    plugin=payload.plugin_name,
-                    error=repr(exc),
+                    "workstation_start_failed", plugin=PLUGIN_NAME, error=repr(exc)
                 )
         try:
             listing = await self.reload()
-        except Exception as exc:  # noqa: BLE001 - it is installed either way
+        except Exception as exc:  # noqa: BLE001 - it is enrolled either way
             logger.error(
-                "workstation_enrol_reload_failed",
-                plugin=payload.plugin_name,
-                error=repr(exc),
+                "workstation_reload_failed", plugin=PLUGIN_NAME, error=repr(exc)
             )
             return "unknown"
         for view in getattr(listing, "plugins", ()):
-            if getattr(view, "name", None) == payload.plugin_name:
+            if getattr(view, "name", None) == PLUGIN_NAME:
                 return str(getattr(view, "state", "unknown"))
         return "unknown"
+
+    def _switched_off(self) -> bool:
+        try:
+            return PLUGIN_NAME in read_disabled_plugins(self.layout)
+        except Exception as exc:  # noqa: BLE001 - an unreadable list is not off
+            logger.warning(
+                "workstation_disabled_list_unreadable", plugin=PLUGIN_NAME, error=repr(exc)
+            )
+            return False
+
+
+@dataclass(frozen=True, slots=True)
+class _Added:
+    """What :meth:`EnrolmentService._add` did, for the steps that follow it."""
+
+    machine: Machine
+    created_plugin: bool
+
+
+def _provisional(payload: EnrolmentPayload) -> Machine:
+    """The joining machine as a record, before the registry has given it an id.
+
+    Only ever handed to :func:`build_manifest_document` to create the plugin
+    folder, and only for as long as it takes the registry to write the real row
+    a moment later. ``token_secret`` is empty because there is no id yet and so
+    no name for the token to be stored under: an entry with no ``auth_secret``
+    is a valid endpoint declaration and simply sends no bearer token, which is
+    the honest description of a machine that is not enrolled yet.
+    """
+    return Machine(
+        id="",
+        name=payload.display_name,
+        addresses=tuple(
+            MachineAddress(url=url, tls_fingerprint=pin) for url, pin in payload.addresses
+        ),
+        token_secret="",
+        enrolled_at=datetime.now(UTC),
+    )
+
+
+def _tool_difference(ours: set[str], theirs: set[str]) -> str:
+    """Which tools differ, in a sentence. Names only, both directions."""
+    parts: list[str] = []
+    extra = sorted(theirs - ours)
+    absent = sorted(ours - theirs)
+    if extra:
+        parts.append("It offers " + ", ".join(extra) + ", which they do not.")
+    if absent:
+        parts.append("They offer " + ", ".join(absent) + ", which it does not.")
+    return " ".join(parts)
+
+
+def _default_claim(display_name: str) -> None:
+    """Name the machine on the pairing screen, through the module that owns it.
+
+    Imported inside the function rather than at module scope on purpose: the
+    pairing store and this half were built in parallel against a written
+    signature, and a module-level import would make the order they land in
+    matter. It also keeps :class:`EnrolmentService` testable with a stub without
+    the store existing at all.
+    """
+    from personacore.enrolment.pairing import mark_claimed  # noqa: PLC0415 - see docstring
+
+    mark_claimed(display_name)
 
 
 def mint_token() -> str:
@@ -1031,37 +1596,33 @@ def mint_token() -> str:
     return secrets_module.token_urlsafe(TOKEN_BYTES)
 
 
-def _collision_message(payload: EnrolmentPayload) -> str:
-    return (
-        f"A workstation is already enrolled as {payload.plugin_name!r}, so "
-        f"{payload.display_name} cannot join under that name. Remove the old one "
-        "from the Plugins screen first, or rename this machine and try again."
-    )
-
-
 __all__ = [
     "ACCEPTED_RISK",
     "AGENT_TOKEN_PATH",
     "CODE_REFUSED",
+    "CONTRACT_DIFFERS",
     "CREDENTIAL_IN_REQUEST",
     "ENROL_PATH",
+    "ENTRY_FIELDS",
+    "MANIFEST_FILENAME",
     "MAX_BODY_BYTES",
-    "PLUGIN_NAME_PREFIX",
+    "PLUGIN_NAME",
+    "PLUGIN_NOT_OURS",
     "RATE_LIMITED",
     "REQUEST_FIELDS",
+    "TOOLS_DIFFER",
+    "WORKSTATION_DESCRIPTION",
     "Enrolled",
     "EnrolmentPayload",
     "EnrolmentRefused",
     "EnrolmentService",
-    "auth_secret_name",
     "build_manifest_document",
-    "build_package",
     "decode_body",
-    "derive_plugin_name",
     "mint_token",
     "normalise_display_name",
     "normalise_fingerprint",
     "push_token",
+    "read_addresses",
     "read_code",
     "read_payload",
     "render_manifest",

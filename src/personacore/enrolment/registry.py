@@ -215,6 +215,36 @@ def machine_secret_name(machine_id: str) -> str:
     return check_secret_name(f"{SECRET_PREFIX}{machine_id}{SECRET_SUFFIX}")
 
 
+MACHINE_SECRET_RE = re.compile(
+    rf"^{re.escape(SECRET_PREFIX)}[0-9a-f]{{{ID_BYTES * 2}}}{re.escape(SECRET_SUFFIX)}$"
+)
+"""The shape :func:`machine_secret_name` produces, as a pattern.
+
+Written from the same three constants the name is built from, so the two cannot
+drift apart.
+"""
+
+
+def is_machine_secret_name(name: object) -> bool:
+    """Whether ``name`` is a machine's token, rather than an operator's credential.
+
+    The distinction the plugin's health row turns on, and it is a product rule
+    rather than a formatting one. **A machine's token is minted by this core and
+    pushed to the machine; there is nothing for a person to paste.** Every other
+    credential in the store arrives because somebody typed it in, and the
+    interface tells them so by name. A machine token reported in the same words
+    would put a field in front of the owner asking him to supply a value only
+    the core can produce — which is precisely the hand-edited-configuration
+    failure enrolment exists to remove.
+
+    So the name is asked about here, once, and
+    :class:`personacore.plugins.supervisor.EndpointSetSupervisor` uses the
+    answer to say "this machine is broken, remove it and join it again" instead
+    of "paste this in".
+    """
+    return isinstance(name, str) and bool(MACHINE_SECRET_RE.fullmatch(name))
+
+
 def normalise_name(raw: object) -> str:
     """The name the owner sees, normalised rather than applied silently.
 
@@ -1055,6 +1085,7 @@ def safe_reason(reason: str) -> str:
 __all__ = [
     "GENERIC_REASON",
     "ID_BYTES",
+    "MACHINE_SECRET_RE",
     "MACHINES_FILENAME",
     "MAX_ADDRESSES",
     "MAX_MACHINES",
@@ -1068,6 +1099,7 @@ __all__ = [
     "MachineView",
     "credential_shaped_keys",
     "enrolment_audit_detail",
+    "is_machine_secret_name",
     "machine_secret_name",
     "normalise_address",
     "normalise_name",

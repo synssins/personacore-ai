@@ -35,6 +35,7 @@ door, the body limit, the throttle and the audit record, and nothing else.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
@@ -55,7 +56,12 @@ from personacore.audit import (
 )
 from personacore.auth.throttle import SignInThrottle
 from personacore.config.secrets import SecretStore
-from personacore.enrolment.registry import enrolment_audit_detail
+from personacore.enrolment.registry import (
+    PLUGIN_NAME,
+    MachineRegistry,
+    enrolment_audit_detail,
+    safe_reason,
+)
 from personacore.enrolment.workstation import (
     ENROL_PATH,
     MAX_BODY_BYTES,
@@ -81,15 +87,17 @@ class EnrolmentAccepted(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     plugin: str
-    """The name it was enrolled under, derived from the name it sent."""
+    """Always ``workstation``. A machine joins that plugin as a row inside it and
+    never becomes a plugin of its own (reshape plan decision 0.1), so this is a
+    constant rather than a name derived from what the machine called itself."""
 
     display_name: str
     """That name as the core normalised it, so the Agent can show the owner
     what it will be called rather than the core applying it silently."""
 
     state: str
-    """``ok``, ``failing`` or ``unknown`` — the health row as it stands a moment
-    after the plugin was switched on."""
+    """``ok``, ``failing``, ``disabled`` or ``unknown`` — the workstation
+    plugin's health row as it stands a moment after the machine was added."""
 
     message: str
 
@@ -118,9 +126,14 @@ def build_service(ctx: AdminApiContext, **overrides: Any) -> EnrolmentService:
     """
     secrets = ctx.secrets if isinstance(ctx.secrets, SecretStore) else SecretStore(ctx.layout)
 
-    async def _installed_names() -> list[str]:
-        listing = await ctx.scans.current()
-        return [view.name for view in listing.plugins]
+    def _registry() -> MachineRegistry:
+        """The one plugin's machine registry, built per call.
+
+        Per call rather than once, because the registry resolves the plugin's
+        folder every time it is used and the folder can appear between two
+        enrolments — the first machine to join is what creates it.
+        """
+        return MachineRegistry(layout=ctx.layout, secrets=secrets)
 
     settings: dict[str, Any] = {
         "layout": ctx.layout,
@@ -129,7 +142,7 @@ def build_service(ctx: AdminApiContext, **overrides: Any) -> EnrolmentService:
         "reload": ctx.scans.reload,
         "set_enabled": ctx.live_toggle,
         "package_limits": ctx.package_limits or DEFAULT_PACKAGE_LIMITS,
-        "installed_names": _installed_names,
+        "registry_factory": _registry,
     }
     settings.update(overrides)
     return EnrolmentService(**settings)
@@ -151,6 +164,7 @@ def register_public(
     """
     enrolment = service or build_service(ctx)
     limiter = throttle or SignInThrottle()
+    store = ctx.secrets if isinstance(ctx.secrets, SecretStore) else SecretStore(ctx.layout)
     public = APIRouter(tags=["enrolment"])
 
     @public.post(
@@ -191,7 +205,7 @@ def register_public(
             # collision refusal has to say *which* enrolled machine it clashed
             # with to be worth reading. The sentence goes back to the caller in
             # the response; a code is what is recorded.
-            code = _refusal_code(exc.status_code)
+            code = safe_reason(exc.reason or _refusal_code(exc.status_code))
             logger.warning(
                 "workstation_enrol_refused",
                 address=address,
@@ -215,6 +229,7 @@ def register_public(
             ) from None
 
         limiter.clear(THROTTLE_KEY, address)
+        machines = await asyncio.to_thread(_count, ctx, store)
         await _record(
             ctx,
             action="plugins.enrol",
@@ -226,7 +241,9 @@ def register_public(
             # actually asks it — did something get added that I did not add —
             # and :func:`enrolment_audit_detail` documents which fields may be
             # here and which may never be added.
-            detail=enrolment_audit_detail(plugin=result.plugin, state=result.state),
+            detail=enrolment_audit_detail(
+                plugin=PLUGIN_NAME, machines=machines, state=result.state
+            ),
         )
         return _accepted(result)
 
@@ -242,14 +259,21 @@ _REFUSAL_CODES = {
     500: "storage",
     502: "machine_unreachable",
 }
-"""What a refusal is recorded as. Coarse on purpose — it is derived from the
-status rather than from the sentence, so no refusal added later can carry text
-into the audit store by being worded differently.
+"""What a refusal is recorded as when it carries no code of its own.
 
-An enrolment refusal does not yet carry a code of its own the way
-:class:`personacore.enrolment.registry.MachineRejected` does. When the registry
-is wired into enrolment, its ``reason`` is the better value to pass here and
-this mapping becomes the fallback for the refusals that predate it."""
+**The fallback, not the answer.** Every refusal raised out of the machine
+registry carries :attr:`personacore.enrolment.workstation.EnrolmentRefused.reason`
+— the registry's own short code, which says *which* collision or *which* storage
+failure rather than only what status it maps to — and that is preferred. This
+mapping covers the refusals that predate the registry, where a status is all
+there is.
+
+Coarse on purpose either way: derived from the status rather than from the
+sentence, so no refusal added later can carry text into the audit store by being
+worded differently. Both routes go through
+:func:`personacore.enrolment.registry.safe_reason`, which replaces anything that
+is not a short code with ``refused``, so a caller passing a message cannot leak a
+machine name through the log line or the audit row."""
 
 
 def _refusal_code(status_code: int) -> str:
@@ -335,6 +359,25 @@ async def _record(
         )
     except Exception as exc:  # noqa: BLE001 - see docstring
         logger.error("enrolment_audit_write_failed", action=action, error=repr(exc))
+
+
+def _count(ctx: AdminApiContext, secrets: SecretStore) -> int | None:
+    """How many machines are enrolled now — the number, never the machines.
+
+    The one fact that makes an enrolment row worth keeping: "something joined
+    and there are now three" answers what an audit trail exists for without
+    being a list of what they are
+    (:func:`personacore.enrolment.registry.enrolment_audit_detail` says which
+    fields may appear and which never may).
+
+    ``None`` when the count cannot be read, which drops the field rather than
+    guessing a number: a wrong count in an audit row is worse than no count.
+    """
+    try:
+        return len(MachineRegistry(layout=ctx.layout, secrets=secrets).list())
+    except Exception as exc:  # noqa: BLE001 - the row is worth writing without it
+        logger.warning("enrolment_machine_count_failed", error=repr(exc))
+        return None
 
 
 __all__ = [
