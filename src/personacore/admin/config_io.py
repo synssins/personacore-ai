@@ -252,8 +252,19 @@ def _value_bearing_secret_keys(node: Any, prefix: str = "") -> list[str]:
     and is guarded by redaction instead. The exemption is by full dotted path,
     not by key name, so ``bus.password`` is permitted while a ``password``
     anywhere else in the document is still refused.
+
+    Descends into ``list`` values as well as ``dict`` values, each entry
+    numbered ``[index]`` in the path (GitHub issue #14) — a TOML array of
+    tables parses as a plain Python ``list`` of ``dict``, so a credential-shaped
+    key sitting inside one (``[[servers]] ... password = "..."``) was
+    previously invisible to this walk. A list entry that is not itself a table
+    (a plain list of strings, say) contributes nothing and is not an error.
     """
     found: list[str] = []
+    if isinstance(node, list):
+        for index, item in enumerate(node):
+            found.extend(_value_bearing_secret_keys(item, f"{prefix}[{index}]"))
+        return found
     if not isinstance(node, dict):
         return found
     for key, value in node.items():
@@ -261,7 +272,7 @@ def _value_bearing_secret_keys(node: Any, prefix: str = "") -> list[str]:
         path = f"{prefix}.{name}" if prefix else name
         if name.lower() in _VALUE_BEARING_SECRET_KEYS and path not in _WRITE_ONLY_KEYS:
             found.append(path)
-        if isinstance(value, dict):
+        if isinstance(value, (dict, list)):
             found.extend(_value_bearing_secret_keys(value, path))
     return found
 
