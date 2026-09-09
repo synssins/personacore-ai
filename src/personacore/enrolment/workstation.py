@@ -931,6 +931,20 @@ async def push_token(
     Raises :class:`EnrolmentRefused` on every failure, with the reason in it.
     Nothing has been written when this raises, which is why it runs before the
     writes rather than after them.
+
+    **The address is logged on a failure and not on a success**, which is the
+    rule :func:`personacore.enrolment.registry.enrolment_audit_detail` already
+    settles for the audit row, for reasons that carry over unchanged. The core's
+    log file is under appdata, is never rotated, and neither half of the
+    plugin's teardown touches it — so an address written there outlives the
+    plugin exactly the way an audit row does. On success the machine is
+    enrolled and its address lives in the registry, which *does* die with the
+    plugin; a second permanent copy is the leak. On a failure there is no
+    registry row, the attempt is the only record that exists, and where the core
+    tried to reach is the one fact worth having.
+
+    The machine's *name* is in neither. The refusal sentence carries it to the
+    Agent that caused it and no further.
     """
     factory = client_factory or _pinned_client
     target = f"{payload.push_origin}{AGENT_TOKEN_PATH}"
@@ -961,20 +975,25 @@ async def push_token(
                         reason="machine_unreachable",
                     )
                 await _read_capped(response)
-    except EnrolmentRefused:
+    except EnrolmentRefused as refused:
+        # Every push failure lands here, including the oversize reply
+        # `_read_capped` raises, so there is one place that records one.
+        _log_push_failed(payload, refused)
         raise
     except PluginTransportError as exc:
         # The pin. Its message names both prints, which is the one line an
         # operator's incident turns on, so it is passed through unchanged.
-        raise EnrolmentRefused(
+        refused = EnrolmentRefused(
             502,
             PUSH_FAILED.format(
                 name=payload.display_name, origin=payload.push_origin, reason=str(exc)
             ),
             reason="machine_unreachable",
-        ) from None
+        )
+        _log_push_failed(payload, refused)
+        raise refused from None
     except (httpx2.HTTPError, ssl.SSLError, OSError) as exc:
-        raise EnrolmentRefused(
+        refused = EnrolmentRefused(
             502,
             PUSH_FAILED.format(
                 name=payload.display_name,
@@ -982,13 +1001,30 @@ async def push_token(
                 reason=f"the connection failed ({type(exc).__name__})",
             ),
             reason="machine_unreachable",
-        ) from None
+        )
+        _log_push_failed(payload, refused)
+        raise refused from None
 
-    logger.info(
-        "workstation_token_pushed",
+    # **No address.** See the docstring: the machine is enrolled now, and its
+    # address is in the registry, which dies with the plugin. This line says a
+    # push succeeded and what the machine answered, which is what somebody
+    # reading the log for a working enrolment actually needs.
+    logger.info("workstation_token_pushed", plugin=PLUGIN_NAME, status=status)
+
+
+def _log_push_failed(payload: EnrolmentPayload, refused: EnrolmentRefused) -> None:
+    """One line for a push that did not land, carrying **where** and not **who**.
+
+    The address stays because a refused machine is in no registry and this is
+    the only record that it was tried at all — the same allowance the refusal
+    audit row makes, for the same reason. The reason is the short code, never
+    ``refused.message``: that sentence names the machine.
+    """
+    logger.warning(
+        "workstation_token_push_failed",
         plugin=PLUGIN_NAME,
         origin=payload.push_origin,
-        status=status,
+        reason=refused.reason or "machine_unreachable",
     )
 
 
@@ -1266,24 +1302,42 @@ class EnrolmentService:
                 removed=False, machines_left=len(left), switched_off=False
             )
         if not left:
-            self._park()
-            return MachineRemoved(removed=True, machines_left=0, switched_off=True)
+            # `_park` answers whether *this* call switched it off. A plugin the
+            # owner had already switched off stays off and stays unmarked, so
+            # nothing here claims to have done it.
+            return MachineRemoved(
+                removed=True, machines_left=0, switched_off=self._park()
+            )
         self._publish(registry)
         return MachineRemoved(
             removed=True, machines_left=len(left), switched_off=False
         )
 
-    def _park(self) -> None:
-        """Switch the plugin off because it has nothing left, and record who did it.
+    def _park(self) -> bool:
+        """Switch the plugin off because it has nothing left, if it is on.
 
-        The marker goes down **before** the switch. A crash between the two then
-        leaves a plugin that is still on and merely marked, which the next
-        enrolment clears harmlessly — rather than one that is off with nothing
-        saying the core is what turned it off. That second state is the trap:
-        it is indistinguishable from a plugin the owner switched off himself,
-        and enrolment would then correctly refuse to turn it back on, leaving a
-        machine that joined sitting behind a plugin nobody knowingly disabled.
+        Returns whether this call switched it off — ``False`` when it was
+        already off, because then nothing here did.
+
+        **A plugin that is already off is left alone, and left unmarked.** The
+        marker means "the core turned this off, so the core may turn it back
+        on", and writing it over a switch the owner threw would make that
+        sentence false: emptying an already-off plugin would hand the core
+        permission to undo his click the next time a machine joined. His
+        decision has nothing to do with how many machines the plugin holds, so
+        removing the last one does not touch it — the machine joins later, the
+        plugin stays off, and the answer says so.
+
+        The state is therefore read **before** the marker is written, and the
+        marker still goes down before the switch in the case where it is
+        warranted. A crash between those two leaves a plugin that is still on
+        and merely marked, which the next enrolment clears harmlessly — rather
+        than one that is off with nothing saying the core is what turned it
+        off. That second state is the same trap from the other side.
         """
+        if self._switched_off():
+            logger.info("workstation_already_switched_off", plugin=PLUGIN_NAME)
+            return False
         directory = self._directory()
         if directory is not None:
             mark_switched_off_when_empty(directory)
@@ -1291,6 +1345,8 @@ class EnrolmentService:
             set_plugin_enabled(self.layout, PLUGIN_NAME, enabled=False)
         except Exception as exc:  # noqa: BLE001 - the machine is out either way
             logger.error("workstation_park_failed", plugin=PLUGIN_NAME, error=repr(exc))
+            return False
+        return True
 
     # -- the checks that run before a token exists -------------------------
 
@@ -1749,6 +1805,11 @@ class MachineRemoved:
     off and leaves it in place. Not uninstalled — the folder, its settings and
     its row on the Plugins screen all survive, and a machine joining starts it
     again.
+
+    ``False`` when the plugin was **already** switched off. The owner had
+    turned it off himself, this call did not turn anything off, and saying it
+    did would be claiming his decision as the core's — which is also the point
+    at which the core would later feel entitled to undo it.
 
     This replaces the ``endpoints_stale`` alarm that stood here for one round.
     That field existed because the hook noticed a consequence it was not
