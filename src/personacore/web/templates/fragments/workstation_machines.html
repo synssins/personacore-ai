@@ -45,9 +45,14 @@
        deliverable of any subtask yet). Rendering them live would be exactly
        the dead control CLAUDE.md's brief warns against; removing them would
        be silent drift from the approved canvas. #}
-    <button type="button" class="btn btn-ghost" disabled title="Reading a machine's own log needs a tool the Agent does not ship yet.">Logs</button>
-    <button type="button" class="btn btn-ghost" disabled title="Per-machine permissions are not built yet.">permissions</button>
-    <span class="later">later</span>
+    {# Grouped so the "later" badge visually clusters with the two disabled
+       controls it describes, and reads as separate from "remove" (the one
+       working control on the row) rather than appearing to label it. #}
+    <div class="hrow" style="gap:8px">
+      <button type="button" class="btn btn-ghost" disabled title="Reading a machine's own log needs a tool the Agent does not ship yet.">Logs</button>
+      <button type="button" class="btn btn-ghost" disabled title="Per-machine permissions are not built yet.">permissions</button>
+      <span class="later">later</span>
+    </div>
     <a class="btn btn-danger" href="/admin/plugins/workstation/machines/{{ machine.id }}/remove"
        hx-get="/admin/plugins/workstation/machines/{{ machine.id }}/remove/fragment"
        hx-target="#modal" hx-swap="innerHTML">
