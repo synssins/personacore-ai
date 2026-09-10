@@ -131,6 +131,22 @@ class ToolResult(BaseModel):
     error: str | None = None
     """Plain-English failure, safe to speak aloud. Set when ``ok`` is False."""
 
+    origin: str | None = None
+    """Where this result physically came from, in plain English, when that is
+    not simply "the tool".
+
+    A tool provider fronting several machines sets the name of the machine
+    that actually ran the call, so the model is told which computer answered
+    instead of inferring it from the tool's name — the failure this exists to
+    stop is a model reading a name like ``workstation`` as "the computer I am
+    running on" and answering about the wrong machine. ``None`` for every tool
+    whose result has one obvious origin, which is almost all of them, and the
+    fence header is then unchanged.
+
+    Read by a person too: it is rendered into the untrusted fence's ``source=``
+    header (``agent/loop.py:_handle_tool_call``), which is what the trace view
+    shows. A name, never an id."""
+
     files: list[ToolFile] = Field(default_factory=list)
     """Files this call produced — workspace contract §3. Empty for every
     tool that predates the workspace, and for one that simply returned none

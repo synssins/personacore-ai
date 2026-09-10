@@ -104,6 +104,7 @@ from personacore.llm import (
     ToolCall,
     ToolCallAccumulator,
 )
+from personacore.workspace_tools import READ_FILE_TOOL
 from personacore.workspaces import FileEntry, Workspace, WorkspaceError
 
 logger = get_logger(__name__)
@@ -2213,10 +2214,17 @@ class AgentLoop:
 
         payload = tool_result.content if tool_result.ok else (tool_result.error or "")
         payload, files_written = self._apply_workspace(name, payload, tool_result, ctx)
+        # `origin` is set only by a provider whose tools reach more than one
+        # place — the machine that actually ran the call. Naming it in the
+        # fence header rather than in the payload keeps it out of the
+        # untrusted body (a plugin cannot write itself a different name) and
+        # out of the way of a result the model has to parse, and it survives
+        # both the fence's truncation and the workspace spill above.
+        source = name if tool_result.origin is None else f"{name} (on {tool_result.origin})"
         fenced = wrap_untrusted(
             payload,
             kind=UntrustedKind.TOOL_RESULT,
-            source=name,
+            source=source,
             token=ctx.fence_token,
             max_content_chars=self._result_cap(),
         )
@@ -2269,9 +2277,13 @@ class AgentLoop:
         * **A tool handed back one long piece of plain text** with no files
           at all — contract §4: past ``long_item_chars`` it is written to
           disk instead of being cut, and the model gets the first 1,000
-          characters plus the save line. Below that length, or with no
-          workspace on, nothing here changes — the existing
-          ``tool_result_chars`` fence still applies exactly as it always has.
+          characters plus the save line *and* a line saying that text is
+          only the beginning and naming ``workspace.read_file`` as how to
+          get the rest — the fragment on its own reads like the whole
+          answer, and a model that thinks it has the whole answer never
+          asks for more. Below that length, or with no workspace on,
+          nothing here changes — the existing ``tool_result_chars`` fence
+          still applies exactly as it always has.
 
         Never raises: a :class:`WorkspaceError` (a ceiling, a bad name) is
         reported to the model in the same sentence the workspace itself
@@ -2312,7 +2324,13 @@ class AgentLoop:
             except WorkspaceError as exc:
                 return (f"{payload}\n{exc}" if payload else str(exc)), files_written
             files_written.append(final_name)
-            payload = f"{payload[:1000]}\n{_saved_line(final_name, payload)}"
+            total_chars = len(payload)
+            saved_line = _saved_line(final_name, payload)
+            continue_line = (
+                f"That's only the first 1,000 of {total_chars:,} characters — call "
+                f'{READ_FILE_TOOL} with path="{final_name}" to read the rest.'
+            )
+            payload = f"{payload[:1000]}\n{saved_line}\n{continue_line}"
 
         return payload, files_written
 

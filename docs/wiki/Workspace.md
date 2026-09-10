@@ -48,7 +48,14 @@ Every file [pinned](#pins-per-conversation) in this conversation is then added a
 
 ## The long-result rule
 
-A plugin's answer that is too long to hand the model whole does not simply get cut anymore, if the workspace is on. Past `long_item_chars` (default 8,000 characters), a plain-text tool result is saved to the workspace as a file — `<plugin>.<tool>.txt` — and the model sees only the first 1,000 characters plus a line saying where the rest went: `Saved to workspace: research.fetch.txt (9,114 chars, 1,402 words)`. With the workspace off, the older behaviour stands: the result is simply cut at the `tool_result_chars` cap and marked as truncated.
+A plugin's answer that is too long to hand the model whole does not simply get cut anymore, if the workspace is on. Past `long_item_chars` (default 8,000 characters), a plain-text tool result is saved to the workspace as a file — `<plugin>.<tool>.txt` — and the model sees the first 1,000 characters, a line saying where the rest went, and a line saying that what it just read is only the beginning and naming the tool call that reads the rest:
+
+```
+Saved to workspace: research.fetch.txt (9,114 chars, 1,402 words)
+That's only the first 1,000 of 9,114 characters — call workspace.read_file with path="research.fetch.txt" to read the rest.
+```
+
+Without that last line a model has no way to tell a fragment from a whole answer, and reasons from the first thousand characters as if nothing were missing. With the workspace off, the older behaviour stands: the result is simply cut at the `tool_result_chars` cap and marked as truncated.
 
 A tool that hands back an actual file (see [Plugin Tools](Plugin-Tools) — "Returning a file") follows the same save-and-say pattern, one line per file. With no workspace, each file the tool tried to hand over gets its own line instead: `File NAME was not kept: this persona has no workspace.` The persona is never shown a file's contents it cannot also keep.
 

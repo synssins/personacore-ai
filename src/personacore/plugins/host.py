@@ -432,6 +432,7 @@ class PluginHost:
             if not supervisor.is_callable:
                 continue
             remote_tools = supervisor.tools
+            note = self._machine_note(name, supervisor)
             for tool_name, declaration in supervisor.record.manifest.tools.items():
                 remote = remote_tools.get(tool_name)
                 if remote is None:
@@ -443,11 +444,77 @@ class PluginHost:
                     ToolSpec(
                         name=f"{name}{TOOL_SEPARATOR}{tool_name}",
                         risk=declaration.risk,
-                        description=declaration.description or remote.description,
+                        description=_described(
+                            declaration.description or remote.description, note
+                        ),
                         parameters=remote.input_schema or {},
                     )
                 )
         return specs
+
+    def _machine_note(
+        self, plugin_name: str, supervisor: PluginSupervisor | EndpointSetSupervisor
+    ) -> str | None:
+        """The sentence that tells the model which computers a tool reaches,
+        before it spends a call finding out.
+
+        A model choosing a tool reads its description and nothing else. With
+        no such sentence it has only the plugin's name to go on, and a name is
+        not evidence about topology: one was read as "the computer I am
+        running on", which is exactly wrong for a tool that reaches a
+        different machine over the network. The consequence is not a crash —
+        it is a call spent on the wrong question and an answer the owner never
+        got.
+
+        ``None`` — and therefore a description unchanged, byte for byte — for
+        every plugin that is not fronting named machines: the ordinary
+        single-endpoint majority, an endpoint set this core has no directory
+        for, and a directory that knows no name for this plugin. Nothing is
+        keyed off a plugin's name here or anywhere below it; the question
+        asked is only "does this plugin's tool surface reach machines this
+        core can name".
+        """
+        machines = self._machines(plugin_name, supervisor)
+        if not machines:
+            return None
+        elsewhere = (
+            "It does not run on the computer this assistant is running on, and "
+            "there is no need to find the machine on the network first."
+        )
+        if len(machines) == 1:
+            return (
+                f"This tool runs on {machines[0].name}, a separate computer "
+                f"connected to this assistant over the network. {elsewhere}"
+            )
+        names = ", ".join(machine.name for machine in machines)
+        return (
+            "This tool runs on one of the separate computers connected to this "
+            f"assistant over the network: {names}. {elsewhere} Say which one in "
+            f"the '{MACHINE_ARGUMENT}' argument, by name or by IP address; "
+            "without one the tool asks instead of running."
+        )
+
+    def _machines(
+        self, plugin_name: str, supervisor: PluginSupervisor | EndpointSetSupervisor
+    ) -> tuple[MachineCandidate, ...]:
+        """This plugin's machines, named — empty for a plugin that has none.
+
+        The one place the injected directory is consulted, so the description
+        a model reads before a call and the resolution done during one cannot
+        disagree about how many machines there are or what they are called.
+        Empty covers all three "not this kind of plugin" cases at once: a
+        single-endpoint supervisor, no directory wired at all, and a directory
+        with nothing to say about this plugin.
+        """
+        if not isinstance(supervisor, EndpointSetSupervisor):
+            return ()
+        directory = self._machine_directory
+        if directory is None:
+            return ()
+        names = directory(plugin_name)
+        if not names:
+            return ()
+        return _machine_candidates(supervisor, names)
 
     async def call_tool(
         self,
@@ -555,6 +622,7 @@ class PluginHost:
                         owner=owner,
                         surface=surface,
                         caller_detail=caller_detail,
+                        machine=resolved_machine,
                         result=ToolResult(ok=False, error=ask),
                     )
                 result = await supervisor.call(
@@ -577,6 +645,7 @@ class PluginHost:
                 owner=owner,
                 surface=surface,
                 caller_detail=caller_detail,
+                machine=resolved_machine,
                 result=ToolResult(
                     ok=False,
                     error=(
@@ -618,6 +687,7 @@ class PluginHost:
                 owner=owner,
                 surface=surface,
                 caller_detail=caller_detail,
+                machine=resolved_machine,
                 result=ToolResult(ok=False, error=error_text),
                 log_reason=str(exc),
             )
@@ -642,6 +712,7 @@ class PluginHost:
                 owner=owner,
                 surface=surface,
                 caller_detail=caller_detail,
+                machine=resolved_machine,
                 result=ToolResult(
                     ok=False,
                     error=f"Something went wrong talking to the {plugin_name} plugin, "
@@ -662,6 +733,7 @@ class PluginHost:
                 owner=owner,
                 surface=surface,
                 caller_detail=caller_detail,
+                machine=resolved_machine,
                 result=ToolResult(
                     ok=False,
                     error=f"The {plugin_name} plugin couldn't do that"
@@ -681,6 +753,7 @@ class PluginHost:
             owner=owner,
             surface=surface,
             caller_detail=caller_detail,
+            machine=resolved_machine,
             result=ToolResult(ok=True, content=result.text, files=result.files),
         )
 
@@ -704,11 +777,17 @@ class PluginHost:
         * ``arguments`` never carries :data:`MACHINE_ARGUMENT` onward — it is
           routing, consumed here, and a machine's own remote tool has no
           parameter for it.
-        * ``endpoint`` and ``candidate`` are set together, once exactly one
-          machine was meant: ``endpoint`` for
-          :meth:`~personacore.plugins.supervisor.EndpointSetSupervisor.call`,
-          ``candidate`` so a later transport failure can be reworded with its
-          name instead of the address it names (see ``_named``).
+        * ``candidate`` is the machine this call is about, whenever there is
+          one: what a transport failure is reworded with instead of the
+          address it names (see ``_named``), and what the result is stamped
+          with so the model is told which computer answered rather than left
+          to infer it (``ToolResult.origin``).
+        * ``endpoint`` is set only when a choice was actually made — several
+          machines, one of them named. One machine and nothing said leaves it
+          ``None``, so
+          :meth:`~personacore.plugins.supervisor.EndpointSetSupervisor.call`
+          routes precisely as it did before any of this existed, while
+          ``candidate`` still says which machine that is.
         * ``error`` is set, with the other two ``None``, when nothing ran:
           not specified with more than one machine enrolled, or what was said
           matching zero or more than one machine.
@@ -719,25 +798,25 @@ class PluginHost:
         already handles it unresolved (``endpoint=None``) — this method does
         nothing a caller would notice until something supplies names.
         """
-        directory = self._machine_directory
-        names = directory(plugin_name) if directory is not None else None
         raw = arguments.get(MACHINE_ARGUMENT)
         trimmed = (
             {key: value for key, value in arguments.items() if key != MACHINE_ARGUMENT}
             if MACHINE_ARGUMENT in arguments
             else arguments
         )
-        if not names:
-            return arguments, None, None, None
-
-        candidates = _machine_candidates(supervisor, names)
+        candidates = self._machines(plugin_name, supervisor)
         if not candidates:
             return arguments, None, None, None
 
         asked = raw.strip() if isinstance(raw, str) else ""
-        if not asked and len(candidates) <= 1:
-            # Nothing named, nothing to ask about — unchanged from today.
-            return trimmed, None, None, None
+        if not asked and len(candidates) == 1:
+            # Nothing named, nothing to ask about: routing is unchanged from
+            # today — `endpoint` stays `None` and the supervisor picks its one
+            # machine exactly as it always has. The candidate is still handed
+            # back, because *which* machine answered is worth saying even when
+            # there was never a choice to make: it is the one-machine case the
+            # model gets wrong, having nothing but the plugin's name to go on.
+            return trimmed, None, candidates[0], None
 
         resolution = resolve_machine(raw if isinstance(raw, str) else None, candidates)
         if isinstance(resolution, MachineResolved):
@@ -823,6 +902,7 @@ class PluginHost:
         result: ToolResult,
         detail: dict[str, Any] | None = None,
         log_reason: str | None = None,
+        machine: MachineCandidate | None = None,
     ) -> ToolResult:
         duration_ms = round((time.perf_counter() - started) * 1000, 3)
         if log_reason:
@@ -855,7 +935,17 @@ class PluginHost:
         )
         # Told to the caller so exactly one record exists for this call: the
         # agent loop writes its own only when this boundary did not.
-        return result.model_copy(update={"audited": written})
+        #
+        # `origin` rides along on the same copy: the machine this call was
+        # about, by name, so what the model is told about *which computer
+        # answered* is observed here rather than guessed upstream from a
+        # plugin's name. Only ever set for a plugin that has machines —
+        # `machine` is `None` everywhere else, and the field then stays at its
+        # default and changes nothing about the result a caller sees.
+        update: dict[str, Any] = {"audited": written}
+        if machine is not None:
+            update["origin"] = machine.name
+        return result.model_copy(update=update)
 
     async def _write_audit(
         self,
@@ -952,6 +1042,20 @@ def _within(risk: RiskLevel, ceiling: RiskLevel) -> bool:
     if rank is None or limit is None:
         return False
     return rank <= limit
+
+
+def _described(description: str | None, note: str | None) -> str | None:
+    """A tool's description with its machine note, if it has one.
+
+    ``note is None`` returns the description itself, unchanged and not
+    rebuilt — the overwhelming majority of plugins reach exactly one place and
+    every byte a model reads about them is still the one the plugin wrote.
+    """
+    if note is None:
+        return description
+    if not description:
+        return note
+    return f"{description}\n\n{note}"
 
 
 def _machine_candidates(
