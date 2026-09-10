@@ -52,7 +52,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -73,6 +73,15 @@ from personacore.contracts import RiskLevel
 from personacore.plugins.discovery import PluginDiscovery, PluginRecord
 from personacore.plugins.errors import PluginLoadFailure
 from personacore.plugins.health import PluginHealth, PluginOutput, PluginState
+from personacore.plugins.machine_resolution import (
+    MACHINE_ARGUMENT,
+    MachineCandidate,
+    MachineNeedsAsking,
+    MachineNotFound,
+    MachineResolved,
+    listing,
+    resolve_machine,
+)
 from personacore.plugins.mcp_client import (
     McpSessionFactory,
     PluginToolError,
@@ -125,6 +134,8 @@ class PluginHost:
         config: PluginHostConfig | None = None,
         session_factory: SessionFactory | None = None,
         disabled: Sequence[str] = (),
+        on_machine_acted: Callable[[str], None] | None = None,
+        machine_directory: Callable[[str], Mapping[str, str]] | None = None,
     ) -> None:
         self._discovery = discovery
         self._config = config or PluginHostConfig()
@@ -136,6 +147,26 @@ class PluginHost:
         self._load_failures: list[PluginLoadFailure] = []
         self._disabled: set[str] = set(disabled)
         self._lock = asyncio.Lock()
+        self._on_machine_acted = on_machine_acted
+        """Passed straight through to every :class:`EndpointSetSupervisor` this
+        host builds (see :meth:`_supervisor_for`), and to nothing else — a
+        plugin with one ``url`` has no several-machines question to answer.
+        This host names no plugin and imports no registry; it only carries the
+        callable its own composition root handed it. See
+        ``EndpointSetSupervisor.on_machine_acted`` for what it is called with
+        and when."""
+        self._machine_directory = machine_directory
+        """``plugin name -> {address: display name}``, for a plugin whose
+        manifest declares an endpoint set (reshape plan R3). The mirror image
+        of ``on_machine_acted``, crossing the same boundary the other way: a
+        machine's *name* lives in ``enrolment.registry.MachineRegistry``, this
+        module must not import it, so whoever holds that registry hands in a
+        plain callable instead. ``None`` — the default, and every caller
+        before this parameter existed — leaves :meth:`call_tool` resolving
+        nothing: a plugin with several machines still runs when only one is
+        configured, and still asks (by address, unnamed) exactly as
+        :meth:`~personacore.plugins.supervisor.EndpointSetSupervisor.call`
+        reports it, when more than one is. See :meth:`_resolve_machine`."""
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -317,7 +348,12 @@ class PluginHost:
         it healthy, which is a worse answer than a red row saying why.
         """
         if record.manifest.plugin.urls:
-            return EndpointSetSupervisor(record, self._factory, config=self._config.supervisor)
+            return EndpointSetSupervisor(
+                record,
+                self._factory,
+                config=self._config.supervisor,
+                on_machine_acted=self._on_machine_acted,
+            )
         return PluginSupervisor(record, self._factory, config=self._config.supervisor)
 
     async def _stop_one(self, name: str) -> None:
@@ -436,6 +472,7 @@ class PluginHost:
         plugin_name, _, tool_name = name.partition(TOOL_SEPARATOR)
         ceiling = risk_ceiling if risk_ceiling is not None else self._config.default_risk_ceiling
         risk: RiskLevel | None = None
+        resolved_machine: MachineCandidate | None = None
         try:
             supervisor = self._supervisors.get(plugin_name)
             if not tool_name or supervisor is None:
@@ -501,7 +538,32 @@ class PluginHost:
                     caller_detail=caller_detail,
                 )
 
-            result = await supervisor.call(tool_name, arguments, timeout_seconds=timeout_seconds)
+            if isinstance(supervisor, EndpointSetSupervisor):
+                arguments, endpoint, resolved_machine, ask = self._resolve_machine(
+                    plugin_name, tool_name, supervisor, arguments
+                )
+                if ask is not None:
+                    return await self._finish(
+                        name,
+                        plugin_name,
+                        tool_name,
+                        arguments,
+                        risk=risk,
+                        outcome=AuditOutcome.FAILURE,
+                        started=started,
+                        correlation_id=correlation_id,
+                        owner=owner,
+                        surface=surface,
+                        caller_detail=caller_detail,
+                        result=ToolResult(ok=False, error=ask),
+                    )
+                result = await supervisor.call(
+                    tool_name, arguments, timeout_seconds=timeout_seconds, endpoint=endpoint
+                )
+            else:
+                result = await supervisor.call(
+                    tool_name, arguments, timeout_seconds=timeout_seconds
+                )
         except PluginToolError as exc:
             return await self._finish(
                 name,
@@ -524,6 +586,26 @@ class PluginHost:
                 ),
             )
         except PluginTransportError as exc:
+            # A plugin with one machine has nothing more to say than "I can't
+            # reach it" — that sentence is unchanged. A plugin fronting
+            # several machines is different: its own exception text *is* the
+            # owner's "show the list and ask" (`EndpointSetSupervisor.call`'s
+            # own docstring), so it is spoken rather than swallowed —
+            # relabelled by name when a machine was actually resolved
+            # (`_named`), and cleaned the way any plugin-originated text
+            # reaching a persona's voice is (`_speakable`, matching
+            # `_excerpt`'s hygiene below).
+            if isinstance(supervisor, EndpointSetSupervisor):
+                spoken = _speakable(_named(str(exc), resolved_machine))
+                error_text = spoken or (
+                    f"I can't reach the {plugin_name} plugin right now, so I "
+                    "couldn't do that."
+                )
+            else:
+                error_text = (
+                    f"I can't reach the {plugin_name} plugin right now, so I "
+                    "couldn't do that."
+                )
             return await self._finish(
                 name,
                 plugin_name,
@@ -536,11 +618,7 @@ class PluginHost:
                 owner=owner,
                 surface=surface,
                 caller_detail=caller_detail,
-                result=ToolResult(
-                    ok=False,
-                    error=f"I can't reach the {plugin_name} plugin right now, so I "
-                    "couldn't do that.",
-                ),
+                result=ToolResult(ok=False, error=error_text),
                 log_reason=str(exc),
             )
         except asyncio.CancelledError:
@@ -605,6 +683,85 @@ class PluginHost:
             caller_detail=caller_detail,
             result=ToolResult(ok=True, content=result.text, files=result.files),
         )
+
+    # -- the machine resolver (reshape plan R3) -----------------------------
+
+    def _resolve_machine(
+        self,
+        plugin_name: str,
+        tool_name: str,
+        supervisor: EndpointSetSupervisor,
+        arguments: Mapping[str, Any],
+    ) -> tuple[Mapping[str, Any], str | None, MachineCandidate | None, str | None]:
+        """Turn a ``machine`` argument into one of the supervisor's own
+        addresses, or a sentence to say instead of running anything (reshape
+        plan decision 0.3). ``machine_resolution.resolve_machine`` does the
+        matching; this method only joins names onto the supervisor's own
+        health and turns the outcome into what ``call_tool`` needs.
+
+        Returns ``(arguments, endpoint, candidate, error)``:
+
+        * ``arguments`` never carries :data:`MACHINE_ARGUMENT` onward — it is
+          routing, consumed here, and a machine's own remote tool has no
+          parameter for it.
+        * ``endpoint`` and ``candidate`` are set together, once exactly one
+          machine was meant: ``endpoint`` for
+          :meth:`~personacore.plugins.supervisor.EndpointSetSupervisor.call`,
+          ``candidate`` so a later transport failure can be reworded with its
+          name instead of the address it names (see ``_named``).
+        * ``error`` is set, with the other two ``None``, when nothing ran:
+          not specified with more than one machine enrolled, or what was said
+          matching zero or more than one machine.
+
+        No directory wired, or nothing known about this plugin's machines,
+        leaves everything exactly as
+        :meth:`~personacore.plugins.supervisor.EndpointSetSupervisor.call`
+        already handles it unresolved (``endpoint=None``) — this method does
+        nothing a caller would notice until something supplies names.
+        """
+        directory = self._machine_directory
+        names = directory(plugin_name) if directory is not None else None
+        raw = arguments.get(MACHINE_ARGUMENT)
+        trimmed = (
+            {key: value for key, value in arguments.items() if key != MACHINE_ARGUMENT}
+            if MACHINE_ARGUMENT in arguments
+            else arguments
+        )
+        if not names:
+            return arguments, None, None, None
+
+        candidates = _machine_candidates(supervisor, names)
+        if not candidates:
+            return arguments, None, None, None
+
+        asked = raw.strip() if isinstance(raw, str) else ""
+        if not asked and len(candidates) <= 1:
+            # Nothing named, nothing to ask about — unchanged from today.
+            return trimmed, None, None, None
+
+        resolution = resolve_machine(raw if isinstance(raw, str) else None, candidates)
+        if isinstance(resolution, MachineResolved):
+            return trimmed, resolution.address, resolution.candidate, None
+        if isinstance(resolution, MachineNeedsAsking):
+            if resolution.query is None:
+                sentence = (
+                    f"the {plugin_name} plugin has {len(resolution.candidates)} "
+                    f"machines, so {tool_name} needs to say which one. Machines: "
+                    f"{listing(resolution.candidates)}"
+                )
+            else:
+                sentence = (
+                    f"{resolution.query!r} matches {len(resolution.candidates)} "
+                    f"machines, so {tool_name} needs to say which one. Machines: "
+                    f"{listing(resolution.candidates)}"
+                )
+            return trimmed, None, None, sentence
+        assert isinstance(resolution, MachineNotFound)  # noqa: S101 - narrowing, exhaustive
+        sentence = (
+            f"no machine here matches {resolution.query!r}, so {tool_name} didn't "
+            f"run. Machines: {listing(resolution.candidates)}"
+        )
+        return trimmed, None, None, sentence
 
     # -- audit (spec section 7) --------------------------------------------
 
@@ -795,6 +952,67 @@ def _within(risk: RiskLevel, ceiling: RiskLevel) -> bool:
     if rank is None or limit is None:
         return False
     return rank <= limit
+
+
+def _machine_candidates(
+    supervisor: EndpointSetSupervisor, names: Mapping[str, str]
+) -> tuple[MachineCandidate, ...]:
+    """Join one plugin's machine health with the directory's names.
+
+    Built off ``health().endpoints`` — the same rows
+    ``web/screens/workstation.py``'s ``endpoint_index`` reads — rather than
+    ``supervisor.machines``, so the resolver counts machines exactly the way
+    every other renderer of this plugin does: one row per machine, its full
+    address list, ``is_callable`` computed the one way that property is
+    computed anywhere (``EndpointHealth.is_callable``). A machine the
+    directory has no name for falls back to its own first address as its
+    name rather than being dropped — a directory stale by one entry never
+    changes how many machines a caller is told about, only how nicely one of
+    them is named.
+    """
+    candidates: list[MachineCandidate] = []
+    for row in supervisor.health().endpoints:
+        addresses = row.addresses or (row.url,)
+        machine_name = next(
+            (names[address] for address in addresses if address in names), None
+        )
+        candidates.append(
+            MachineCandidate(
+                name=machine_name or row.url,
+                addresses=addresses,
+                online=row.is_callable,
+            )
+        )
+    return tuple(candidates)
+
+
+def _named(text: str, candidate: MachineCandidate | None) -> str:
+    """A supervisor's own sentence, with the address it named swapped for a
+    friendlier one — reused, not re-derived. The decision of what happened
+    (offline, no machine named and more than one configured, nothing
+    reachable at all) is entirely
+    :class:`~personacore.plugins.supervisor.EndpointSetSupervisor`'s; this
+    only relabels the one token identifying a machine the resolver actually
+    got to, and only when it did.
+    """
+    if candidate is None:
+        return text
+    replaced = text
+    for address in candidate.addresses:
+        replaced = replaced.replace(address, candidate.name)
+    return replaced
+
+
+def _speakable(text: str) -> str:
+    """Untrusted-content hygiene for a sentence that may reach a persona's
+    voice — the same cleaning :func:`_excerpt` gives a plugin's own error
+    text (control characters stripped, length capped), without the leading
+    colon that quotes a fragment rather than stating a sentence of its own."""
+    cleaned = " ".join(text.split())
+    cleaned = "".join(ch for ch in cleaned if ch.isprintable())
+    if len(cleaned) > MAX_ERROR_EXCERPT:
+        cleaned = cleaned[:MAX_ERROR_EXCERPT].rstrip() + "…"
+    return cleaned
 
 
 def _excerpt(text: str) -> str:

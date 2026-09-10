@@ -37,6 +37,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -124,6 +125,7 @@ from personacore.config.settings import (
     ensure_core_config,
 )
 from personacore.conversations.service import ConversationService
+from personacore.enrolment.registry import MachineRegistry, MachineRejected
 from personacore.hearing.registry import HearingRegistry
 from personacore.hearing.registry import builtin_engines as builtin_recognisers
 from personacore.llm import LLMResponseError
@@ -587,6 +589,56 @@ def create_app(appdata: Path | str | None = None) -> FastAPI:
             }
         )
 
+    # `PluginHost` and `EndpointSetSupervisor` name no plugin: `on_machine_acted`
+    # is a generic hook, fired whenever a call to one machine of an endpoint-set
+    # plugin gets an answer, carrying nothing but that machine's own token name.
+    # Deciding that the one plugin using that shape today is `workstation`, and
+    # that its enrolled machines' activity belongs in `MachineRegistry`, is a
+    # wiring decision — it happens here, at the composition root, and not inside
+    # `plugins/` or the agent loop (CLAUDE.md: no fresh by-name coupling there).
+    # A fresh `MachineRegistry` per call rather than one held open: this is a
+    # rare event (a household's worth of machines, not a hot loop) and the
+    # registry is a thin wrapper over one file — cheaper than a second piece of
+    # long-lived state to keep in sync with plugin installs and removals.
+    def _record_machine_acted(token_secret: str) -> None:
+        MachineRegistry(layout=layout, secrets=SecretStore(layout)).record_last_acted_by_secret(
+            token_secret
+        )
+
+    # The mirror image of `_record_machine_acted` above: that one pushes a
+    # machine's activity out to `MachineRegistry`, this one pulls a machine's
+    # *name* in from it, for `machine_resolution` to resolve "the loft one"
+    # against (reshape plan R3). Same reasoning for living here and nowhere
+    # else — `plugins/` must not import `enrolment/` — and same reasoning for
+    # a fresh `MachineRegistry` per call rather than one held open.
+    #
+    # Any plugin name may arrive here, not only `workstation`'s own: a plugin
+    # with no registry, or a name `MachineRegistry.list` does not recognise as
+    # installed, must yield an empty mapping rather than raise, so the
+    # resolver's documented fallback (`host.py`'s `_resolve_machine_argument`:
+    # "no directory wired... leaves everything exactly as
+    # `EndpointSetSupervisor.call` already handles it unresolved") is what a
+    # caller actually sees. `MachineRegistry.list` raises `MachineRejected`
+    # for exactly that case (an uninstalled plugin, or an unreadable
+    # `machines.toml`) and never anything else — see its own `_read` — so
+    # that is what is caught here, the same catch
+    # `record_last_acted_by_secret` above makes around the same call.
+    def _machine_directory(plugin_name: str) -> Mapping[str, str]:
+        try:
+            machines = MachineRegistry(
+                layout=layout, secrets=SecretStore(layout), plugin=plugin_name
+            ).list()
+        except MachineRejected as exc:
+            log.warning(
+                "machine_directory_read_failed", plugin=plugin_name, error=str(exc)
+            )
+            return {}
+        return {
+            address.url: machine.name
+            for machine in machines
+            for address in machine.addresses
+        }
+
     # ADR-0011 leaves WHICH role each internal caller uses to the moment that
     # caller exists. The agent loop is conversation, so it is `interactive` —
     # the one role that is always configured.
@@ -598,6 +650,8 @@ def create_app(appdata: Path | str | None = None) -> FastAPI:
         secrets=SecretStore(layout),
         audit=audit,
         disabled=read_disabled_plugins(layout),
+        on_machine_acted=_record_machine_acted,
+        machine_directory=_machine_directory,
     )
     app.state.plugin_host = host
 
