@@ -476,16 +476,68 @@ def build_pinned_client_kwargs(
     }
 
 
-def build_http_client_kwargs(record: PluginRecord, secrets: SecretStore | None) -> dict[str, Any]:
+CONNECT_TIMEOUT_SECONDS = 10.0
+"""How long establishing a connection may take before the host counts as
+unreachable.
+
+Deliberately its own fixed number, not derived from the call timeout below:
+an unreachable host is a fast, binary fact that has nothing to do with how
+long a tool call is allowed to run once a connection exists, so it neither
+borrows that number nor drifts if that number changes.
+"""
+
+
+def build_client_timeout(read_timeout_seconds: float) -> httpx2.Timeout:
+    """The ``timeout`` ``httpx2.AsyncClient`` is given for one MCP connection.
+
+    ``httpx2.AsyncClient``'s own default is ``Timeout(timeout=5.0)`` — one
+    scalar covering connect, read, write and pool alike. That single number
+    was the bug (issue #15): a five-second ceiling silently applied to a
+    streamable-HTTP response the core had already told the session it could
+    take up to :attr:`~personacore.plugins.supervisor.SupervisorConfig.call_timeout`
+    (30 seconds by default) to produce.
+
+    So the one scalar becomes two numbers with two different jobs.
+    ``connect`` stays the fixed :data:`CONNECT_TIMEOUT_SECONDS` — reaching the
+    host at all is a different question from how long its answer may take.
+    ``read`` — and, for the same reason a slow body must not be capped any
+    differently than a slow header, ``write`` and ``pool`` too — take
+    ``read_timeout_seconds`` exactly as given, never a second number chosen
+    independently here. Every caller passes the same float the
+    ``ClientSession`` for that connection was opened with
+    (``read_timeout_seconds=self._request_timeout`` in
+    :meth:`McpSessionFactory._open_session`), so the transport's ceiling and
+    the core's advertised one are the same value by construction and cannot
+    quietly disagree.
+    """
+    return httpx2.Timeout(
+        connect=CONNECT_TIMEOUT_SECONDS,
+        read=read_timeout_seconds,
+        write=read_timeout_seconds,
+        pool=read_timeout_seconds,
+    )
+
+
+def build_http_client_kwargs(
+    record: PluginRecord, secrets: SecretStore | None, *, read_timeout_seconds: float
+) -> dict[str, Any]:
     """Everything ``httpx2.AsyncClient`` needs for one http plugin's manifest.
 
     Kept apart from :meth:`McpSessionFactory._connect_http` so a test can call
-    this directly and inspect ``headers`` and ``verify`` — and, when a pin is
-    declared, that ``transport`` is a :class:`_PinnedCertTransport` carrying the
-    right pin and url — without constructing a client, completing a handshake,
-    or opening a socket.
+    this directly and inspect ``headers``, ``timeout`` and ``verify`` — and,
+    when a pin is declared, that ``transport`` is a :class:`_PinnedCertTransport`
+    carrying the right pin and url — without constructing a client, completing
+    a handshake, or opening a socket.
+
+    ``read_timeout_seconds`` has no default: the caller states what the core
+    is promising for this connection (see :func:`build_client_timeout`), so
+    there is exactly one source for "how long may this take" rather than a
+    builder-local number that could disagree with it.
     """
-    kwargs: dict[str, Any] = {"headers": build_http_auth_headers(record, secrets)}
+    kwargs: dict[str, Any] = {
+        "headers": build_http_auth_headers(record, secrets),
+        "timeout": build_client_timeout(read_timeout_seconds),
+    }
     fingerprint = record.manifest.plugin.tls_fingerprint
     if fingerprint is not None:
         kwargs.update(
@@ -495,7 +547,11 @@ def build_http_client_kwargs(record: PluginRecord, secrets: SecretStore | None) 
 
 
 def build_endpoint_client_kwargs(
-    record: PluginRecord, endpoint: EndpointDeclaration, secrets: SecretStore | None
+    record: PluginRecord,
+    endpoint: EndpointDeclaration,
+    secrets: SecretStore | None,
+    *,
+    read_timeout_seconds: float,
 ) -> dict[str, Any]:
     """The same, for one entry of a plugin's endpoint set — ADR-0048.
 
@@ -516,12 +572,20 @@ def build_endpoint_client_kwargs(
     ``auth_secret`` — a set of machines standing behind one shared credential —
     and that fallback runs in this direction only. The single-``url`` path
     reads ``plugin.auth_secret`` directly and never consults an entry.
+
+    ``read_timeout_seconds`` carries the same obligation as it does for
+    :func:`build_http_client_kwargs`: it is the core's advertised ceiling for
+    this call, not a number this function decides for itself, and every entry
+    in the set gets it identically.
     """
     if endpoint.auth_secret is not None:
         headers = build_bearer_header(record.name, endpoint.auth_secret, secrets)
     else:
         headers = build_http_auth_headers(record, secrets)
-    kwargs: dict[str, Any] = {"headers": headers}
+    kwargs: dict[str, Any] = {
+        "headers": headers,
+        "timeout": build_client_timeout(read_timeout_seconds),
+    }
     if endpoint.pin is not None:
         kwargs.update(build_pinned_client_kwargs(endpoint.url, endpoint.pin))
     return kwargs
@@ -1108,7 +1172,9 @@ class McpSessionFactory:
         # does not connect, and `MissingPluginSecrets` carries that up to the
         # same `waiting_for_secrets` health row for both transports, through
         # the supervisor's existing, transport-agnostic catch of it.
-        client_kwargs = build_http_client_kwargs(record, self._secrets)
+        client_kwargs = build_http_client_kwargs(
+            record, self._secrets, read_timeout_seconds=self._request_timeout
+        )
         try:
             async with AsyncExitStack() as stack:
                 # Built and owned here, not by `streamable_http_client`: it only
@@ -1160,7 +1226,9 @@ class McpSessionFactory:
                 "an http:// or https:// URL. HTTP plugins are reached over the "
                 "network and nothing else."
             )
-        client_kwargs = build_endpoint_client_kwargs(record, endpoint, self._secrets)
+        client_kwargs = build_endpoint_client_kwargs(
+            record, endpoint, self._secrets, read_timeout_seconds=self._request_timeout
+        )
         try:
             async with AsyncExitStack() as stack:
                 client = await stack.enter_async_context(httpx2.AsyncClient(**client_kwargs))
@@ -1242,6 +1310,7 @@ def _core_version() -> str:
 
 __all__ = [
     "BASE_ENV_KEYS",
+    "CONNECT_TIMEOUT_SECONDS",
     "FORCED_ENV",
     "PLUGIN_OUTPUT_CHARS",
     "ChildEnvironmentError",
@@ -1258,6 +1327,7 @@ __all__ = [
     "SessionFactory",
     "build_bearer_header",
     "build_child_environment",
+    "build_client_timeout",
     "build_endpoint_client_kwargs",
     "build_http_auth_headers",
     "build_http_client_kwargs",
