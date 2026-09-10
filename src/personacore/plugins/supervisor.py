@@ -31,7 +31,7 @@ the subprocess, so teardown has exactly one owner and cannot race.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -680,6 +680,13 @@ class EndpointSetSupervisor:
     real :class:`PluginSupervisor`, because those are properties of *one
     connection to one MCP server* and there is no second implementation of them
     anywhere.
+
+    **This class knows nothing named "workstation".** It is built for any
+    plugin whose manifest declares ``plugin.urls`` — today that happens to be
+    one plugin, but nothing here checks a name to find out. ``on_machine_acted``
+    (constructor) is how something outside this module learns a machine
+    answered a call: a plain callable given the machine's own token name, with
+    no import of what that name means to anybody. See :meth:`_note_machine_acted`.
     """
 
     def __init__(
@@ -688,6 +695,7 @@ class EndpointSetSupervisor:
         factory: EndpointSessionFactory,
         *,
         config: SupervisorConfig | None = None,
+        on_machine_acted: Callable[[str], None] | None = None,
     ) -> None:
         endpoints = record.manifest.plugin.urls
         if not endpoints:
@@ -703,6 +711,19 @@ class EndpointSetSupervisor:
         self._record = record
         self._config = config or SupervisorConfig()
         self._disabled = False
+        self._on_machine_acted = on_machine_acted
+        """A seam, not a lookup: whoever cares which machine last answered a
+        call supplies this, and this class calls it without knowing who that
+        is or what they do with the name — the same shape
+        ``MachineRegistry.connection_state`` uses the other way across the
+        same boundary. **Never a machine object, never this class's own
+        ``_Machine``** — only the ``auth_secret`` name off the manifest entry
+        that was actually called, because that is the one thing on this side
+        of the boundary that also names something on the other side
+        (``Machine.token_secret``, ``enrolment/registry.py``), and handing out
+        the internal type would be exactly the ``plugins/`` importing
+        ``enrolment/`` inversion this class must not create. Called on an
+        **answered** call only — see :meth:`_note_machine_acted`."""
         self._machines: dict[str, _Machine] = {}
         """One entry per machine, in the order its first address was declared.
         The set's addresses are grouped into these before anything else looks at
@@ -925,8 +946,8 @@ class EndpointSetSupervisor:
                 )
             if not machine.is_callable:
                 raise PluginTransportError(self._machine_offline_message(tool, endpoint))
-            return await machine.supervisor.call(
-                tool, arguments, timeout_seconds=timeout_seconds
+            return await self._call_machine(
+                machine, tool, arguments, timeout_seconds=timeout_seconds
             )
 
         if len(self._machines) > 1:
@@ -940,7 +961,65 @@ class EndpointSetSupervisor:
         (only,) = self._machines.values()
         if not only.is_callable:
             raise PluginTransportError(self._nothing_reachable_message(tool))
-        return await only.supervisor.call(tool, arguments, timeout_seconds=timeout_seconds)
+        return await self._call_machine(
+            only, tool, arguments, timeout_seconds=timeout_seconds
+        )
+
+    async def _call_machine(
+        self,
+        machine: _Machine,
+        tool: str,
+        arguments: Mapping[str, Any],
+        *,
+        timeout_seconds: float | None,
+    ) -> RemoteToolResult:
+        """Run one call on one machine, and note whether it answered.
+
+        The one place :meth:`call`'s two branches both end at, so the note is
+        taken once rather than twice. "Answered" is deliberately narrower than
+        "attempted": :exc:`PluginTransportError` below means the machine never
+        actually responded — offline, hung, the connection dropped mid-call —
+        and nothing about that proves the machine did anything, so it is not
+        noted. :exc:`PluginToolError` means the opposite: the machine's own
+        server received the call, ran its own logic, and chose to refuse it.
+        That is a completed round trip and it is noted, on purpose — a machine
+        that answers every call with a refusal is not idle, and the seam this
+        method calls is also, today, the only fact the settings screen has for
+        "last seen" once a machine goes offline (``web/screens/workstation.py``
+        ``machine_row``'s own comment). Stamping "attempted" would let that
+        reading claim a machine was seen when it was only ever dialled.
+        """
+        try:
+            result = await machine.supervisor.call(
+                tool, arguments, timeout_seconds=timeout_seconds
+            )
+        except PluginToolError:
+            self._note_machine_acted(machine)
+            raise
+        else:
+            self._note_machine_acted(machine)
+            return result
+
+    def _note_machine_acted(self, machine: _Machine) -> None:
+        """Tell :attr:`_on_machine_acted` which machine just answered, by the
+        one name it can be told: its own token's name, not this class's own
+        ``_Machine``. A machine grouped by address rather than by its own
+        token (:func:`group_endpoints_by_machine`) has no such name and is
+        silently skipped — there is nothing a registry could match it against
+        anyway. A listener's own failure is logged and swallowed: a hook
+        going wrong must never fail the call the machine already answered.
+        """
+        if self._on_machine_acted is None:
+            return
+        secret = machine.endpoints[0].auth_secret
+        if secret is None:
+            return
+        try:
+            self._on_machine_acted(secret)
+        except Exception as exc:  # noqa: BLE001 - a listener must not fail the call
+            logger.warning(
+                "machine_acted_hook_failed", plugin=self._record.name, error=repr(exc)
+            )
 
     # -- a missing machine token is not a credential to ask for -------------
 

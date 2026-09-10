@@ -586,10 +586,14 @@ class MachineRegistry:
     ) -> bool:
         """Stamp when a machine last did something. ``False`` if it is unknown.
 
-        Called from wherever the act is already being written to the audit
-        store, so it adds a file replace and no new bookkeeping. A write that
-        already says the same second is skipped rather than repeated, which is
-        the only thing standing between a burst of tool calls and a burst of
+        Takes the id, for a caller that already has the :class:`Machine` in
+        hand — a test, or code inside this package. The plugin host has no
+        such thing: it knows a machine only as the secret name on the
+        manifest entry it routed a call to, so :meth:`record_last_acted_by_secret`
+        is the entry point actually wired to a live call, and it delegates
+        here once it has turned that name into an id. A write that already
+        says the same second is skipped rather than repeated, which is the
+        only thing standing between a burst of tool calls and a burst of
         identical file replaces.
 
         Never raises for a storage failure: a timestamp that could not be
@@ -641,6 +645,51 @@ class MachineRegistry:
                 )
                 return False
         return True
+
+    def record_last_acted_by_secret(
+        self, token_secret: str, *, now: datetime | None = None
+    ) -> bool:
+        """The same stamp as :meth:`record_last_acted`, looked up by the name
+        of the machine's own token rather than its id.
+
+        This is the seam a plugin-host caller actually has. ``EndpointSetSupervisor``
+        (``plugins/supervisor.py``) knows which machine it just routed a call to,
+        but the only identifier it holds for that machine is the ``auth_secret``
+        name on the manifest entries it grouped — the same string :meth:`add`
+        wrote as ``token_secret`` when the machine joined. Turning that name into
+        an id is this module's business, not the plugin host's: ``plugins/``
+        importing ``enrolment/`` to call :meth:`record_last_acted` directly would
+        be the layering inversion this module's own docstring rules out, so the
+        lookup happens on this side of the seam and the host is handed nothing
+        more specific than the string it already had, through a plain callable
+        it invokes without knowing what is on the other end.
+
+        Called on an **answered** call — the machine's own server produced a
+        response, granted or refused — never on one merely attempted. A call
+        that never reached the machine at all proves nothing about it, and
+        the settings screen reads this same timestamp as "last seen" once a
+        machine goes offline (``web/screens/workstation.py``'s ``machine_row``);
+        stamping it on a dial that never got an answer would let that field
+        claim a machine was seen when it was only ever tried.
+
+        ``False`` for the same reasons :meth:`record_last_acted` returns it —
+        no machine carries that secret name, or the record could not be read
+        or written — plus one more: no machine ever carries a secret name of
+        ``None``, which is what an endpoint grouped by address rather than by
+        its own token looks like to the caller, and that case is refused
+        before this is ever reached.
+        """
+        try:
+            existing = self.list()
+        except MachineRejected as exc:
+            logger.warning(
+                "machine_last_acted_read_failed", plugin=self.plugin, error=str(exc)
+            )
+            return False
+        machine = next((m for m in existing if m.token_secret == token_secret), None)
+        if machine is None:
+            return False
+        return self.record_last_acted(machine.id, now=now)
 
     # -- the file ----------------------------------------------------------
 
