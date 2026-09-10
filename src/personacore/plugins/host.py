@@ -432,7 +432,16 @@ class PluginHost:
             if not supervisor.is_callable:
                 continue
             remote_tools = supervisor.tools
-            note = self._machine_note(name, supervisor)
+            machines = self._machines(name, supervisor)
+            note = self._machine_note(machines)
+            # Declared only with a real choice to make (condition 2 of the
+            # reshape-plan schema fix): one machine has nothing to route
+            # between, so adding an optional parameter there is a question
+            # that does not exist and only invites the model to invent a
+            # value or ask needlessly. Two or more is exactly the point
+            # `_resolve_machine` starts asking, so the schema and the
+            # resolver agree about when a choice exists.
+            add_machine_parameter = len(machines) > 1
             for tool_name, declaration in supervisor.record.manifest.tools.items():
                 remote = remote_tools.get(tool_name)
                 if remote is None:
@@ -440,6 +449,9 @@ class PluginHost:
                     # plugin whose tools disagree with its manifest. Skipped
                     # rather than trusted, in case that ever stops being true.
                     continue
+                parameters = remote.input_schema or {}
+                if add_machine_parameter:
+                    parameters = _with_machine_parameter(parameters)
                 specs.append(
                     ToolSpec(
                         name=f"{name}{TOOL_SEPARATOR}{tool_name}",
@@ -447,14 +459,12 @@ class PluginHost:
                         description=_described(
                             declaration.description or remote.description, note
                         ),
-                        parameters=remote.input_schema or {},
+                        parameters=parameters,
                     )
                 )
         return specs
 
-    def _machine_note(
-        self, plugin_name: str, supervisor: PluginSupervisor | EndpointSetSupervisor
-    ) -> str | None:
+    def _machine_note(self, machines: tuple[MachineCandidate, ...]) -> str | None:
         """The sentence that tells the model which computers a tool reaches,
         before it spends a call finding out.
 
@@ -473,8 +483,13 @@ class PluginHost:
         keyed off a plugin's name here or anywhere below it; the question
         asked is only "does this plugin's tool surface reach machines this
         core can name".
+
+        Takes the already-resolved candidate list rather than a plugin name
+        and supervisor: :meth:`list_tools` needs the same list to decide
+        whether to add the ``machine`` schema parameter (see
+        :func:`_with_machine_parameter`), and the two must never disagree
+        about how many machines there are.
         """
-        machines = self._machines(plugin_name, supervisor)
         if not machines:
             return None
         elsewhere = (
@@ -1056,6 +1071,56 @@ def _described(description: str | None, note: str | None) -> str | None:
     if not description:
         return note
     return f"{description}\n\n{note}"
+
+
+_MACHINE_PARAMETER_DESCRIPTION = (
+    "The machine to run this on, by name or IP address — set only when the "
+    "user named one. Never guess or pick a default; leave it out and the "
+    "tool asks instead of running."
+)
+"""Same register as the identity sentence in :meth:`PluginHost._machine_note`
+above ("Say which one in the 'machine' argument... without one the tool asks
+instead of running") — this is the same sentence's rule, stated as schema
+prose instead of a description paragraph, because a model reads both. Kept to
+one sentence on purpose: this text is repeated on every tool of every
+multi-machine plugin, so its cost is paid once per tool, every turn."""
+
+
+def _with_machine_parameter(schema: Mapping[str, Any]) -> dict[str, Any]:
+    """A tool's own JSON Schema, with one optional ``machine`` string
+    property added — never anything else touched, and never required.
+
+    Defensive on purpose (risk raised in review): a plugin's declared schema
+    may have no ``properties`` block at all, or may set
+    ``additionalProperties: false``. Both are handled so the result is always
+    a valid JSON Schema object:
+
+    * No ``properties``, or one that is not a mapping — treated as empty
+      rather than trusted, and replaced with a fresh dict holding only
+      ``machine``. A malformed ``properties`` block is the plugin's problem
+      elsewhere; it must never make *this* injection produce something a
+      model client rejects, which would take the plugin's entire tool
+      catalogue down for one added parameter.
+    * ``additionalProperties: false`` needs no special handling at all —
+      JSON Schema only restricts properties *absent* from ``properties``, and
+      ``machine`` is added there, so a strict schema stays strict for
+      everything except the one property this function adds.
+
+    Every other key — ``required``, ``type``, anything a plugin author put in
+    its own schema — passes through untouched. ``machine`` is never added to
+    ``required``: the whole point of the parameter is that it is optional,
+    and the never-guess rule lives in its description, not in the schema's
+    enforcement.
+    """
+    result = dict(schema)
+    existing = result.get("properties")
+    properties = dict(existing) if isinstance(existing, dict) else {}
+    properties[MACHINE_ARGUMENT] = {
+        "type": "string",
+        "description": _MACHINE_PARAMETER_DESCRIPTION,
+    }
+    result["properties"] = properties
+    return result
 
 
 def _machine_candidates(

@@ -105,11 +105,13 @@ def resolve_machine(
     raw: str | None, candidates: Sequence[MachineCandidate]
 ) -> MachineResolution:
     """The matching rule, in one sentence: compare what was typed,
-    case-insensitively and with whitespace collapsed, as a substring against
-    each machine's name or any of its addresses, and treat anything other than
-    exactly one match as a question rather than a guess — with one exception,
-    that a match on a machine's full name exactly wins outright even if the
-    same text also partially matches others.
+    case-insensitively and with whitespace collapsed, against each machine's
+    name — as a substring that starts the name or one of its
+    hyphen/underscore/space/dot-separated parts (:func:`_name_matches_at_boundary`)
+    — or as a substring anywhere in any of its addresses, and treat anything
+    other than exactly one match as a question rather than a guess — with one
+    exception, that a match on a machine's full name exactly wins outright
+    even if the same text also partially matches others.
 
     ``candidates`` is never filtered by ``online`` here.
     :meth:`~personacore.plugins.supervisor.EndpointSetSupervisor.call`'s own
@@ -145,9 +147,54 @@ def listing(candidates: Sequence[MachineCandidate]) -> str:
     )
 
 
+_NAME_SEPARATORS = ("-", "_", " ", ".")
+"""Where one "word" of a machine's name ends and the next begins, for
+:func:`_name_matches_at_boundary`. Checked against
+``enrolment.workstation._DISPLAY_NAME_RE`` (what a machine may actually be
+called: letters, digits, and these four separators, nothing else) rather than
+assumed — the review's own suggested fix named only hyphen, underscore and
+space, and left out the dot a real hostname is equally likely to carry
+(``workshop.pc``). Restated rather than imported: that pattern is private to
+``enrolment``, and this module has no business depending on it. Getting this
+set wrong in either direction has an asymmetric cost — too few separators
+only makes the resolver ask when it could have matched (safe, just
+unhelpful); too many would be the silent-wrong-machine risk this function
+exists to close. So the set is exactly what the naming rule allows, not a
+guess at what "looks like" a separator."""
+
+
+def _name_matches_at_boundary(folded_query: str, folded_name: str) -> bool:
+    """Whether ``folded_query`` lines up with where a human would say a
+    machine's name starts — the whole name, or the start of one of its
+    hyphen/underscore/space/dot-separated parts — rather than merely occurring
+    somewhere inside a word.
+
+    Without this, a plain substring test lets "new" match inside
+    "renewed-pc" — the middle of a single word — and if that is the only
+    machine it matches, the resolver would hand back exactly one candidate
+    and run on it without asking. That is the silent wrong-machine the owner
+    forbade (PLAN.md 0.3: "No silent nearest-match"), just reached through
+    the matcher instead of through ranking. A query has to start a word of
+    the name, not merely appear inside one.
+    """
+    if not folded_query:
+        return False
+    index = folded_name.find(folded_query)
+    while index != -1:
+        if index == 0 or folded_name[index - 1] in _NAME_SEPARATORS:
+            return True
+        index = folded_name.find(folded_query, index + 1)
+    return False
+
+
 def _matches(text: str, folded_query: str, candidate: MachineCandidate) -> bool:
-    if folded_query in _fold(candidate.name):
+    if _name_matches_at_boundary(folded_query, _fold(candidate.name)):
         return True
+    # Addresses are untouched by the boundary rule above: an IP or URL has no
+    # notion of "words" the way a machine name does, and PLAN.md 0.3's
+    # partial-IP example ("2001:db8::30" matching inside a full bracketed
+    # IPv6 URL) depends on a match landing mid-string. The risk this function
+    # exists to close was raised, and is fixed, for names only.
     return any(text in address for address in candidate.addresses)
 
 

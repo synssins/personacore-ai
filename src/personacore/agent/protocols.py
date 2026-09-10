@@ -71,7 +71,11 @@ class ToolSpec(BaseModel):
     risk: RiskLevel
     description: str | None = None
     parameters: dict[str, Any] = Field(default_factory=dict)
-    """JSON Schema for the arguments, passed to the model untouched."""
+    """JSON Schema for the arguments, passed to the model untouched — except
+    for a plugin fronting two or more named machines (reshape plan R3), whose
+    tools gain one extra optional ``machine`` property so the model can
+    actually say which computer it means (``plugins.host._with_machine_parameter``).
+    A single-endpoint plugin's schema is never touched."""
 
 
 class ToolFile(BaseModel):
